@@ -1,0 +1,87 @@
+# STRANDLINE ACCURACY GATES (human-owned: Claude Code is blocked from editing this file)
+#
+# A module is DONE only when `python -m eval.check_gates` shows PASS for all of its gates.
+# NO DATA counts as not done. A human may RAISE thresholds; tests/test_rules.py fails if
+# any gate is set below the hard floor (90%, or 80% for declared worst-case floors).
+#
+# Every score comes from the dev events in eval/events.yaml, never from the Trishuli case
+# study. Flood scores are leave-one-event-out (split: loeo): parameters are chosen on the
+# other events and scored on the left-out one, so the number measures generalisation.
+
+contract:
+  resolution_m: 20
+  boundary_tolerance_px: 1          # 1 px = 20 m; strict scores are always reported too
+  required_columns: [run_id, event]
+
+heldout:
+  name: trishuli_2026
+  reference_activation: EMSR927
+  event_date: "2026-08-26"
+  case_study_bbox: [85.10, 27.85, 85.45, 28.30]
+  exclusion_bbox: [84.90, 27.60, 85.70, 28.60]   # no dev event may overlap this box
+  forbidden_names: [trishuli, emsr927, bhote, rasuwa, nuwakot]
+
+modules:
+  flood_mapping:
+    results: eval/results/flood.csv
+    where: {kind: flood, split: loeo}
+    min_rows: 3
+    gates:
+      - {metric: precision_tolerant, agg: mean, op: ">=", value: 0.90}
+      - {metric: recall_tolerant,    agg: mean, op: ">=", value: 0.90}
+      - {metric: f1_tolerant,        agg: mean, op: ">=", value: 0.90}
+      - {metric: f1_tolerant,        agg: min,  op: ">=", value: 0.80, floor: true}
+      - {metric: f1,                 agg: mean, report_only: true}
+      - {metric: iou,                agg: mean, report_only: true}
+
+  no_flood_controls:
+    results: eval/results/flood.csv
+    where: {kind: control}
+    min_rows: 3
+    gates:
+      - {metric: false_flood_fraction, agg: max, op: "<=", value: 0.01}
+
+  damage_overlay:
+    results: eval/results/damage.csv
+    min_rows: 3
+    gates:
+      - {metric: road_segment_f1, agg: mean, op: ">=", value: 0.90}
+      - {metric: building_f1,     agg: mean, op: ">=", value: 0.90}
+
+  cutoff_analysis:
+    results: eval/results/cutoff.csv
+    min_rows: 3
+    gates:
+      - {metric: settlement_f1, agg: mean, op: ">=", value: 0.90}
+      - {metric: settlement_f1, agg: min,  op: ">=", value: 0.80, floor: true}
+
+  copilot:
+    results: eval/results/copilot.csv
+    min_rows: 150
+    gates:
+      - {metric: invented_number, agg: max,  op: "<=", value: 0.0}
+      - {metric: correct,         agg: mean, op: ">=", value: 0.95}
+
+  live_drills:
+    results: eval/results/drills.csv
+    min_rows: 10
+    gates:
+      - {metric: success,   agg: mean, op: ">=", value: 0.90}
+      - {metric: runtime_s, agg: p90,  report_only: true}
+
+  reproducibility:
+    results: eval/results/repro.csv
+    min_rows: 3
+    gates:
+      - {metric: identical_output, agg: min, op: ">=", value: 1.0}
+
+# Results CSV format (append-only; every run adds rows, nothing is ever deleted):
+#   all files:   run_id (UTC, YYYYMMDDTHHMMSSZ), timestamp, git_commit, params_hash, event, ...
+#   flood.csv:   kind (flood|control), split (loeo|full), precision, recall, f1, iou,
+#                precision_tolerant, recall_tolerant, f1_tolerant, false_flood_fraction
+#   damage.csv:  road_segment_f1, building_f1      (our flood map vs reference extent)
+#   cutoff.csv:  settlement_f1                     (our flood map vs reference extent)
+#   copilot.csv: one row per question; event = question id; correct 0/1; invented_number 0/1
+#   drills.csv:  one row per drill; success 0/1; runtime_s; failure_stage
+#   repro.csv:   one row per check; identical_output 0/1
+# The checker uses the latest run_id among the rows matching each module's `where`.

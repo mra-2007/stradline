@@ -1,0 +1,14 @@
+venv/
+.venv/
+runs/
+cache/
+data/
+reference/
+.env
+.heldout_unlocked
+__pycache__/
+.pytest_cache/
+*.part.tif
+.claude/settings.local.json
+node_modules/
+web/dist/

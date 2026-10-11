@@ -55,6 +55,7 @@ events:
     download_urls:
       - "https://sentinel-asia.org/EO/2024/article20240810BT/JAXA/JAXA_20240815_FPM_ALOS2_Bhutan_FLDEXT.zip"
     verified_bytes: [15215]
+    ref_sensor_name: "ALOS-2 PALSAR-2"
     ref_sensor: "JAXA ALOS-2 PALSAR-2, L-band SAR, acquired 2024-08-15 05:59 UTC (+5 d). INDEPENDENT of our Sentinel-1 C-band input."
     ref_extent: "47 polygons, 58.2 ha, bbox [89.425, 27.353, 90.191, 27.905]"
     terrain: "relief 3850 m, elev 1129-4979 m, mean slope 24.4 deg, p90 35.6 deg, 86% of pixels >15 deg, 27% >30 deg"
@@ -84,6 +85,7 @@ events:
     download_urls:
       - "https://rapidmapping.emergency.copernicus.eu/backend/EMSR770/AOI01/DEL_MONIT01/EMSR770_AOI01_DEL_MONIT01_v1.zip"
     verified_bytes: [8784159]
+    ref_sensor_name: "SPOT-6/7"
     ref_sensor: "SPOT-6/7, optical, acquired 2024-10-07 09:34 UTC (+3.4 d). INDEPENDENT of our Sentinel-1 input."
     ref_extent: "10 polygons, 43.2 ha total, bbox [17.8069, 43.6957, 17.9099, 43.7427]"
     terrain: "relief 1746 m, elev 158-1904 m, mean slope 21.8 deg, p90 34.4 deg, 75% of pixels >15 deg, 21% >30 deg"
@@ -112,6 +114,7 @@ events:
     download_urls:
       - "https://rapidmapping.emergency.copernicus.eu/backend/EMSR680/AOI01/DEL_PRODUCT/EMSR680_AOI01_DEL_PRODUCT_v2.zip"
     verified_bytes: [5182981]
+    ref_sensor_name: "Sentinel-1"
     ref_sensor: "Sentinel-1, acquired 2023-08-05 16:50 UTC (+1.3 d). NOT independent of our input: same sensor, same kind of processing. Scores for this event are optimistic and must be reported with that caveat."
     ref_extent: "117 polygons, 211.0 ha, bbox [14.1091, 46.0134, 14.7154, 46.3802]; AOI 125505 ha"
     terrain: "relief 2262 m, elev 252-2514 m, mean slope 15.6 deg, p90 32.0 deg, 48% of pixels >15 deg, 13% >30 deg"
@@ -125,6 +128,85 @@ events:
       extent; v1 is superseded, not cherry-picked. Our best mountain event by
       flood area, but the reference is Sentinel-1 derived, so it must not carry
       a gate on its own.
+
+  - name: norway_selsverket_2023
+    kind: flood
+    independent_reference: true
+    event_date: "2023-08-08"
+    bbox: [9.4011, 61.7378, 9.5734, 61.8572]
+    reference: data/reference/norway_selsverket_2023/EMSR683_AOI02_DEL_MONIT01_observedEventA_v2.shp
+    reference_classes:
+      water: ["Flooded area"]            # attribute: notation (confirmed on the downloaded file)
+      debris: []
+    source: "Copernicus EMS EMSR683 AOI02 Selsverket, delineation monitoring 1 v2 (storm Hans, Norway, 7-8 Aug 2023). Activation: https://mapping.emergency.copernicus.eu/activations/EMSR683/"
+    download_urls:
+      - "https://rapidmapping.emergency.copernicus.eu/backend/EMSR683/AOI02/DEL_MONIT01/EMSR683_AOI02_DEL_MONIT01_v2.zip"
+    ref_sensor_name: "PAZ"
+    ref_sensor: "PAZ, X-band SAR (Spanish), acquired +1 d. INDEPENDENT of our Sentinel-1 C-band input: different satellite, band, orbit and processing chain."
+    ref_extent: "176 polygons, 124.4 ha, notation 'Flooded area', dmg_src_id 3. NOTE the package also ships previousObservedEventA (62 polygons, 119.0 ha, notation 'Previous flooded area', dmg_src_id 2) from the earlier acquisition: it is a DIFFERENT date and must not be merged into the reference."
+    terrain: "relief 1134 m, elev 280-1414 m, mean slope 16.3 deg, p90 33.3 deg, 46% of pixels >15 deg, 15% >30 deg"
+    s1: "track 37 DESCENDING, post 2023-08-10 (+2 d), 5 pre 2023-06-11..2023-07-29"
+    notes: >
+      Gudbrandsdalen at Sel, upper Lagen valley in the Norwegian mountains. The
+      steepest INDEPENDENT dev event: steeper than slovenia_kranj, and it has a
+      non-Sentinel-1 reference, so it can carry a gate on its own. Storm Hans
+      caused major debris and bank erosion along this reach. The pre-flight
+      warns that a second track also imaged the area on the post-event day;
+      time-window filtering separates them but it is worth a visual check.
+      13 x 13 km, so it is cheap to run.
+
+  - name: norway_ringebu_2023
+    kind: flood
+    independent_reference: true
+    event_date: "2023-08-08"
+    bbox: [9.8425, 61.4071, 10.2306, 61.5871]
+    reference: data/reference/norway_ringebu_2023/EMSR683_AOI03_DEL_PRODUCT_observedEventA_v1.shp
+    reference_classes:
+      water: ["Flooded area"]            # attribute: notation (confirmed on the downloaded file)
+      debris: []
+    source: "Copernicus EMS EMSR683 AOI03 Ringebu, delineation product v2 (storm Hans, Norway, 7-8 Aug 2023). Activation: https://mapping.emergency.copernicus.eu/activations/EMSR683/"
+    download_urls:
+      - "https://rapidmapping.emergency.copernicus.eu/backend/EMSR683/AOI03/DEL_PRODUCT/EMSR683_AOI03_DEL_PRODUCT_v2.zip"
+    ref_sensor_name: "RADARSAT-2"
+    ref_sensor: "RADARSAT-2, C-band SAR (Canadian), acquired +1 d. INDEPENDENT of our input: a different satellite with its own orbit, incidence angle and processing, even though it shares Sentinel-1's band."
+    ref_extent: "216 polygons, 860.4 ha - the largest independent mountain reference in the set"
+    terrain: "relief 1025 m, elev 179-1204 m, mean slope 9.9 deg, p90 21.5 deg, 23% of pixels >15 deg, 3% >30 deg"
+    s1: "track 37 DESCENDING, post 2023-08-10 (+2 d), 5 pre 2023-06-11..2023-07-29"
+    notes: >
+      Lagen valley downstream of Selsverket, same storm. Kept alongside it
+      because it is the largest independent mountain flood extent available
+      (860 ha, versus 124 ha at Selsverket), so it is far less sensitive to a
+      handful of false positives - the two together cover both the steep/sparse
+      and the broad/dense failure modes on the same river. Same track and dates
+      as norway_selsverket_2023, so the two share an acquisition and cost one
+      download between them.
+
+  - name: ecuador_poza_honda_2025
+    kind: flood
+    independent_reference: true
+    event_date: "2025-02-26"
+    bbox: [-80.4543, -1.2269, -80.1045, -1.0770]
+    reference: data/reference/ecuador_poza_honda_2025/EMSR789_AOI05_DEL_PRODUCT_observedEventA_v1.shp
+    reference_classes:
+      water: ["Flooded area"]            # attribute: notation (confirmed on the downloaded file)
+      debris: []
+    source: "Copernicus EMS EMSR789 AOI05 Poza Honda dam, delineation product v1 (riverine flood and landslides, western Ecuador, 26 Feb 2025). Activation: https://mapping.emergency.copernicus.eu/activations/EMSR789/"
+    download_urls:
+      - "https://rapidmapping.emergency.copernicus.eu/backend/EMSR789/AOI05/DEL_PRODUCT/EMSR789_AOI05_DEL_PRODUCT_v1.zip"
+    ref_sensor_name: "COSMO-SkyMed Second Generation"
+    ref_sensor: "COSMO-SkyMed Second Generation, X-band SAR (Italian), acquired +4 d. INDEPENDENT of our Sentinel-1 C-band input."
+    ref_extent: "196 polygons, 197.2 ha. The package also ships floodDepthA as polygons and a GeoTIFF (EPSG:3857), not used for extent scoring. CEMS labels obj_desc 'Coastal flood' here, which is a mislabel for a reservoir-fed riverine event; scoring keys on notation, not obj_desc."
+    terrain: "relief 478 m, elev 38-515 m, mean slope 13.1 deg, p90 26.9 deg, 38% of pixels >15 deg, 6% >30 deg"
+    s1: "track 18 ASCENDING, post 2025-03-06 (+8 d), 5 pre 2025-01-05..2025-02-22"
+    notes: >
+      Rio Portoviejo above the Poza Honda dam, coastal cordillera of Manabi.
+      The only dev event outside Europe and Asia, and the only tropical
+      reservoir-influenced catchment, so it tests a drainage regime none of the
+      others cover. CAVEAT, and it is a real one: our post image is +8 d while
+      the reference is +4 d, the widest reference/input timing gap in the set,
+      so recedence between the two dates will read as false positives against
+      us. Kept rather than tuned away: +8 d is the first same-track pass with
+      full AOI coverage.
 
   # ======================= EUROPEAN INCISED VALLEYS ===========================
   # Lower relief than the three above, but severe flash floods with heavy debris
@@ -143,21 +225,21 @@ events:
     download_urls:
       - "https://cems-mapping-website.s3.eu-west-1.amazonaws.com/static/activations/EMSR517/EMSR517_AOI04_DEL_PRODUCT_r1_RTP01_v1_vector.zip"
     verified_bytes: [10137641]
+    ref_sensor_name: "Sentinel-1"
     ref_sensor: >
-      NOT ESTABLISHED. The vector package names no sensor: its source_r1_v1.xml
-      is only metadata ABOUT the source table ("File Geodatabase Table"), and
-      the table itself is not shipped. The EMS rapid-mapping API covers no
-      activation below EMSR656, so it cannot be read programmatically either.
-      Only the source date is given: 2021-07-15 (+1 d).
-      INDIRECT EVIDENCE that it is SAR, not VHR optical: imageFootprintA holds
-      two footprints of 112 x 113 km and 276 x 211 km, and a 276 km swath is
-      wide-swath SAR (Sentinel-1 IW is 250 km), far beyond any VHR optical
-      scene. observedEventA carries dmg_src_id 2, i.e. the larger footprint.
-      TO SETTLE IT, open the delineation map and read its source box:
-      https://cems-mapping-website.s3.eu-west-1.amazonaws.com/static/activations/EMSR517/EMSR517_AOI04_DEL_PRODUCT_r1_RTP01_v1.pdf
-      (verified HTTP 200, 12103350 B; the text is subset-font encoded so it
-      cannot be extracted by script - it has to be read by eye).
-      Until then independent_reference stays false.
+      SENTINEL-1. SETTLED by reading the delineation map's "Data sources" panel
+      (EMSR517_AOI04_DEL_PRODUCT_r1_RTP01_v1.pdf, rendered at 300 dpi), which
+      states verbatim: "Post-event image: Sentinel-1A (2021) (acquired on
+      15/07/2021 at 05:50 UTC, GSD 10 m) provided under COPERNICUS by the
+      European Union and ESA." The same panel gives the pre-event image as
+      Sentinel-2A, and the map notes the thematic layer "has been derived from
+      post-event satellite image using a semi-automatic approach", i.e. from
+      the Sentinel-1 scene. So the reference is NOT independent of our input:
+      independent_reference false is correct, and now proven rather than
+      assumed. The vector package itself names no sensor - its source XML is
+      only metadata ABOUT a source table that is not shipped - and the EMS
+      rapid-mapping API covers no activation below EMSR656, which is why this
+      had to come off the map sheet.
     ref_extent: "264 polygons, 1061.8 ha, det_method 'Semi-automatic extraction'; AOI 98828 ha"
     terrain: "relief 592 m, elev 125-717 m, mean slope 7.1 deg, p90 14.6 deg, 9% of pixels >15 deg, 0% >30 deg"
     s1: "track 37 DESCENDING, post 2021-07-15 (+1 d), 5 pre 2021-06-15..2021-07-09"
@@ -180,13 +262,14 @@ events:
     download_urls:
       - "https://cems-mapping-website.s3.eu-west-1.amazonaws.com/static/activations/EMSR517/EMSR517_AOI03_DEL_PRODUCT_r1_RTP01_v1_vector.zip"
     verified_bytes: [1976005]
+    ref_sensor_name: "Sentinel-1"
     ref_sensor: >
-      NOT ESTABLISHED, same reason as germany_pruem_2021. Source date
-      2021-07-16 (+2 d). imageFootprintA here is 2 footprints spanning
-      3.478-7.450 E, 49.219-51.383 N, again a SAR-width swath.
-      TO SETTLE IT, read the source box on:
-      https://cems-mapping-website.s3.eu-west-1.amazonaws.com/static/activations/EMSR517/EMSR517_AOI03_DEL_PRODUCT_r1_RTP01_v1.pdf
-      Until then independent_reference stays false.
+      SENTINEL-1. SETTLED the same way as germany_pruem_2021, from
+      EMSR517_AOI03_DEL_PRODUCT_r1_RTP01_v1.pdf, whose "Data sources" panel
+      reads verbatim: "Post-event image: Sentinel-1A/B (2021) (acquired on
+      15/07/2021 at 05:50 UTC, GSD 10.0 m) provided under COPERNICUS by the
+      European Union and ESA." Pre-event image: Sentinel-2A/B. The flood extent
+      is therefore Sentinel-1 derived and NOT independent of our input.
     ref_extent: "40 polygons, 168.8 ha inside a 20915 ha AOI (0.8% positives)"
     terrain: "relief 684 m, elev 48-732 m, mean slope 9.2 deg, p90 18.9 deg, 18% of pixels >15 deg, 1% >30 deg"
     s1: "track 37 DESCENDING, post 2021-07-15 (+1 d), 5 pre 2021-06-15..2021-07-09"
@@ -216,6 +299,7 @@ events:
     download_urls:
       - "https://cems-mapping-website.s3.eu-west-1.amazonaws.com/static/activations/EMSR629/EMSR629_AOI01_DEL_PRODUCT_r1_RTP01_v2_vector.zip"
     verified_bytes: [29557561]
+    ref_sensor_name: "optical VHR"
     ref_sensor: "Optical VHR (CEMS source id 2), 2022 monsoon tasking. Independent of our Sentinel-1 input."
     ref_extent: "9690 polygons, 50184.6 ha; AOI 96288 ha (52% positives)"
     terrain: "relief 21 m, elev 40-62 m, mean slope 0.3 deg, p90 0.7 deg, 0% of pixels >15 deg"
@@ -243,6 +327,7 @@ events:
     download_urls:
       - "https://sentinel-asia.org/EO/2024/article20240414PK/MBRSC/MBRSC_Pakistan_flood_shapefile.zip"
     verified_bytes: [1065467]
+    ref_sensor_name: "Sentinel-1"
     ref_sensor: "MBRSC, Sentinel-1 derived. NOT independent of our input; report scores for this event with that caveat."
     ref_extent: "6651 polygons, 7617.1 ha, bbox [71.361, 33.854, 72.951, 34.675]"
     terrain: "relief 2741 m, elev 264-3005 m, mean slope 9.9 deg, p90 29.8 deg, 30% of pixels >15 deg, 10% >30 deg"
@@ -279,6 +364,7 @@ events:
       - "https://raw.githubusercontent.com/Orion-AI-Lab/KuroSiwo-annotations/main/polygons/EMSR205_SriLanka/aoi/04/r1_v1/aoi/aoi.shx"
       - "https://raw.githubusercontent.com/Orion-AI-Lab/KuroSiwo-annotations/main/polygons/EMSR205_SriLanka/aoi/04/r1_v1/aoi/aoi.dbf"
       - "https://raw.githubusercontent.com/Orion-AI-Lab/KuroSiwo-annotations/main/polygons/EMSR205_SriLanka/aoi/04/r1_v1/aoi/aoi.prj"
+    ref_sensor_name: "Sentinel-1"
     ref_sensor: "Attribute source_nam = 'Sentinel-1'. NOT independent of our input; report scores for this event with that caveat."
     ref_extent: "79 polygons, 420.8 ha; AOI polygon bbox [80.2168, 6.6550, 80.3142, 6.7631]"
     terrain: "relief 665 m, elev 9-674 m, mean slope 12.6 deg, p90 25.0 deg, 35% of pixels >15 deg, 4% >30 deg"
@@ -344,6 +430,34 @@ events:
       Himalayan control: the closest terrain match to the case study, on a date
       with no flood. Seasonal snow line movement between January and March is a
       real false-flood mechanism here and is left in on purpose.
+
+  - name: norway_ringebu_control_2023
+    kind: control
+    independent_reference: null
+    event_date: "2023-06-10"
+    bbox: [9.8425, 61.4071, 10.2306, 61.5871]
+    source: "No Copernicus EMS activation covers this bbox on this date; the EMSR683 activation for this area is dated 2023-08-08. https://mapping.emergency.copernicus.eu/activations/EMSR683/"
+    terrain: "relief 1025 m, mean slope 9.9 deg, 23% of pixels >15 deg"
+    s1: "track 37 DESCENDING, post 2023-06-11 (+1 d), 5 pre 2023-04-12..2023-05-30"
+    notes: >
+      Norwegian mountain control on the same bbox and the same track (37
+      DESCENDING) as norway_ringebu_2023. June is the snowmelt freshet in
+      Gudbrandsdalen, so the river is high and wet snow still lies on the
+      tops - a deliberately hard control, not a quiet one.
+
+  - name: ecuador_poza_honda_control_2024
+    kind: control
+    independent_reference: null
+    event_date: "2024-08-15"
+    bbox: [-80.4543, -1.2269, -80.1045, -1.0770]
+    source: "No Copernicus EMS activation covers this bbox on this date; the EMSR789 activation for this area is dated 2025-02-26. https://mapping.emergency.copernicus.eu/activations/EMSR789/"
+    terrain: "relief 478 m, mean slope 13.1 deg, 38% of pixels >15 deg"
+    s1: "track 40 DESCENDING, post 2024-08-16 (+1 d), 5 pre 2024-06-17..2024-08-04"
+    notes: >
+      Tropical dry season on the Manabi coast, six months before the flood. The
+      permanent reservoir behind the Poza Honda dam sits inside this bbox and
+      must be classed as permanent water, not flood: that is the specific
+      failure this control is here to catch.
 
   - name: germany_pruem_control_2021
     kind: control

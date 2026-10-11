@@ -176,36 +176,89 @@ not real-world accuracy.
 
 **Measured on real data (6 independent mountain/valley flood references, leave-one-event-out,
 20 m boundary tolerance).** Primary quantity is flood-affected area = our flood classes ∪ debris,
-against each reference's flooded + debris/mass-movement classes. Rows: `eval/results/flood.csv`
-(`split=loeo`); method and caveats: `eval/chosen_params.json`, `docs/tuning_log.md`.
+against each reference's flooded + debris/mass-movement classes. Every number below is a row in
+`eval/results/flood.csv` (`run_id=20261011T110254Z`, `params_hash=d4f9b1791c82`, `split=loeo` for
+floods, `split=full` for controls); method and caveats: `eval/chosen_params.json`,
+`docs/tuning_log.md`. Measured at `n_pre=3` (`DEV_N_PRE`, the dev download-cost setting), a thinner
+reference stack than the shipped default of 5.
+
+### Final per-event scores (`venv\Scripts\python.exe -m eval.check_gates`)
+
+Strict = zero tolerance; tolerant = 20 m (1 px) boundary tolerance. Each row is the event held out
+of parameter selection.
+
+| Event | Terrain | P | R | **F1** | IoU | P tol | R tol | **F1 tol** |
+|---|---|---|---|---|---|---|---|---|
+| bosnia_konjic_2024 | gorge, 21.8° mean slope | 0.036 | 0.028 | **0.032** | 0.016 | 0.065 | 0.075 | **0.069** |
+| bhutan_punakha_2024 | gorge, 24.4° | 0.071 | 0.081 | **0.076** | 0.039 | 0.111 | 0.126 | **0.118** |
+| ecuador_poza_honda_2025 | hill valley, 13.1° | 0.432 | 0.390 | **0.410** | 0.258 | 0.579 | 0.534 | **0.555** |
+| norway_selsverket_2023 | valley, 16.3° | 0.486 | 0.467 | **0.477** | 0.313 | 0.562 | 0.616 | **0.588** |
+| pakistan_larkana_2022 | irrigated plain, 0.3° | 0.822 | 0.636 | **0.717** | 0.559 | 0.866 | 0.805 | **0.834** |
+| norway_ringebu_2023 | broad valley, 9.9° | 0.769 | 0.699 | **0.732** | 0.577 | 0.923 | 0.907 | **0.915** |
+| **mean (6 events)** | | **0.436** | **0.384** | **0.407** | **0.294** | **0.518** | **0.511** | **0.513** |
+
+No-flood controls, false flood fraction: Punakha 0.0000, Konjic 0.0000, Ringebu 0.0014,
+Poza Honda 0.0048. Coverage: 6/6 gate-eligible floods, 4 of 8 declared controls.
+
+### Gate status
 
 | Gate | Measured | Target | Status |
 |---|---|---|---|
-| mean precision / recall / F1, tolerant | 0.518 / 0.511 / **0.513** | ≥ 0.90 | **FAIL** |
-| worst single event, F1 tolerant | **0.069** | ≥ 0.80 | **FAIL** |
-| mean F1 / IoU, strict | 0.407 / 0.294 | report | — |
-| no-flood controls, max false flood | **0.0048** | ≤ 0.01 | **PASS** |
+| `flood_mapping` mean precision, tolerant | 0.5177 | ≥ 0.90 | **FAIL** |
+| `flood_mapping` mean recall, tolerant | 0.5105 | ≥ 0.90 | **FAIL** |
+| `flood_mapping` mean F1, tolerant | 0.5134 | ≥ 0.90 | **FAIL** |
+| `flood_mapping` worst single event, F1 tolerant | 0.0694 | ≥ 0.80 | **FAIL** |
+| `flood_mapping` mean F1, strict | 0.4071 | report | — |
+| `flood_mapping` mean IoU, strict | 0.2937 | report | — |
+| `no_flood_controls` max false flood | 0.0048 | ≤ 0.01 | **PASS** |
 
-Per-event held-out tolerant F1: Konjic 0.069, Punakha 0.118, Poza Honda 0.555, Selsverket 0.588,
-Larkana 0.834, Ringebu 0.915. Coverage: 6/6 gate-eligible floods, 4 of 8 declared controls.
+**Module status: `flood_mapping` FAIL, `no_flood_controls` PASS.** By the definition of done in
+CLAUDE.md, SAR flood mapping is **not done**. It is finalised, not passing: the method, the
+parameters and the evidence are fixed and committed, and the gate it misses is reported as missed.
 
-The detector now runs in `rough_water` mode, chosen over the original `darkening` mode by
+The detector runs in `rough_water` mode, chosen over the original `darkening` mode by
 leave-one-event-out: it wins on 5 of 6 held-out events, and `darkening` is in fact **infeasible** —
 all 18 of its grid points breach the control ceiling, worst case 4.9% false flood on a dry
-Norwegian valley. The terrain widening offered by the grid was **not** chosen, so the gain comes
-from the rough-water channel and the debris tightening.
+Norwegian valley. The terrain widening offered by the grid (`hand_max_water_m` 20 → 35 m) was
+**not** chosen, so the gain comes from the rough-water channel and the debris tightening.
 
-**Why the flood gate fails, measured.** Held-out F1 tracks the reference's positive fraction (rank
-correlation 0.886), and the predicted *area* is close to correct on every event (e.g. 33.5 ha
-against a 42.6 ha reference at Konjic, 785 vs 863 ha at Ringebu). The quantity of flooding is
-approximately right; on the two steepest events with the smallest references it is in the **wrong
-place**. That is a localisation failure at 20 m in a gorge, not a threshold that needs retuning —
-no parameter in the declared grid fixes it. Options and their costs are in `docs/tuning_log.md`.
+### The limitation that fails the gate: gorge localisation, measured
+
+Held-out F1 tracks the reference's positive fraction (rank correlation **0.886**), and the predicted
+*area* is close to correct on every event:
+
+| Event | F1 tol | reference ha | reference % of AOI | predicted ha | mean slope |
+|---|---|---|---|---|---|
+| bosnia_konjic_2024 | 0.069 | 42.6 | 0.134% | 33.5 | 21.8° |
+| bhutan_punakha_2024 | 0.118 | 31.3 | 0.023% | 35.3 | 24.4° |
+| ecuador_poza_honda_2025 | 0.555 | 197.6 | 0.306% | 178.6 | 13.1° |
+| norway_selsverket_2023 | 0.588 | 125.1 | 1.015% | 120.3 | 16.3° |
+| pakistan_larkana_2022 | 0.834 | 50187.7 | 50.795% | 38836.6 | 0.3° |
+| norway_ringebu_2023 | 0.915 | 863.4 | 2.015% | 785.2 | 9.9° |
+
+Sources, column by column: F1 from `eval/results/flood.csv`; `reference_ha`,
+`reference_fraction_of_domain` and `predicted_flood_affected_ha` from each event's score file
+`runs/eval/<event>/scores/d4f9b1791c82.json`; mean slope from the DEM-derived `terrain:` note
+declared per event in `eval/events.yaml`.
+
+**The quantity of flooding is approximately right; on the two steepest events it is in the wrong
+place.** At Konjic the detector predicts 33.5 ha against a 42.6 ha reference and overlaps almost
+none of it. That is a **localisation failure at 20 m in a gorge, not a threshold that needs
+retuning** — no parameter in the declared grid fixes it, and `hand_max_water_m` was offered 35 m by
+the grid and the data declined it. A 20 m resolution cell in a floor only two or three pixels wide
+straddles water, bank and wall, so its class reflects whichever scatterer dominated a mixed pixel.
+That is what `reliability_narrow_valley.tif` now marks, and what
+`run_report.json → reliability.narrow_valley` quantifies per run.
+
+Positive fraction and mean slope are **confounded** in this dev set — the steepest events also have
+the smallest references — so this evidence cannot separate "steep terrain" from "tiny target". Both
+explanations point at the same two events. Options and their costs are in `docs/tuning_log.md`
+(2026-10-11); the one aimed at the measured cause is geometric, not a retune.
 
 **Honest summary for the report:** this maps flood-affected area well where the flood covers ≥ 2%
 of the area and the ground is moderate (0.83–0.92 tolerant F1), and poorly where the flood covers
-< 0.2% of a steep gorge (0.07–0.12). It does not meet the 90% gate. Positive fraction and slope are
-confounded in this dev set, so those two explanations cannot yet be separated.
+< 0.2% of a steep gorge (0.07–0.12). It does not meet the 90% gate, and the split — not the average
+— is what a rescuer should be told.
 
 **Not yet verified:** damage overlay, cut-off settlements, copilot, live drills and reproducibility
 all read NO DATA — not started.
@@ -213,10 +266,22 @@ all read NO DATA — not started.
 ## Known limitations (for the report)
 
 - **Revisit time.** Sentinel-1 images an area only every few days: it maps aftermath, it cannot warn.
-- **Narrow gorges.** At 20 m, edges are uncertain; boundary-tolerant and strict scores are both reported.
+- **Narrow gorges — the measured failure, and the biggest one.** A 20 m resolution cell in a valley
+  floor only two or three pixels wide straddles water, bank and wall. Measured, leave-one-event-out:
+  tolerant F1 **0.069 at Konjic (21.8° mean slope) and 0.118 at Punakha (24.4°)**, against
+  0.834–0.915 on the two flattest events, while the predicted *area* is close to right everywhere
+  (33.5 vs 42.6 ha at Konjic, 35.3 vs 31.3 at Punakha). The flood is found in roughly the right
+  quantity and the **wrong place**. No parameter in the declared grid fixes it; the fix is
+  geometric (see `docs/tuning_log.md`, 2026-10-11, option 2). Every run therefore ships
+  `reliability_narrow_valley.tif` / `.geojson` marking that ground *"low confidence: valley narrower
+  than radar resolution"*, and `run_report.json → reliability.narrow_valley` gives the share of the
+  flood-affected area inside it. Boundary-tolerant and strict scores are both always reported.
+- **Positive fraction and slope are confounded** in this dev set: the steepest events also have the
+  smallest references (0.023–0.134% of the AOI), so the evidence cannot say whether the detector
+  fails on steep ground or on tiny targets. Both readings are stated, neither is claimed.
 - **Radar geometry.** Layover and shadow on steep slopes; the SAR mask band stays off until its encoding is verified.
 - **Debris ambiguity.** Brightening can also come from vegetation or structural change, hence "possible debris". Measured on EMSR770: the current debris channel covers 3.8% of that AOI at precision 0.0062 against the expert mass-movement class — far too permissive, see `docs/tuning_log.md`.
-- **Rough water.** The detector assumes open water is dark. In a steep gorge a turbulent, sediment-laden flood is a rough scatterer and brightens instead; measured on EMSR770, 0.0% of the expert flood extent passes the darkness gate. This is a method limitation, not a threshold to retune.
+- **Rough water — addressed, not solved.** The original `darkening` method assumed open water is dark; in a steep gorge a turbulent, sediment-laden flood is a rough scatterer and brightens instead, and measured on EMSR770 **0.0% of the expert flood extent passed the darkness gate**. The default is now `rough_water`, which accepts a coherent change of either sign on the valley floor and takes darkness only as the high-confidence test. That changed the numbers decisively (Punakha 0.025 → 0.118, Poza Honda 0.125 → 0.555 tolerant F1, and the binding Norwegian control from 4.9% to 0.14% false flood) and it is still far from the gate: the sign of the change was not the only problem.
 - **Bridges.** Too narrow to confirm collapse at this resolution.
 
 ## Attribution

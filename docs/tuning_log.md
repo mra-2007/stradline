@@ -559,3 +559,164 @@ separate "steep terrain" from "tiny target"; both point at the same two events.
 after seeing them, no event was dropped, and the scoring domain was not
 narrowed. `hand_max_water_m` was offered 35 m by the grid and the data declined
 it.
+
+---
+
+## 2026-10-11 — FINALISED: parameters applied, layer added, SAR flood mapping closed as FAIL
+
+**Status:** the decision above is now in the code. Nothing was tuned in this
+step: no score was computed, no parameter was searched, no event was rescored.
+This entry records what was applied, what was added, and the final numbers as
+measured.
+
+### What was applied to `strandline/config.py`
+
+From `eval/chosen_params.json` (`run_id=20261011T110254Z`,
+`params_hash=d4f9b1791c82`):
+
+| Key | Was | Now | Applied? |
+|---|---|---|---|
+| `detect.mode` | `darkening` | `rough_water` | **yes** |
+| `detect.z_seed` | 3.0 | 3.0 | already the value |
+| `detect.hand_max_water_m` | 20.0 | 20.0 | already the value (35 m declined by the data) |
+| `detect.min_abs_change_db` | 3.0 | 3.0 | already the value |
+| `run.backscatter_coefficient` | `sigma0-ellipsoid` | `sigma0-ellipsoid` | already the value |
+| `run.n_pre` | 5 | 5 | **no — deliberately not applied** |
+
+`run.n_pre` stays at 5. The tuner ran at 3 because that is `DEV_N_PRE`, the
+dev-set download-cost setting (`config.py`), not a tuning result. Applying it
+would have shipped a thinner reference stack to live runs to match an artefact
+of how cheaply the dev set was scored. The consequence, stated once more: every
+measured number in this log and in the README describes a 3-image reference
+stack, which gives a noisier per-pixel std than the shipped 5, so `std_floor_db`
+does more of the work there than it will live. The direction of that bias is not
+known and is not claimed.
+
+So exactly **one** parameter moved, and it is the one the mode comparison was
+about.
+
+Two test files moved with the default, and neither assertion was weakened:
+
+- `tests/test_detect_modes.py` pinned the default to `darkening` with the
+  rationale "so a comparison is against the real baseline". That comparison is
+  finished, so the test now pins the default to the mode the tuner chose.
+- `tests/test_detect.py` is the `darkening`-mode synthetic regression suite (dark
+  water graded as water, the brightening fan graded as debris) and now names
+  that mode explicitly instead of inheriting the default. Under `rough_water`
+  the same synthetic scene is still **fully** detected — recall 1.00, fn = 0 —
+  but terrain position rather than radiometry assigns the class, so the 771 px
+  debris fan on the valley floor comes out as water. `test_detect_modes.py`
+  covers that over both modes and asserts the fan survives inside the union.
+
+### What was added: the narrow-valley reliability layer
+
+New: `strandline/reliability.py`, `config.ReliabilityParams`, the `RELIABILITY_*`
+codes, `reliability_narrow_valley.tif`, `reliability_narrow_valley.geojson` and
+`run_report.json → reliability.narrow_valley`.
+
+It exists because of the root cause measured above and **changes no detection** —
+the class map is byte-identical with and without it, and
+`tests/test_reliability.py` asserts the class array is not even mutated. It is
+computed from the Copernicus DEM alone: no backscatter, no reference map.
+
+Definition: valley floor by the detector's **own** HAND and slope limits (not a
+second definition, or it would qualify the wrong pixels), then local floor
+thickness by morphological opening with a disc of radius
+`min_valley_width_px / 2`, implemented on two Euclidean distance transforms so
+the radius may be fractional. Floor pixels the disc cannot reach are the narrow
+ones.
+
+`min_valley_width_px = 3.0` is set from imaging geometry, not from any score: at
+the shipped 20 m grid it is 60 m, and a cell in a floor that narrow mixes water,
+bank and wall, so its class is a statement about which scatterer dominated. It
+is configurable and lives in `config.py` (Rule 3.7).
+
+`ReliabilityParams` is deliberately **outside** `params_dict` and therefore
+outside `params_hash`. It cannot change an output pixel, so including it would
+give a new hash to an unchanged detection and make every row already in
+`eval/results/` look like a different configuration. It is written to
+`run_report.json` under its own key instead, and a test pins that.
+
+The reported share is of **flood-affected** area (`FLOOD_AFFECTED_CLASSES`), the
+primary scored quantity, so the caveat qualifies the same number the gates and
+the sitrep report. With nothing detected the share is `None`, not `0.0`: a 0.0
+would read as "none of it is uncertain".
+
+The exact sentence lives in `config.NARROW_VALLEY_CAVEAT` so the dashboard, the
+copilot and the Nepali sitrep cannot drift apart:
+**"low confidence: valley narrower than radar resolution"**.
+
+### The final table, strict and tolerant
+
+Every number is a row in `eval/results/flood.csv`
+(`run_id=20261011T110254Z`, `params_hash=d4f9b1791c82`, `split=loeo`), scored at
+`DEV_N_PRE=3`. Strict = zero tolerance, tolerant = 1 px (20 m).
+
+| Event | P | R | **F1** | IoU | P tol | R tol | **F1 tol** |
+|---|---|---|---|---|---|---|---|
+| bosnia_konjic_2024 | 0.0358 | 0.0282 | **0.0315** | 0.0160 | 0.0645 | 0.0752 | **0.0694** |
+| bhutan_punakha_2024 | 0.0714 | 0.0805 | **0.0757** | 0.0393 | 0.1111 | 0.1264 | **0.1183** |
+| ecuador_poza_honda_2025 | 0.4321 | 0.3904 | **0.4102** | 0.2580 | 0.5789 | 0.5335 | **0.5553** |
+| norway_selsverket_2023 | 0.4860 | 0.4674 | **0.4765** | 0.3128 | 0.5618 | 0.6164 | **0.5878** |
+| pakistan_larkana_2022 | 0.8215 | 0.6357 | **0.7168** | 0.5586 | 0.8662 | 0.8047 | **0.8343** |
+| norway_ringebu_2023 | 0.7685 | 0.6988 | **0.7320** | 0.5772 | 0.9234 | 0.9070 | **0.9151** |
+| **mean** | **0.4359** | **0.3835** | **0.4071** | **0.2937** | **0.5177** | **0.5105** | **0.5134** |
+
+Controls (`split=full`), false flood fraction: `bhutan_punakha_control_2024`
+0.0000, `bosnia_konjic_control_2024` 0.0000, `norway_ringebu_control_2023`
+0.0014, `ecuador_poza_honda_control_2024` 0.0048.
+
+The strict column is the honest one for a judge who does not grant a pixel of
+slack: **mean strict F1 0.4071, mean strict IoU 0.2937.** The tolerant column is
+what the gate is defined on.
+
+### Gate status, verbatim from `python -m eval.check_gates`
+
+| Module | Gate | Value | Target | Status |
+|---|---|---|---|---|
+| flood_mapping | mean(precision_tolerant) | 0.5177 | >= 0.9 | **FAIL** |
+| flood_mapping | mean(recall_tolerant) | 0.5105 | >= 0.9 | **FAIL** |
+| flood_mapping | mean(f1_tolerant) | 0.5134 | >= 0.9 | **FAIL** |
+| flood_mapping | min(f1_tolerant) | 0.0694 | >= 0.8 | **FAIL** |
+| flood_mapping | mean(f1) | 0.4071 | report | REPORT |
+| flood_mapping | mean(iou) | 0.2937 | report | REPORT |
+| no_flood_controls | max(false_flood_fraction) | 0.0048 | <= 0.01 | **PASS** |
+
+6 flood rows against a minimum of 3; 4 control rows against a minimum of 3.
+Every other module reads NO DATA.
+
+**`flood_mapping` is FAIL, so by the definition of done in the project rules SAR
+flood mapping is NOT DONE.** It is finalised, not passed: the method, the
+parameters and the evidence are fixed, and the gate it misses is reported as
+missed. Rule 2 is satisfied by stopping here with the measurement, the target,
+the root cause and the options — not by another tuning round.
+
+### The limitation, as it will be said in the report and in Q&A
+
+Gorge localisation at 20 m. Held-out tolerant F1 is 0.069 at Konjic (21.8° mean
+slope, reference 0.134% of the AOI) and 0.118 at Punakha (24.4°, 0.023%), against
+0.834 at Larkana (0.3°, 50.8%) and 0.915 at Ringebu (9.9°, 2.0%). Rank
+correlation between held-out tolerant F1 and the reference's positive fraction is
+0.886. **Predicted area is close to correct on every event** — 33.5 vs 42.6 ha,
+35.3 vs 31.3, 178.6 vs 197.6, 120.3 vs 125.1, 785.2 vs 863.4 — so the quantity of
+flooding is approximately right and on the two steepest events it is in the wrong
+*place*. A 20 m cell in a floor two or three pixels wide mixes water, bank and
+wall; that is now marked per run by the reliability layer rather than left for a
+reader to infer.
+
+Two honesty points that must stay attached to that paragraph:
+
+1. **Positive fraction and slope are confounded** in this dev set — the steepest
+   events also have the smallest references — so this evidence cannot separate
+   "steep terrain" from "tiny target". Option 4 above (widening the dev set) is
+   what would separate them. Neither explanation is claimed as established.
+2. The remedy is **geometric, not a retune** (option 2 above): no parameter in
+   the declared grid fixes it, and the grid offered `hand_max_water_m = 35 m`
+   and the data declined it. Nothing was hand-moved toward these numbers after
+   seeing them, no event was dropped, and the scoring domain was not narrowed.
+
+Source files for every number above: `eval/results/flood.csv`,
+`eval/chosen_params.json`, `runs/eval/<event>/scores/d4f9b1791c82.json`
+(`reference_ha`, `reference_fraction_of_domain`,
+`predicted_flood_affected_ha`), and the DEM-derived `terrain:` notes in
+`eval/events.yaml` for mean slope.

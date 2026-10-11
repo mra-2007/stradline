@@ -400,3 +400,58 @@ held-out events and every control stays at or under 1% false flood. If it wins
 on the training mean but not on held-out events, it is rejected and that is
 recorded here. If no mode is feasible, nothing is adopted and the gate stays
 failing with the evidence attached.
+
+---
+
+## 2026-10-11 — Observation: first real A/B of the two modes, 3 of 10 events
+
+**Status:** observation. NOT a decision, NOT a gate number, and nothing was
+tuned on it. The grid and the scoring definition were declared and **committed
+(d114107) before these numbers existed**, which is what makes it safe to look
+at them: they cannot feed back into the grid.
+
+**What it is:** the only three events whose COPERNICUS_30 stacks have finished
+downloading, scored at the **config.py default parameters** in both modes -
+not the grid, not leave-one-event-out. Primary metric as declared above:
+flood-affected area (our flood classes ∪ debris) against the reference's
+flooded + debris/mass-movement classes. From the score files under
+`runs/eval/<event>/scores/`.
+
+| Event | Mode | P | R | F1 | P tol | R tol | **F1 tol** | pred ha | ref ha |
+|---|---|---|---|---|---|---|---|---|---|
+| bosnia_konjic_2024 | darkening | 0.019 | 0.527 | 0.036 | 0.035 | 0.759 | **0.067** | 1202.0 | 42.6 |
+| bosnia_konjic_2024 | rough_water | 0.036 | 0.028 | 0.032 | 0.065 | 0.075 | **0.069** | 33.5 | 42.6 |
+| bhutan_punakha_2024 | darkening | 0.008 | 0.195 | 0.015 | 0.013 | 0.323 | **0.025** | 769.8 | 31.3 |
+| bhutan_punakha_2024 | rough_water | 0.071 | 0.081 | 0.076 | 0.111 | 0.126 | **0.118** | 35.3 | 31.3 |
+| ecuador_poza_honda_2025 | darkening | 0.055 | 0.325 | 0.094 | 0.073 | 0.455 | **0.125** | 1163.6 | 197.6 |
+| ecuador_poza_honda_2025 | rough_water | 0.439 | 0.390 | 0.413 | 0.588 | 0.534 | **0.559** | 175.8 | 197.6 |
+
+Water-only (our flood classes vs the reference `water` class alone), for the
+same runs: Konjic 0.00 / 0.023 (darkening / rough_water F1), Punakha 0.134 /
+0.081, Poza Honda 0.377 / 0.413.
+
+### What can and cannot be read from this
+
+**Can:** the debris tightening works as intended. Predicted flood-affected area
+falls from 1202 to 34 ha at Konjic, 770 to 35 ha at Punakha and 1164 to 176 ha
+at Poza Honda, against references of 43, 31 and 198 ha. The old channel's
+"recall" of 0.53 at Konjic was an artefact of covering 1202 ha of a 31 823 ha
+AOI at precision 0.019; it was never detection.
+
+**Can:** `rough_water` is ahead on tolerant F1 on all three, decisively on two
+(4.6x at Punakha, 4.5x at Poza Honda) and within noise at Konjic.
+
+**Cannot:** that these are the numbers the gate will see. Default parameters,
+three events, no leave-one-event-out, and the decision rule declared above
+requires all six independent events plus the four controls.
+
+### The honest headline, before anyone asks
+
+**Every one of these is far below the 0.90 gate.** The best figure on the board
+is 0.56 tolerant F1 on the flattest of the three events. At Konjic the new mode
+predicts 33.5 ha against a 42.6 ha reference yet overlaps almost none of it, so
+the rough-water channel is not finding that flood either - it has stopped
+over-predicting without starting to be right. Whether the grid can close that
+is exactly what the tuner is for, and if it cannot, the gate fails and the
+report says so with these rows attached. No parameter will be hand-moved toward
+these numbers.

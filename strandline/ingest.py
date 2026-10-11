@@ -22,6 +22,7 @@ from rasterio.transform import Affine, from_origin
 from rasterio.warp import Resampling, reproject, transform_bounds
 
 from strandline.catalog import Acquisition
+from strandline.config import BACKSCATTER_COEFFICIENTS
 
 OPENEO_BACKEND = "openeo.dataspace.copernicus.eu"
 
@@ -106,9 +107,30 @@ def _download(cube, out_path: Path) -> Path:
     return out_path
 
 
+def coefficient_slug(coefficient: str) -> str:
+    """Filename-safe form of an openEO backscatter coefficient name."""
+    if coefficient not in BACKSCATTER_COEFFICIENTS:
+        raise ValueError(
+            f"backscatter_coefficient {coefficient!r} is not supported; "
+            f"choose one of {', '.join(BACKSCATTER_COEFFICIENTS)}."
+        )
+    return coefficient.replace("-", "_")
+
+
+def s1_cache_name(track_tag: str, day, res: float, coefficient: str) -> str:
+    """Cache filename for one acquisition.
+
+    The coefficient is part of the name on purpose: sigma0-ellipsoid and
+    gamma0-terrain are different measurements of the same scene, and a stack
+    that silently mixed them would produce change where there was none.
+    """
+    return f"s1_{coefficient_slug(coefficient)}_{track_tag}_{day}_{int(res)}m.tif"
+
+
 def download_s1(conn, acq: Acquisition, grid: Grid, out_path: Path,
                 coefficient: str, with_mask: bool) -> Path:
     """One acquisition -> GeoTIFF with bands VV, VH (+ mask). Linear backscatter."""
+    coefficient_slug(coefficient)  # reject an unsupported value before any network call
     if out_path.exists():
         return out_path
     out_path.parent.mkdir(parents=True, exist_ok=True)

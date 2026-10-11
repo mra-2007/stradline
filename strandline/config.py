@@ -48,6 +48,21 @@ class DetectParams:
     drainage_buffer_px: int = 3
 
 
+# Sentinel-1 backscatter coefficients we support, as openEO names them.
+#
+#   sigma0-ellipsoid  radiometric reference area from the ellipsoid. Terrain
+#                     still drives much of the brightness, so backscatter is
+#                     dominated by geometry in steep country; for same-orbit
+#                     change detection that term largely cancels between dates.
+#   gamma0-terrain    radiometric terrain flattening (RTC) against the DEM,
+#                     which removes most of that geometric term.
+#
+# The default stays sigma0-ellipsoid. It changes only if the dev-event
+# scoreboard shows gamma0-terrain is better (see docs/tuning_log.md); it is
+# never switched for one area or one event.
+BACKSCATTER_COEFFICIENTS = ("sigma0-ellipsoid", "gamma0-terrain")
+
+
 @dataclass(frozen=True)
 class RunParams:
     resolution_m: float = 20.0
@@ -60,6 +75,13 @@ class RunParams:
     stream_threshold_km2: float = 5.0  # upstream area that defines a channel
     backscatter_coefficient: str = "sigma0-ellipsoid"
     use_sar_mask: bool = False     # layover/shadow band: verify encoding first
+
+    def __post_init__(self) -> None:
+        if self.backscatter_coefficient not in BACKSCATTER_COEFFICIENTS:
+            raise ValueError(
+                f"backscatter_coefficient {self.backscatter_coefficient!r} is not supported; "
+                f"choose one of {', '.join(BACKSCATTER_COEFFICIENTS)}."
+            )
 
 
 def params_dict(detect: DetectParams, run: RunParams) -> dict:

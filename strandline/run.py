@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from strandline import catalog, detect, ingest, outputs, terrain
-from strandline.config import DetectParams, RunParams, params_dict
+from strandline.config import BACKSCATTER_COEFFICIENTS, DetectParams, RunParams, params_dict
 
 
 def _preflight(bbox, event_day: date, rp: RunParams):
@@ -65,7 +65,8 @@ def run(bbox, event_day: date, out: Path, rp: RunParams, dp: DetectParams, dry_r
     tag = f"t{choice.track[1]}_{choice.track[2]}"
     files = {}
     for acq in choice.pre + [choice.post]:
-        path = cache / f"s1_{tag}_{acq.day}_{int(grid.res)}m.tif"
+        path = cache / ingest.s1_cache_name(tag, acq.day, grid.res,
+                                            rp.backscatter_coefficient)
         print(f"      S1 {acq.day} -> {path.name}")
         files[acq.day] = ingest.download_s1(conn, acq, grid, path, rp.backscatter_coefficient,
                                             rp.use_sar_mask)
@@ -140,10 +141,14 @@ def main(argv=None) -> int:
     ap.add_argument("--res", type=float, default=RunParams.resolution_m)
     ap.add_argument("--n-pre", type=int, default=RunParams.n_pre)
     ap.add_argument("--max-post-latency-days", type=int, default=RunParams.max_post_latency_days)
+    ap.add_argument("--backscatter-coefficient", choices=BACKSCATTER_COEFFICIENTS,
+                    default=RunParams.backscatter_coefficient,
+                    help="openEO backscatter coefficient (default: %(default)s)")
     args = ap.parse_args(argv)
 
     rp = replace(RunParams(), resolution_m=args.res, n_pre=args.n_pre,
-                 max_post_latency_days=args.max_post_latency_days)
+                 max_post_latency_days=args.max_post_latency_days,
+                 backscatter_coefficient=args.backscatter_coefficient)
     return run(tuple(args.bbox), args.event_date, args.out, rp, DetectParams(), args.dry_run)
 
 

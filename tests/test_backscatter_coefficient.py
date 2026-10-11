@@ -180,9 +180,10 @@ def test_cli_accepts_the_supported_coefficient_and_defaults_to_sigma0(monkeypatc
 
     captured = {}
 
-    def fake_run(bbox, event_day, out, rp, dp, dry_run):
+    def fake_run(bbox, event_day, out, rp, dp, dry_run, op=None):
         captured["coefficient"] = rp.backscatter_coefficient
         captured["elevation_model"] = rp.elevation_model
+        captured["optical"] = op
         return 0
 
     monkeypatch.setattr(run_module, "run", fake_run)
@@ -192,9 +193,18 @@ def test_cli_accepts_the_supported_coefficient_and_defaults_to_sigma0(monkeypatc
     run_module.main(argv)
     assert captured["coefficient"] == SIGMA
     assert captured["elevation_model"] == COP30
+    # Track B requires Sentinel-2 where the sky is clear, so the CLI asks for it
+    # unless told not to.
+    assert captured["optical"].enabled is True
 
     run_module.main(argv + ["--backscatter-coefficient", SIGMA])
     assert captured["coefficient"] == SIGMA
+
+    run_module.main(argv + ["--no-optical"])
+    assert captured["optical"].enabled is False
+
+    run_module.main(argv + ["--optical-post-days", "30"])
+    assert captured["optical"].max_post_latency_days == 30
 
 
 @pytest.mark.parametrize("bad", ["beta0", "gamma0-terrain"])

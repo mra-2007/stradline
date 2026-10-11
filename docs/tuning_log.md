@@ -720,3 +720,190 @@ Source files for every number above: `eval/results/flood.csv`,
 (`reference_ha`, `reference_fraction_of_domain`,
 `predicted_flood_affected_ha`), and the DEM-derived `terrain:` notes in
 `eval/events.yaml` for mean slope.
+
+---
+
+## 2026-10-11 — Change (DECLARED BEFORE SCORING): Sentinel-2 optical evidence
+
+**Status:** code and parameters added; **no optical number measured, and none
+claimed.** The dev-set Sentinel-2 data does not exist yet. Everything below is
+written down *before* a single optical score, which is the only order in which
+Rule 3.4 permits a grid to be declared.
+
+### Why
+
+Track B requires Sentinel-2 where the sky is clear, and the radar-only detector
+closed as **FAIL** for a reason that is geometric, not a matter of tuning: on the
+two steepest events the predicted *area* is close to right and the predicted
+*place* is wrong, in valley floors two or three 20 m pixels wide (see the entry
+of 2026-10-11, "FINALISED"). A second sensor with an independent imaging
+geometry is the one addition with a plausible route at that failure; another pass
+over the radar grid is not. Fresh mud and boulder deposits are also far more
+visible in short-wave infrared than at C-band, and deposits are half of what
+Track B asks for.
+
+### What was added
+
+- `strandline/optical.py` — scene choice from catalogue cloud-cover metadata (so
+  a clouded area is never downloaded), SCL masking, digital-number-to-reflectance
+  conversion with a refusal if the result is not plausible reflectance, and two
+  change signatures:
+  - **water**: MNDWI (Xu 2006) must read as water *and* have risen since the
+    pre-event date. The rise requirement is what makes it a change detector:
+    permanent water, wet rock and terrain shadow are high or ambiguous on both
+    dates and so cannot qualify.
+  - **deposit**: NDVI must drop *and* B11 reflectance must rise.
+- Fusion inside `detect.detect_flood`, not after it, so optical candidates pass
+  **the same** HAND, slope, minimum-mapping-unit and drainage-connection tests as
+  radar candidates. There is deliberately no second definition of "valley floor",
+  and optical cannot put water anywhere radar would not have been allowed to.
+- Agreement between the two sensors becomes a second route to high confidence,
+  alongside the radar darkness test.
+- `flood_source.tif`: per-pixel provenance (radar only / optical only / both), its
+  own layer, never mixed into the class map.
+- Every run reports an `optical` block: status, the chosen dates and their cloud
+  cover, the clear fraction of the AOI on each date and on the pair, the
+  reflectance convention actually applied, and the source-layer hectares.
+
+### Parameters, and where each value comes from
+
+Not one of these was chosen by looking at a score; there is no score to look at.
+
+| Parameter | Value | Source |
+|---|---|---|
+| `scl_valid_classes` | 4, 5, 6, 7 | L2A product spec. Cloud (8, 9), cirrus (10), snow (11), both shadow classes (2, 3) and the defective classes (0, 1) are out. **7 (unclassified) is kept** because L2A routinely assigns it to turbid water and freshly flooded ground — exactly the target. **2 (cast shadow) is dropped** even though terrain shadow is common in the gorges we care about and excluding it costs us coverage there: a shadowed pixel is dark in every band and its indices are not trustworthy. |
+| `mndwi_water` | 0.0 | Xu (2006): MNDWI > 0 separates water from built-up land and soil. **In the grid** (below). |
+| `mndwi_rise_min` | 0.20 | Four times the ~0.05 index scatter that atmospheric and BRDF differences between two clear dates produce. Not searched. |
+| `ndvi_drop_min` | 0.15 | A loss well outside a few weeks of seasonal phenology. **In the grid.** |
+| `swir_rise_min` | 0.03 reflectance | About three times the radiometric uncertainty of an L2A SWIR band. Not searched. |
+| `max_post_latency_days` | 20 | Deposits and mud scars persist for weeks, and a valley under cloud on day 1 is often clear a fortnight later. Longer than the radar window (12 d) on purpose. The cost is real and is reported, never hidden: standing water may have drained by then, so optical **water** evidence at a long latency is a lower bound and deposits are the stronger optical signal. |
+| `search_days_before` | 60 | Long enough to find one clear pre-event date in a monsoon climate; short enough that land cover has not changed for other reasons. |
+| `max_scene_cloud_cover` | 70% | A **download-cost** gate on tile-level metadata, deliberately loose: tile cloud cover says little about a much smaller AOI. The real decision is `min_clear_fraction`, measured from SCL after download. |
+| `min_clear_fraction` | 0.20 | Below one fifth of the area clear on both dates, optical evidence describes too little of the map to be worth fusing, and is refused with its reason. |
+| `reflectance_scale`, `boa_add_offset` | 10000, -1000 | ESA baseline 04.00 (products after 2022-01-25) carries `BOA_ADD_OFFSET = -1000`; earlier baselines carry none, and the baseline is read from the product name. These are the **fallbacks**, used only when the file declares no scale or offset. |
+
+### The grid, declared now (5 points)
+
+One grid per fusion mode, exactly as the radar grid is one per detection mode, so
+no point varies a parameter its mode ignores:
+
+| Fusion mode | Axes | Points |
+|---|---|---|
+| `off` | none — with fusion off an index threshold cannot change a pixel | **1** |
+| `union` | `optical.mndwi_water` (0.0, 0.2) x `optical.ndvi_drop_min` (0.10, 0.20) | **4** |
+
+The mode is `OpticalParams.fusion`, **not** a `DetectParams` field — see the correction below.
+
+- `0.2` for `mndwi_water` asks whether a stricter threshold is needed once the
+  rise test has already removed permanent water; flood water in a Himalayan gorge
+  is heavily sediment-laden and its MNDWI is lower than that of clear water, so
+  the literature value may well be the better one. The data decides.
+- `0.10 / 0.20` bracket the 0.15 set from phenology.
+- **`off` is in the grid because the comparison has to be able to say no.** If
+  optical evidence does not help on the dev set, `off` wins and that is the
+  result reported.
+
+**Searched as a second leave-one-event-out pass**, crossed with the SAR point
+already chosen for that fold, not folded into the radar grid. That is a cost
+decision — a joint search would be 12 x 5 = 60 detections per event per fold
+instead of 5 — taken now, in advance, and not after seeing a score. Each fold's
+SAR point is still chosen without the held-out event, so the result stays out of
+sample. The grid is machine-validated (`eval/tune.py::validate_optical_grids`,
+`tests/test_optical_tuning_plan.py`) so it cannot drift from the fields it claims
+to set. The scoring pass itself is **not yet written**: it cannot be exercised
+until the download exists, and shipping an untestable search is worse than
+shipping the declaration.
+
+### What this means for the numbers already reported
+
+This is the honesty point that matters most in this entry.
+
+- The measured flood numbers — mean tolerant F1 **0.5134**, mean strict F1
+  **0.4071**, `params_hash d4f9b1791c82`, `eval/results/flood.csv` — are
+  **radar-only**. They remain exactly as they were; nothing was re-run,
+  re-written or removed.
+- **`OpticalParams.fusion` ships as `off`.** Sentinel-2 is gathered, masked,
+  turned into evidence, written and reported on every default run — but it
+  changes no output pixel, so the class map a default run produces is
+  byte-identical to the radar-only detector those numbers measured
+  (`tests/test_detect_optical_fusion.py::test_the_shipped_default_changes_no_pixel`,
+  `tests/test_pipeline_optical.py::test_the_shipped_default_reports_optical_but_changes_no_pixel`).
+  The measured numbers therefore still describe what the shipped pipeline maps.
+- **`fusion = union` is UNSCORED and opt-in** (`--optical-fusion union`). No
+  accuracy number may be quoted for it until `eval.fetch_dev_data --optical` has
+  run and the dev set has been re-scored — **floods and controls both**, because
+  fusion can only ADD pixels and so can only raise the false-flood rate, which
+  means the 1% control ceiling does not cover it either. Shipping an unmeasured
+  change to the scored quantity is not a trade this project makes; the earlier
+  draft of this entry defaulted to `union` on the grounds that the problem
+  statement asks for Sentinel-2, and that was the wrong call — the problem
+  statement is satisfied by gathering and reporting it, which `off` does.
+- `eval.check_gates` reads exactly as it did before this change (flood_mapping
+  FAIL 0.513, no_flood_controls PASS 0.0048), because no row was added. That is
+  the correct state: the gate still describes the radar-only detector, and says
+  so.
+- The dev harness defaults to **no optical** (`prepare(op=None)`), so every
+  cached score and every recorded `params_hash` stays reproducible. Optical
+  scoring is opt-in, with `--optical`.
+
+### Correction made before this entry was committed: the params_hash break
+
+The first draft of this change put `optical_fusion` on **`DetectParams`**. Because
+`params_dict` hashes `asdict(detect)` unconditionally, that silently re-hashed
+**every configuration ever recorded** — `d4f9b1791c82 -> 4d050525b109` — while
+provably changing no output pixel. The damage would have been: no invocation of
+the code could reproduce the hashes that are the primary key of every row in
+`eval/results/flood.csv`, every cached score under
+`runs/eval/<event>/scores/<hash>.json` (which `eval/run_scoreboard.py` rejects on
+a hash mismatch), and every number published in this log and the README,
+including the `scores/d4f9b1791c82.json` source files cited above. Three
+statements in the code and docs asserted the opposite.
+
+Caught by `/audit` before the commit. The fix: **every optical parameter lives in
+`OpticalParams`**, whose section `params_dict` includes only when optical is
+enabled, so a radar-only configuration hashes byte-identically to the way it did
+before Sentinel-2 existed here. `tests/test_params_hash_reproducible.py` now pins
+this: the recorded `chosen_parameters` must re-hash to its own recorded
+`params_hash`, every `params_hash` in `eval/results/flood.csv` must be
+reproducible from a point of the declared radar grid, and no optical field may
+appear in `DetectParams` or `RunParams`.
+
+The lesson worth keeping, stated precisely: **a field of the radar dataclasses
+that cannot change an output pixel must not be able to change `params_hash`** —
+the same rule already written down for `ReliabilityParams`, which this change
+briefly broke for optical.
+
+The scope of that sentence matters, because the shipped default looks at first
+glance like a counter-example. With `enabled=True, fusion="off"` the hash is
+`a424ec7b58a0` while the class map is byte-identical to `d4f9b1791c82`. That is
+intended and is a different thing: the *presence* of the whole `optical` section
+records that the run consulted a second sensor and would have used it had the
+grid said so, which is provenance a reader needs and which no radar field can
+express. What must never move is the hash of a configuration that did not
+consult optical at all — and that is exactly what the test pins. The rule is
+about fields inside `DetectParams` and `RunParams`; the optical section is a
+section, and it is present or absent as a whole.
+
+### One open item, stated rather than assumed
+
+Whether this openEO backend returns L2A as raw digital numbers, or has already
+applied the baseline-04 offset, is **not established**. It matters: MNDWI and
+NDVI are normalised ratios, so a multiplicative scale cancels but an offset does
+not. The code therefore (a) prefers scale and offset declared by the file
+itself, (b) otherwise derives the offset from the processing baseline in the
+product name, (c) refuses the whole optical stage if the result is not plausible
+reflectance, and (d) records the method, scale, offset, median before and after,
+and the fraction of negative reflectance in `run_report.json` — a large negative
+fraction being the signature of an offset applied twice. The first real scene
+settles it by inspection of that block. Until then this is an open item, not a
+verified convention.
+
+### Estimated cost of the dev-set download
+
+`eval.fetch_dev_data --estimate --optical` over the 10 gate-plan events
+(16.64 Mpx): **~857 MB of Sentinel-2 in 40 files**, on top of the 726 MB of
+Sentinel-1 and DEM already cached. The Sentinel-1 and DEM bytes per pixel are
+measured from `runs/case_smoke`; the Sentinel-2 figures are **derived from them
+and not yet confirmed against a real file**, and the constants
+(`BYTES_PER_PIXEL_S2_BAND`, `BYTES_PER_PIXEL_S2_SCL`) should be recalibrated
+once the first files land.

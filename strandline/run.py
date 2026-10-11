@@ -11,6 +11,8 @@ expensive stage many times:
 
     preflight  -> which track, which dates          (catalogue only, no login)
     fetch      -> Sentinel-1 + DEM on one grid      (openEO, cached)
+    optical    -> Sentinel-2 evidence, if clear     (openEO, cached, OPTIONAL
+                                                     and never fatal)
     prepare    -> speckle filter, dB, terrain       (CPU, terrain cached)
     classify   -> flood and debris classes          (CPU, cheap: re-run per
                                                      parameter set)
@@ -27,16 +29,18 @@ import hashlib
 import json
 import sys
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
 
-from strandline import catalog, detect, ingest, outputs, reliability, terrain
+from strandline import catalog, detect, ingest, optical, outputs, reliability, terrain
 from strandline.config import (
     BACKSCATTER_COEFFICIENTS,
+    OPTICAL_FUSION_MODES,
     DetectParams,
+    OpticalParams,
     ReliabilityParams,
     RunParams,
     params_dict,
@@ -46,6 +50,27 @@ from strandline.config import (
 # scene. A caller that varies one of these must prepare the scene again;
 # eval/tune.py asserts its grid touches none of them.
 PREPROCESS_FIELDS = ("lee_window", "enl")
+
+# What the optical stage did. One of these is ALWAYS in run_report.json, so a
+# report can never be silent about Sentinel-2, and a dashboard or a copilot
+# answer can always say why optical evidence is or is not in a map.
+#
+#   disabled       optical was not asked for (the caller passed no OpticalParams,
+#                  or --no-optical).
+#   no_clear_pair  the catalogue has no clear-enough pre/post pair for this area
+#                  and date. Nothing was downloaded.
+#   refused        a pair was found but the evidence was rejected on inspection -
+#                  too much cloud over the AOI after the scene classification
+#                  layer, or reflectance that did not convert plausibly. The
+#                  reason is in `message`.
+#   failed         something broke (network, backend, a corrupt file). The error
+#                  type and message are recorded.
+#   used           optical evidence was fused into the map.
+OPTICAL_DISABLED = "disabled"
+OPTICAL_NO_PAIR = "no_clear_pair"
+OPTICAL_REFUSED = "refused"
+OPTICAL_FAILED = "failed"
+OPTICAL_USED = "used"
 
 
 class PipelineError(RuntimeError):
@@ -66,6 +91,13 @@ class PreparedScene:
     run_params: RunParams
     preprocess_params: dict          # the DetectParams fields already applied
     post_mask_counts: dict | None = None
+    # Named `optical_evidence`, not `optical`, so it cannot shadow the module
+    # of the same name inside this class body.
+    optical_evidence: optical.OpticalEvidence | None = None
+    optical_params: OpticalParams | None = None
+    # What the optical stage did, whether or not it produced evidence. Always
+    # present, so a report can never be silent about Sentinel-2.
+    optical_report: dict = field(default_factory=lambda: {"status": OPTICAL_DISABLED})
 
     @property
     def n_pixels(self) -> int:
@@ -76,7 +108,7 @@ def preflight(bbox, event_day: date, rp: RunParams, log=print) -> catalog.TrackC
     """Catalogue search and track choice. No login, no download."""
     start = event_day - timedelta(days=rp.search_days_before)
     end = event_day + timedelta(days=rp.max_post_latency_days + 1)
-    log(f"[1/6] Searching Sentinel-1 GRD scenes {start} .. {end} ...")
+    log(f"[1/7] Searching Sentinel-1 GRD scenes {start} .. {end} ...")
     try:
         scenes = catalog.search_s1_grd(bbox, start, end)
     except Exception as err:  # network / service problems: say so clearly
@@ -118,7 +150,7 @@ def fetch(choice: catalog.TrackChoice, grid: ingest.Grid, cache: Path, rp: RunPa
                               rp.elevation_model)
     missing = [p for p in list(paths["s1"].values()) + [paths["dem"]] if not p.exists()]
     if not missing:
-        log(f"[3/6] All {len(paths['s1']) + 1} rasters already cached")
+        log(f"[3/7] All {len(paths['s1']) + 1} rasters already cached")
         return paths
     conn = conn if conn is not None else ingest.connect()
     for acq in list(choice.pre) + [choice.post]:
@@ -130,10 +162,126 @@ def fetch(choice: catalog.TrackChoice, grid: ingest.Grid, cache: Path, rp: RunPa
     return paths
 
 
+def optical_preflight(bbox, event_day: date, op: OpticalParams, log=print
+                      ) -> catalog.S2Pair | None:
+    """Choose a clear Sentinel-2 pre/post pair from catalogue metadata alone.
+
+    No login and no download: cloud cover comes from the product metadata, so
+    an area that was under cloud throughout costs one catalogue query and
+    nothing else.
+    """
+    start = event_day - timedelta(days=op.search_days_before)
+    end = event_day + timedelta(days=op.max_post_latency_days + 1)
+    log(f"      searching Sentinel-2 L2A scenes {start} .. {end} ...")
+    scenes = catalog.search_s2_l2a(bbox, start, end)
+    days = catalog.group_s2_days(scenes, catalog.aoi_polygon(bbox))
+    log(f"      {len(scenes)} scene(s) on {len(days)} date(s)")
+    pair, lines = catalog.choose_s2_pair(days, event_day, op)
+    for line in lines:
+        log("      " + line)
+    return pair
+
+
+def optical_stage(bbox, event_day: date, grid: ingest.Grid, cache: Path,
+                  op: OpticalParams | None, conn=None, log=print
+                  ) -> tuple[optical.OpticalEvidence | None, dict]:
+    """Sentinel-2 evidence for this area and date. NEVER raises.
+
+    Live robustness (project rule 5): a flood map must not be lost because the
+    optical half of it could not be built. Every failure here - no clear scene,
+    too much cloud, an implausible reflectance convention, a dead backend, a
+    corrupt cached file - degrades the run to radar-only and is RECORDED, with
+    its reason, in the returned report. That is why the `except Exception` below
+    is deliberately broad: anything at all in this stage must become a reported
+    status rather than a lost run. It wraps one stage and swallows nothing
+    silently. The single exception is AssertionError, which is re-raised: that
+    is a test's monkeypatch or a programming error, never a flood, and hiding it
+    behind a status would let a broken test pass.
+    """
+    report: dict = {"status": OPTICAL_DISABLED, "enabled": bool(op is not None and op.enabled)}
+    if op is None or not op.enabled:
+        return None, report
+
+    try:
+        pair = optical_preflight(bbox, event_day, op, log=log)
+        if pair is None:
+            report["status"] = OPTICAL_NO_PAIR
+            report["message"] = (
+                f"no Sentinel-2 date clear enough and covering the whole area in "
+                f"[-{op.search_days_before} d, +{op.max_post_latency_days} d] around "
+                f"{event_day}; the map is radar-only")
+            log("      " + report["message"])
+            return None, report
+
+        report["pair"] = {
+            "pre": {"day": str(pair.pre.day), "cloud_cover_percent": round(pair.pre.cloud_cover, 1),
+                    "aoi_coverage": round(pair.pre.coverage, 4), "scenes": list(pair.pre.names)},
+            "post": {"day": str(pair.post.day),
+                     "cloud_cover_percent": round(pair.post.cloud_cover, 1),
+                     "aoi_coverage": round(pair.post.coverage, 4),
+                     "scenes": list(pair.post.names)},
+            "post_latency_days": pair.post_latency_days,
+            "notes": list(pair.notes),
+        }
+        for note in pair.notes:
+            log("      NOTE: " + note)
+
+        by_day = {day: optical.s2_cache_paths(cache, day, grid.res)
+                  for day in (pair.pre.day, pair.post.day)}
+        missing = [day for day, paths in by_day.items()
+                   if not (paths["refl"].exists() and paths["scl"].exists())]
+        # Connect ONLY if something is actually missing, as `fetch` does: a run
+        # off a warm cache (every dev-set score, and every rerun of a live area)
+        # must not trigger an interactive login.
+        connection = None
+        if missing:
+            connection = conn if conn is not None else ingest.connect()
+        for day, paths in by_day.items():
+            if day in missing:
+                log(f"      S2 {day} -> {paths['refl'].name} + {paths['scl'].name}")
+            optical.download_s2_date(connection, day, grid, paths, op)
+
+        evidence = optical.evidence_from_cache(cache, grid, pair, op)
+        report["status"] = OPTICAL_USED
+        report["evidence"] = evidence.stats
+        log(f"      optical: {evidence.stats['clear_fraction_pair']:.0%} of the area clear on "
+            f"both dates, {evidence.stats['optical_water_candidate_pixels']} water and "
+            f"{evidence.stats['optical_debris_candidate_pixels']} deposit candidate pixels")
+        return evidence, report
+
+    except optical.OpticalError as err:
+        report["status"] = OPTICAL_REFUSED
+        report["message"] = str(err)
+        log("      optical REFUSED: " + str(err))
+        return None, report
+    except AssertionError:
+        # NOT swallowed. The broad handler below exists to protect a live run
+        # from the optical stage, but an AssertionError here is never a flood;
+        # it is a test's own monkeypatch firing (or a programming error), and
+        # turning it into a reported status would let a test that only checks
+        # the exit code pass while its assertion failed. There is no `assert`
+        # in the optical path itself, so nothing in production reaches this.
+        raise
+    except Exception as err:  # see the docstring: never lose a run over optical
+        report["status"] = OPTICAL_FAILED
+        report["error_type"] = type(err).__name__
+        report["message"] = str(err)
+        log(f"      optical FAILED ({type(err).__name__}: {err}); continuing with radar only")
+        return None, report
+
+
 def prepare(bbox, event_day: date, cache: Path, rp: RunParams, dp: DetectParams,
             conn=None, choice: catalog.TrackChoice | None = None,
-            log=print) -> PreparedScene:
-    """preflight + fetch + speckle filter + dB + terrain. Raises PipelineError."""
+            op: OpticalParams | None = None, log=print) -> PreparedScene:
+    """preflight + fetch + speckle filter + dB + terrain + optical.
+
+    Raises PipelineError if the RADAR half cannot be built. The optical half is
+    optional by construction: `op=None` means the caller did not ask for
+    Sentinel-2 (which is what every cached dev-set score was produced with, so
+    their params_hash stays reproducible), and an optical failure is recorded
+    rather than raised. The live CLI asks for it; `eval` asks for it with
+    --optical.
+    """
     if choice is None:
         choice = preflight(bbox, event_day, rp, log)
     if choice is None:
@@ -142,11 +290,11 @@ def prepare(bbox, event_day: date, cache: Path, rp: RunParams, dp: DetectParams,
             "Try a later --max-post-latency-days or a smaller area.")
 
     grid = ingest.make_grid(bbox, rp.resolution_m)
-    log(f"[2/6] Grid EPSG:{grid.epsg}, {grid.width} x {grid.height} px at {grid.res} m")
-    log("[3/6] Downloading via openEO (cached) ...")
+    log(f"[2/7] Grid EPSG:{grid.epsg}, {grid.width} x {grid.height} px at {grid.res} m")
+    log("[3/7] Downloading via openEO (cached) ...")
     paths = fetch(choice, grid, cache, rp, conn=conn, log=log)
 
-    log("[4/6] Preprocessing (Lee filter, dB, alignment) ...")
+    log("[4/7] Preprocessing (Lee filter, dB, alignment) ...")
 
     def load(day):
         arr = ingest.read_on_grid(paths["s1"][day], grid)
@@ -165,15 +313,20 @@ def prepare(bbox, event_day: date, cache: Path, rp: RunParams, dp: DetectParams,
         log(f"      SAR mask band values (check encoding!): {mask_counts}")
     dem = ingest.read_on_grid(paths["dem"], grid)[0].astype(np.float64)
 
-    log("[5/6] Terrain: slope, drainage, HAND ...")
+    log("[5/7] Terrain: slope, drainage, HAND ...")
     terr = terrain.load_or_compute_terrain(dem, grid.transform, grid.crs,
                                            rp.stream_threshold_km2, paths["terrain"], log=log)
+
+    log("[6/7] Sentinel-2 optical evidence (optional) ...")
+    evidence, optical_report = optical_stage(bbox, event_day, grid, cache, op,
+                                             conn=conn, log=log)
     return PreparedScene(
         grid=grid, choice=choice,
         pre_vv_db=np.stack([p[0] for p in pre]), pre_vh_db=np.stack([p[1] for p in pre]),
         post_vv_db=post_vv, post_vh_db=post_vh, terrain=terr, run_params=rp,
         preprocess_params={f: getattr(dp, f) for f in PREPROCESS_FIELDS},
-        post_mask_counts=mask_counts,
+        post_mask_counts=mask_counts, optical_evidence=evidence,
+        optical_params=op, optical_report=optical_report,
     )
 
 
@@ -189,6 +342,7 @@ def classify(scene: PreparedScene, dp: DetectParams) -> detect.DetectionResult:
         scene.pre_vv_db, scene.pre_vh_db, scene.post_vv_db, scene.post_vh_db,
         scene.terrain.hand_m, scene.terrain.slope_deg, scene.terrain.streams, dp,
         sar_invalid=None,  # enable once the mask encoding is verified
+        optical=scene.optical_evidence,
     )
 
 
@@ -196,7 +350,8 @@ def build_report(scene: PreparedScene, result: detect.DetectionResult, bbox, eve
                  rp: RunParams, dp: DetectParams, runtime_s: float, n_poly: int | None,
                  rel: reliability.Reliability | None = None) -> dict:
     choice, grid, terr = scene.choice, scene.grid, scene.terrain
-    params = params_dict(dp, rp)
+    op = scene.optical_params
+    params = params_dict(dp, rp, op)
     report = {
         "event_date": str(event_day),
         "bbox_wgs84": list(bbox),
@@ -207,13 +362,23 @@ def build_report(scene: PreparedScene, result: detect.DetectionResult, bbox, eve
                   "pre": [{"day": str(a.day), "scenes": a.names} for a in choice.pre],
                   "post_latency_days": choice.latency_days, "notes": choice.notes},
         "parameters": params,
-        "parameters_hash": params_hash(dp, rp),
+        "parameters_hash": params_hash(dp, rp, op),
         "areas_ha": outputs.class_areas_ha(result.classes, grid.res),
         "detection_stats": result.stats,
         "terrain": {"stream_pixels": int(terr.streams.sum()),
                     "hand_fallback_fraction": terr.hand_fallback_fraction},
         "runtime_s": round(runtime_s, 1),
     }
+    # Always present, whatever happened, so no report is silent about Sentinel-2.
+    report["optical"] = dict(scene.optical_report)
+    report["optical"]["source_pixels"] = {
+        outputs.source_name(code): count
+        for code, count in result.stats.get("source_pixels", {}).items()}
+    report["optical"]["source_ha"] = {
+        outputs.source_name(code): round(count * grid.res * grid.res / 10_000.0, 2)
+        for code, count in result.stats.get("source_pixels", {}).items()}
+    report["optical"]["fusion"] = (op.fusion if op is not None else None)
+    report["optical"]["fused_into_map"] = bool(result.stats.get("optical_used", False))
     if n_poly is not None:
         report["n_polygons"] = n_poly
     if rel is not None:
@@ -224,9 +389,17 @@ def build_report(scene: PreparedScene, result: detect.DetectionResult, bbox, eve
     return report
 
 
-def params_hash(dp: DetectParams, rp: RunParams) -> str:
+def params_hash(dp: DetectParams, rp: RunParams, op: OpticalParams | None = None) -> str:
+    """The 12-hex identity of a configuration.
+
+    `op=None` (or optical disabled) hashes byte-identically to the way it did
+    before Sentinel-2 existed here, so every params_hash already recorded in
+    eval/results/ still identifies the same configuration. No optical field
+    lives in DetectParams or RunParams, which is what makes that true; it is
+    pinned by tests/test_params_hash_reproducible.py. See config.params_dict.
+    """
     return hashlib.sha256(
-        json.dumps(params_dict(dp, rp), sort_keys=True).encode()).hexdigest()[:12]
+        json.dumps(params_dict(dp, rp, op), sort_keys=True).encode()).hexdigest()[:12]
 
 
 def write(out: Path, scene: PreparedScene, result: detect.DetectionResult, bbox,
@@ -241,6 +414,8 @@ def write(out: Path, scene: PreparedScene, result: detect.DetectionResult, bbox,
     outputs.write_geotiff(out / "hand_m.tif", scene.terrain.hand_m.astype(np.float32), grid)
     n_poly = outputs.write_polygons(out / "flood_polygons.geojson", result.classes, grid)
     outputs.write_geotiff(out / "reliability_narrow_valley.tif", rel.codes, grid)
+    if result.source is not None:
+        outputs.write_geotiff(out / "flood_source.tif", result.source, grid)
     outputs.write_reliability_polygons(
         out / "reliability_narrow_valley.geojson", rel.codes, grid)
     outputs.write_quicklook(out / "quicklook.png", result,
@@ -251,9 +426,11 @@ def write(out: Path, scene: PreparedScene, result: detect.DetectionResult, bbox,
     return report
 
 
-def run(bbox, event_day: date, out: Path, rp: RunParams, dp: DetectParams, dry_run: bool) -> int:
+def run(bbox, event_day: date, out: Path, rp: RunParams, dp: DetectParams, dry_run: bool,
+        op: OpticalParams | None = None) -> int:
     t_start = time.time()
     out.mkdir(parents=True, exist_ok=True)
+    op = OpticalParams() if op is None else op
 
     try:
         choice = preflight(bbox, event_day, rp)
@@ -267,14 +444,19 @@ def run(bbox, event_day: date, out: Path, rp: RunParams, dp: DetectParams, dry_r
         return 0
 
     try:
-        scene = prepare(bbox, event_day, out / "cache", rp, dp, choice=choice)
-        print("[6/6] Detecting flood and debris ...")
+        scene = prepare(bbox, event_day, out / "cache", rp, dp, choice=choice, op=op)
+        print("[7/7] Detecting flood and debris ...")
         result = classify(scene, dp)
     except PipelineError as err:
         raise SystemExit(str(err)) from err
 
     report = write(out, scene, result, bbox, event_day, rp, dp, time.time() - t_start)
     print(json.dumps(report["areas_ha"], indent=2))
+    optical_status = report["optical"]["status"]
+    print(f"Sentinel-2 optical evidence: {optical_status}"
+          + (f" ({report['optical'].get('message', '')})"
+             if optical_status != OPTICAL_USED else
+             f", fused: {report['optical']['fused_into_map']}"))
     print(f"Done in {report['runtime_s']} s -> {out}")
     return 0
 
@@ -291,12 +473,29 @@ def main(argv=None) -> int:
     ap.add_argument("--backscatter-coefficient", choices=BACKSCATTER_COEFFICIENTS,
                     default=RunParams.backscatter_coefficient,
                     help="openEO backscatter coefficient (default: %(default)s)")
+    ap.add_argument("--optical", dest="optical", action="store_true", default=True,
+                    help="use Sentinel-2 evidence where the sky is clear (default)")
+    ap.add_argument("--no-optical", dest="optical", action="store_false",
+                    help="radar only: skip the Sentinel-2 stage entirely")
+    ap.add_argument("--optical-post-days", type=int, default=OpticalParams.max_post_latency_days,
+                    help="days after the event to look for a clear Sentinel-2 scene "
+                         "(default: %(default)s; deposits persist, standing water may not)")
+    ap.add_argument("--optical-fusion", choices=OPTICAL_FUSION_MODES,
+                    default=OpticalParams.fusion,
+                    help="what Sentinel-2 evidence may do to the classes. 'off' (default): "
+                         "computed, written and reported, but changes no pixel, so the map is "
+                         "the measured radar-only map. 'union': fused in - UNSCORED until the "
+                         "leave-one-event-out optical pass has run")
     args = ap.parse_args(argv)
 
     rp = replace(RunParams(), resolution_m=args.res, n_pre=args.n_pre,
                  max_post_latency_days=args.max_post_latency_days,
                  backscatter_coefficient=args.backscatter_coefficient)
-    return run(tuple(args.bbox), args.event_date, args.out, rp, DetectParams(), args.dry_run)
+    op = replace(OpticalParams(), enabled=args.optical,
+                 max_post_latency_days=args.optical_post_days,
+                 fusion=args.optical_fusion)
+    return run(tuple(args.bbox), args.event_date, args.out, rp, DetectParams(), args.dry_run,
+               op=op)
 
 
 if __name__ == "__main__":

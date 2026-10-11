@@ -19,6 +19,7 @@ from shapely.geometry import shape  # noqa: E402
 
 from strandline.config import (  # noqa: E402
     CLASS_NAMES,
+    SOURCE_NAMES,
     NARROW_VALLEY_CAVEAT,
     RELIABILITY_NAMES,
     RELIABILITY_NARROW_VALLEY,
@@ -122,3 +123,8 @@ def write_quicklook(path: Path, result, title: str) -> None:
 def write_report(path: Path, report: dict) -> None:
     report = {**report, "attribution": ATTRIBUTION}
     path.write_text(json.dumps(report, indent=2, default=str))
+
+
+def source_name(code) -> str:
+    """Human-readable name of a per-pixel sensor-provenance code."""
+    return SOURCE_NAMES[int(code)]

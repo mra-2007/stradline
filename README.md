@@ -79,8 +79,9 @@ No-go if downloads keep failing or no usable same-track pair exists.
 | `flood_polygons.geojson` | flood and debris polygons (EPSG:4326) with area in ha |
 | `reliability_narrow_valley.tif` | uint8: 0 not valley floor, 1 valley floor resolved, 2 low confidence (floor narrower than `min_valley_width_px`) |
 | `reliability_narrow_valley.geojson` | the code-2 zone as polygons, each carrying the caveat sentence |
+| `flood_source.tif` | uint8 per-pixel sensor provenance: 0 not flood-affected, 1 Sentinel-1 only, 2 Sentinel-2 only, 3 both sensors agree |
 | `quicklook.png` | before, after, change and classification panels |
-| `run_report.json` | provenance: scenes, track, dates, every parameter, areas, runtime, attribution, and `reliability.narrow_valley` |
+| `run_report.json` | provenance: scenes, track, dates, every parameter, areas, runtime, attribution, `reliability.narrow_valley` and the `optical` block (Sentinel-2 status, fusion mode, whether it was fused into the map, dates, cloud cover, clear fraction, how much of the area optical covered) |
 | `cache\` | downloaded rasters, reused on every rerun |
 
 | Code | Meaning |
@@ -118,6 +119,66 @@ The detection runs in `rough_water` mode (see Status below). All parameters live
 `strandline/config.py`; `ReliabilityParams` is deliberately outside `params_hash`, because it
 cannot change an output pixel and must not give a new hash to an unchanged detection.
 
+## Method (Sentinel-2 optical evidence)
+
+Track B requires Sentinel-2 where the sky is clear, so a live run gathers it by default
+(`--no-optical` turns the stage off). It is **evidence, not an assumption**: nothing here guesses
+through cloud, and where optical cannot see, the map is the radar map.
+
+**Gathered by default, fused only on request.** `OpticalParams.fusion` defaults to `off`:
+Sentinel-2 is chosen, downloaded, masked, turned into evidence, written and reported on every
+run, but it changes **no output pixel**, so the class map a default run produces is byte-identical
+to the radar-only detector that the measured numbers below actually describe
+(`tests/test_detect_optical_fusion.py`, `tests/test_pipeline_optical.py`). `--optical-fusion union`
+fuses it in; that configuration is **unscored** until the leave-one-event-out optical pass has run,
+which is exactly why it is not the default.
+
+1. **Scene choice from metadata.** Every L2A product carries a `cloudCover` attribute, so the
+   clearest pre-event and post-event *date* is chosen from the catalogue, before any download —
+   a clouded area costs one catalogue query and nothing else. Choice is per UTC date, not per
+   scene, because openEO mosaics a date's tiles; a date's cloudiness is the area-weighted mean
+   over the scenes that overlap the AOI, and a date the catalogue does not report is counted as
+   fully cloudy. The post-event window is **20 days** (`--optical-post-days`), much longer than
+   the radar window, because mud and debris scars persist — at the cost, reported in every run,
+   that standing water may have drained by then.
+2. **Per-pixel masking.** The scene classification layer (SCL) removes cloud, cloud shadow,
+   terrain shadow, cirrus, snow and defective pixels. It is a *class* band, so it is downloaded
+   and resampled nearest-neighbour in its own cube — never bilinearly. The share of the AOI clear
+   on each date and on the pair is reported; below `min_clear_fraction` (20%) optical is refused
+   with its reason.
+3. **Reflectance.** Scale and offset are taken from the file when it declares them, otherwise the
+   `BOA_ADD_OFFSET` is derived from the processing baseline in the product name. The conversion
+   actually applied is recorded in `run_report.json`, and an implausible result refuses the stage
+   rather than poisoning an index.
+4. **Two change signatures, never a single-date classification.**
+   - *water*: MNDWI = (B03 − B11)/(B03 + B11) (Xu 2006) must read as water **and** have risen
+     since the pre-event date. The rise test is what rejects permanent water, wet rock and dark
+     shadow, which are high or ambiguous on both dates.
+   - *deposit*: NDVI must drop **and** B11 reflectance must rise — vegetation or soil buried
+     under sediment loses near-infrared vigour and gains short-wave infrared brightness.
+5. **Fusion (`--optical-fusion union`), before the shared tests, not after them.** Optical
+   candidates are added to the radar masks *inside* `detect.detect_flood`, so the same HAND, slope,
+   minimum-mapping-unit and drainage-connection tests apply to them. There is no second definition
+   of "valley floor" and optical cannot place water where radar would not have been allowed to.
+   Where both sensors call a pixel water it becomes **high confidence**; `flood_source.tif` records
+   which sensor saw each pixel. Every optical parameter, fusion included, lives in `OpticalParams`
+   and never in `DetectParams` — that is what keeps a radar-only `params_hash` byte-identical to
+   the ones already published, and it is pinned by
+   `tests/test_params_hash_reproducible.py`.
+6. **Never fatal.** No clear scene, too much cloud, an unreadable file, a dead backend — every
+   optical failure degrades the run to radar-only and is recorded in `run_report.json` under
+   `optical.status` (`used`, `disabled`, `no_clear_pair`, `refused`, `failed`) with its reason
+   (`tests/test_pipeline_optical.py`).
+
+**`union` is UNSCORED.** The measured numbers in Status below are radar-only
+(`params_hash d4f9b1791c82`), and because fusion defaults to `off` they still describe the map a
+default run produces. No accuracy number may be quoted for `union` until the dev-set S2 data is
+downloaded and floods *and controls* are re-scored — controls too, because fusion can only add
+pixels and so can only raise the false-flood rate. A run that merely *consulted* Sentinel-2 records
+a different `params_hash` (the optical section enters the hash whenever the stage is enabled), which
+is deliberate: the hash says what the run asked for, `optical.status` says what it got. See
+`docs/tuning_log.md`, 2026-10-11, for the parameter grid declared before any optical scoring.
+
 ## Scoring the dev set (checking only, never an input)
 
 Three steps. Nothing here is ever a pipeline input: references are read only by `validation/` and
@@ -127,6 +188,11 @@ Three steps. Nothing here is ever a pipeline input: references are read only by 
 rem 1. fetch the Sentinel-1 and DEM rasters the scoreboard needs (openEO, resumable, 3 in parallel)
 venv\Scripts\python.exe -m eval.fetch_dev_data --estimate
 venv\Scripts\python.exe -m eval.fetch_dev_data --plan gates --workers 3
+
+rem 1b. and the Sentinel-2 pair per event, needed to score --optical-fusion union
+rem     (~857 MB more, 40 files; floods AND controls, since fusion can only add pixels)
+venv\Scripts\python.exe -m eval.fetch_dev_data --estimate --optical
+venv\Scripts\python.exe -m eval.fetch_dev_data --plan gates --optical --workers 3
 
 rem 2. run and score every event at the current config.py parameters
 venv\Scripts\python.exe -m eval.run_scoreboard --no-write
@@ -138,7 +204,7 @@ venv\Scripts\python.exe -m eval.check_gates
 
 | Script | What it does |
 |---|---|
-| `eval/fetch_dev_data.py` | Downloads only allowed inputs (Sentinel-1, Copernicus DEM) into `runs/eval/<event>/cache`, resumable, `--estimate` for a size plan with no network. |
+| `eval/fetch_dev_data.py` | Downloads only allowed inputs (Sentinel-1, Copernicus DEM, and with `--optical` the Sentinel-2 pair) into `runs/eval/<event>/cache`, resumable, `--estimate` for a size plan with no network. An event with no clear Sentinel-2 pair downloads none and is scored radar-only. |
 | `eval/run_scoreboard.py` | Runs the pipeline per event from the cache and scores floods against their reference using each event's `reference_classes`; controls on `false_flood_fraction`. Appends rows to `eval/results/flood.csv`. |
 | `eval/tune.py` | Leave-one-event-out over the grid in `config.py::TUNE_GRID`: maximise mean tolerant F1 on the OTHER events subject to every control ≤ 1% false flood, then score the left-out event (`split=loeo`). Writes `eval/chosen_params.json` and a diff against `config.py` — it never edits `config.py`. |
 | `validation/compare.py` | The metric definitions, used by both the scoreboard and the CLI below, so a manual check and a gate row cannot disagree. |
@@ -181,6 +247,15 @@ against each reference's flooded + debris/mass-movement classes. Every number be
 floods, `split=full` for controls); method and caveats: `eval/chosen_params.json`,
 `docs/tuning_log.md`. Measured at `n_pre=3` (`DEV_N_PRE`, the dev download-cost setting), a thinner
 reference stack than the shipped default of 5.
+
+> **These numbers are RADAR-ONLY — and that is still what a default run maps.** Sentinel-2 is
+> gathered and reported by default but `OpticalParams.fusion` is `off`, so the class map is
+> byte-identical to the detector these numbers measured (`params_hash=d4f9b1791c82`, reproducible
+> by this code — pinned by `tests/test_params_hash_reproducible.py`). What is **UNSCORED** is
+> `--optical-fusion union`: the dev-set Sentinel-2 data has not been downloaded, so no accuracy
+> number exists for fusion and none is claimed, and re-scoring must cover floods **and** controls
+> because fusion can only add pixels. `eval.check_gates` therefore reads exactly as it did before
+> the optical work. See `docs/tuning_log.md`, 2026-10-11, "Sentinel-2 optical evidence".
 
 ### Final per-event scores (`venv\Scripts\python.exe -m eval.check_gates`)
 
@@ -282,6 +357,18 @@ all read NO DATA — not started.
 - **Radar geometry.** Layover and shadow on steep slopes; the SAR mask band stays off until its encoding is verified.
 - **Debris ambiguity.** Brightening can also come from vegetation or structural change, hence "possible debris". Measured on EMSR770: the current debris channel covers 3.8% of that AOI at precision 0.0062 against the expert mass-movement class — far too permissive, see `docs/tuning_log.md`.
 - **Rough water — addressed, not solved.** The original `darkening` method assumed open water is dark; in a steep gorge a turbulent, sediment-laden flood is a rough scatterer and brightens instead, and measured on EMSR770 **0.0% of the expert flood extent passed the darkness gate**. The default is now `rough_water`, which accepts a coherent change of either sign on the valley floor and takes darkness only as the high-confidence test. That changed the numbers decisively (Punakha 0.025 → 0.118, Poza Honda 0.125 → 0.555 tolerant F1, and the binding Norwegian control from 4.9% to 0.14% false flood) and it is still far from the gate: the sign of the change was not the only problem.
+- **Optical evidence is unscored, and cloud-limited by nature.** Sentinel-2 is now *gathered*
+  where the sky is clear (fusion `off` by default, so it informs the report without changing the
+  map), and the reasons it may not be are reported per run, never hidden: no clear pair in
+  the window, too little of the area clear after SCL masking, a refused reflectance convention, or
+  a backend failure. Two costs are structural. (1) Terrain shadow is excluded as unusable, and
+  terrain shadow is commonest in exactly the narrow gorges where radar is weakest, so optical
+  coverage is lowest where it would help most — `optical.evidence.clear_fraction_pair` says how
+  much of each area it actually saw. (2) The post-event window is 20 days, so standing water may
+  have drained before the clear scene; optical *water* is therefore a lower bound at long latency
+  and deposits are the stronger optical signal. Whether fusion improves accuracy **has not been
+  measured**, so fusion is **off by default** and optical evidence currently informs the report
+  without changing the map; `off` is a live possibility in the declared grid and may win.
 - **Bridges.** Too narrow to confirm collapse at this resolution.
 
 ## Attribution

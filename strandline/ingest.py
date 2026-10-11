@@ -95,8 +95,12 @@ def _iso(t) -> str:
     return t.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _download(cube, out_path: Path) -> Path:
-    """Fast synchronous download; large areas fall back to a batch job."""
+def download_cube(cube, out_path: Path) -> Path:
+    """Fast synchronous download; large areas fall back to a batch job.
+
+    Shared by every collection we pull - Sentinel-1, the DEM and Sentinel-2 -
+    so the sync-then-batch fallback behaves identically for all of them.
+    """
     tmp = out_path.with_suffix(".part.tif")
     try:
         cube.download(str(tmp), format="GTiff")
@@ -165,7 +169,7 @@ def download_s1(conn, acq: Acquisition, grid: Grid, out_path: Path,
                                 elevation_model=elevation_model)
     cube = cube.resample_spatial(resolution=grid.res, projection=grid.epsg, method="bilinear")
     cube = cube.reduce_dimension(dimension="t", reducer="mean")
-    return _download(cube, out_path)
+    return download_cube(cube, out_path)
 
 
 def download_dem(conn, grid: Grid, out_path: Path) -> Path:
@@ -176,7 +180,7 @@ def download_dem(conn, grid: Grid, out_path: Path) -> Path:
     if cube.metadata.has_temporal_dimension():
         cube = cube.reduce_dimension(dimension="t", reducer="max")
     cube = cube.resample_spatial(resolution=grid.res, projection=grid.epsg, method="bilinear")
-    return _download(cube, out_path)
+    return download_cube(cube, out_path)
 
 
 def looks_like_db(arr: np.ndarray) -> bool:

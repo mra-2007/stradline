@@ -27,8 +27,13 @@ from scipy import ndimage
 from skimage.filters import threshold_otsu
 
 from strandline.config import (
+    FUSION_UNION,
     MODE_DARKENING,
     MODE_ROUGH_WATER,
+    SOURCE_BOTH,
+    SOURCE_NONE,
+    SOURCE_OPTICAL,
+    SOURCE_SAR,
     CLASS_DEBRIS,
     CLASS_FLOOD_HIGH,
     CLASS_FLOOD_MEDIUM,
@@ -239,6 +244,29 @@ def _find_rough_water(p, zc, z_vv, z_vh, post_vv_db, post_vh_db, mean_vv, mean_v
 _WATER_FINDERS = {MODE_DARKENING: _find_darkening, MODE_ROUGH_WATER: _find_rough_water}
 
 
+# --- Per-pixel provenance ----------------------------------------------------
+
+def source_map(water: np.ndarray, debris: np.ndarray, sar_seen: np.ndarray,
+               optical_seen: np.ndarray) -> np.ndarray:
+    """Which sensor(s) saw each FINAL flood-affected pixel.
+
+    `water` and `debris` are the classes after the minimum mapping unit and the
+    drainage-connection test, both of which only ever REMOVE pixels, so every
+    flood-affected pixel was seen by at least one sensor. `sar_seen` and
+    `optical_seen` are each sensor's pre-cleanup candidates - either channel of
+    that sensor, because the question the layer answers is "did this sensor see
+    a change here", not "did it give the pixel this exact class".
+    """
+    affected = water | debris
+    sar_hit = affected & sar_seen
+    opt_hit = affected & optical_seen
+    source = np.full(affected.shape, SOURCE_NONE, dtype=np.uint8)
+    source[sar_hit & ~opt_hit] = SOURCE_SAR
+    source[opt_hit & ~sar_hit] = SOURCE_OPTICAL
+    source[sar_hit & opt_hit] = SOURCE_BOTH
+    return source
+
+
 # --- Main --------------------------------------------------------------------
 
 @dataclass
@@ -249,6 +277,10 @@ class DetectionResult:
     post_vv_db: np.ndarray
     water_threshold_db: float
     stats: dict = field(default_factory=dict)
+    # Per-pixel provenance of every flood-affected pixel (SOURCE_* codes). Its
+    # own layer, never folded into `classes`: WHAT a pixel is and WHICH SENSOR
+    # said so are two different statements and a reader needs both.
+    source: np.ndarray | None = None
 
 
 def detect_flood(
@@ -261,6 +293,7 @@ def detect_flood(
     streams: np.ndarray,
     params: DetectParams,
     sar_invalid: np.ndarray | None = None,
+    optical=None,
 ) -> DetectionResult:
     """pre_*: (n_dates, H, W) dB stacks; post_*: (H, W) dB; all on one grid.
 
@@ -271,6 +304,25 @@ def detect_flood(
                    scatterer. Darkness becomes the high-confidence test only.
     Both run the same statistics, terrain zones, minimum mapping unit and
     drainage-connection test; only the change test differs.
+
+    `optical` is optional Sentinel-2 evidence (strandline.optical.OpticalEvidence,
+    duck-typed here so this module keeps no optical import and stays pure
+    numpy). It is fused when the evidence's own `fusion` mode is `union`
+    (OpticalParams.fusion - deliberately NOT a DetectParams field, so that a
+    radar-only configuration keeps the params_hash it has always had):
+
+      - an optical water or deposit candidate is added to the corresponding
+        radar mask BEFORE the shared terrain, minimum-mapping-unit and
+        drainage-connection tests, so optical evidence is held to exactly the
+        same standard of place as radar evidence and cannot put water somewhere
+        radar would not have been allowed to;
+      - where both sensors say the same pixel is flood water, it becomes HIGH
+        confidence;
+      - `result.source` records per pixel which sensor(s) saw it.
+
+    With `optical=None`, or fusion `off`, every array returned is
+    exactly what the radar-only detector produced before Sentinel-2 existed in
+    this pipeline. That is asserted by tests/test_detect_optical_fusion.py.
     """
     p = params
     mean_vv, std_vv = temporal_stats(pre_vv_db, p.std_floor_db)
@@ -293,9 +345,23 @@ def detect_flood(
     with np.errstate(invalid="ignore"):
         permanent = zone_water & (mean_vv <= t_water) & (post_vv_db <= t_water)
         finder = _WATER_FINDERS[p.mode]
-        water, debris, high = finder(
+        sar_water, sar_debris, high = finder(
             p, zc, z_vv, z_vh, post_vv_db, post_vh_db, mean_vv, mean_vh,
             zone_water, zone_debris, permanent, t_water)
+
+    # Optical evidence enters HERE, before every shared test below, so it is
+    # subject to the same terrain zones, minimum mapping unit and drainage
+    # connection as the radar channel. There is no separate optical pathway.
+    fuse = optical is not None and optical.fusion == FUSION_UNION
+    if fuse:
+        opt_clear = valid & optical.clear
+        opt_water = zone_water & ~permanent & opt_clear & optical.water
+        opt_debris = (zone_debris & ~zone_water) & opt_clear & optical.debris
+        water = sar_water | opt_water
+        debris = (sar_debris | opt_debris) & ~water
+    else:
+        opt_water = opt_debris = np.zeros(zc.shape, dtype=bool)
+        water, debris = sar_water, sar_debris
 
     water = remove_small(water, p.mmu_pixels)
     debris = remove_small(debris, p.mmu_pixels_debris)
@@ -306,6 +372,11 @@ def detect_flood(
         debris = keep_connected_to(debris, river | water, p.drainage_buffer_px)
 
     high = high & water
+    if fuse:
+        # Agreement between two independent sensors is the strongest evidence
+        # this pipeline can produce, so it joins the radar darkness test as a
+        # second route to high confidence.
+        high = high | (water & sar_water & opt_water)
 
     classes = np.full(zc.shape, CLASS_NODATA, dtype=np.uint8)
     classes[valid] = CLASS_NO_CHANGE
@@ -315,8 +386,13 @@ def detect_flood(
     classes[water] = CLASS_FLOOD_MEDIUM
     classes[high] = CLASS_FLOOD_HIGH
 
+    source = source_map(water, debris, sar_water | sar_debris, opt_water | opt_debris)
+
     stats = {
         "mode": p.mode,
+        "optical_fusion": (None if optical is None else optical.fusion),
+        "optical_used": bool(fuse),
+        "source_pixels": {int(c): int(np.sum(source == c)) for c in np.unique(source)},
         "water_threshold_db": round(t_water, 3),
         "water_threshold_otsu_raw_db": (None if thr.otsu_raw is None else round(thr.otsu_raw, 3)),
         "water_threshold_clamped": thr.clamped,
@@ -325,4 +401,5 @@ def detect_flood(
         "valid_fraction": round(float(np.mean(valid)), 4),
     }
     return DetectionResult(classes=classes, z_combined=zc, pre_mean_vv_db=mean_vv,
-                           post_vv_db=post_vv_db, water_threshold_db=t_water, stats=stats)
+                           post_vv_db=post_vv_db, water_threshold_db=t_water, stats=stats,
+                           source=source)

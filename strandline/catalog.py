@@ -17,7 +17,7 @@ from shapely.geometry import box, shape
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
-from strandline.config import RunParams
+from strandline.config import OpticalParams, RunParams
 
 ODATA_URL = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
 
@@ -189,3 +189,161 @@ def choose_track(acqs: list[Acquisition], event_day: date, params: RunParams
 
 def aoi_polygon(bbox: tuple[float, float, float, float]) -> BaseGeometry:
     return box(*bbox)
+
+
+# --- Sentinel-2 L2A ----------------------------------------------------------
+#
+# Optical evidence is only worth downloading when a date is actually clear, and
+# the catalogue already knows: every L2A product carries a `cloudCover`
+# attribute. So scene choice happens here, on metadata alone, and a hopelessly
+# clouded area costs nothing but one catalogue query.
+#
+# Choice is made per UTC DAY, not per scene. openEO mosaics every tile it finds
+# in a one-day temporal extent, so the unit that can be downloaded and used is
+# a day, and a day's cloudiness is the area-weighted mean of the scenes that
+# actually overlap the AOI.
+
+
+@dataclass(frozen=True)
+class S2Scene:
+    name: str
+    start: datetime
+    cloud_cover: float | None    # percent, from the catalogue
+    footprint: BaseGeometry      # EPSG:4326
+
+
+@dataclass
+class S2Day:
+    """Every L2A scene overlapping the AOI on one UTC date."""
+    day: date
+    start: datetime
+    names: list[str]
+    footprint: BaseGeometry
+    coverage: float = 0.0        # share of the AOI the scenes cover
+    cloud_cover: float = 100.0   # area-weighted mean percent over the AOI
+
+
+@dataclass
+class S2Pair:
+    pre: S2Day
+    post: S2Day
+    post_latency_days: int
+    notes: list[str] = field(default_factory=list)
+
+
+def parse_s2_product(item: dict) -> S2Scene:
+    attrs = {a.get("Name"): a.get("Value") for a in item.get("Attributes", [])}
+    cloud = attrs.get("cloudCover")
+    try:
+        cloud = None if cloud is None else float(cloud)
+    except (TypeError, ValueError):
+        cloud = None
+    return S2Scene(
+        name=item["Name"],
+        start=_parse_time(item["ContentDate"]["Start"]),
+        cloud_cover=cloud,
+        footprint=shape(item["GeoFootprint"]),
+    )
+
+
+def search_s2_l2a(bbox: tuple[float, float, float, float], start: date, end: date,
+                  session: requests.Session | None = None, timeout: int = 60) -> list[S2Scene]:
+    """Sentinel-2 L2A products intersecting `bbox` in [start, end). Metadata only."""
+    w, s, e, n = bbox
+    wkt = f"POLYGON(({w} {s},{e} {s},{e} {n},{w} {n},{w} {s}))"
+    flt = (
+        "Collection/Name eq 'SENTINEL-2' and contains(Name,'MSIL2A') "
+        f"and OData.CSC.Intersects(area=geography'SRID=4326;{wkt}') "
+        f"and ContentDate/Start ge {start.isoformat()}T00:00:00.000Z "
+        f"and ContentDate/Start lt {end.isoformat()}T00:00:00.000Z"
+    )
+    params = {"$filter": flt, "$expand": "Attributes", "$top": 200,
+              "$orderby": "ContentDate/Start asc"}
+    http = session or requests.Session()
+    url, scenes = ODATA_URL, []
+    while url:
+        resp = http.get(url, params=params, timeout=timeout)
+        resp.raise_for_status()
+        payload = resp.json()
+        scenes += [parse_s2_product(item) for item in payload.get("value", [])]
+        url, params = payload.get("@odata.nextLink"), None
+    unique = {sc.name: sc for sc in scenes}
+    return sorted(unique.values(), key=lambda sc: (sc.start, sc.name))
+
+
+def group_s2_days(scenes: list[S2Scene], aoi: BaseGeometry) -> list[S2Day]:
+    """Group scenes by UTC date; AOI coverage and area-weighted cloud per date.
+
+    A scene whose cloudCover the catalogue does not report is weighted in as
+    100% cloudy: unknown cloudiness is never treated as clear.
+    """
+    groups: dict[date, list[S2Scene]] = {}
+    for sc in scenes:
+        groups.setdefault(sc.start.date(), []).append(sc)
+    days = []
+    for day, members in groups.items():
+        fp = unary_union([m.footprint for m in members])
+        overlaps = [(m, m.footprint.intersection(aoi).area) for m in members]
+        weight = sum(a for _, a in overlaps)
+        cloud = (sum((100.0 if m.cloud_cover is None else m.cloud_cover) * a
+                     for m, a in overlaps) / weight) if weight > 0 else 100.0
+        days.append(S2Day(
+            day=day, start=min(m.start for m in members),
+            names=sorted(m.name for m in members), footprint=fp,
+            coverage=float(fp.intersection(aoi).area / aoi.area) if aoi.area else 0.0,
+            cloud_cover=float(cloud),
+        ))
+    return sorted(days, key=lambda d: d.day)
+
+
+def choose_s2_pair(days: list[S2Day], event_day: date, op: OpticalParams
+                   ) -> tuple[S2Pair | None, list[str]]:
+    """The clearest usable pre-event and post-event date, or None with a reason.
+
+    Clearest wins, ties broken toward the date closest to the event: a cloudy
+    scene yields nothing at all, while a later clear one yields evidence whose
+    latency is recorded and reported.
+    """
+    log: list[str] = []
+    first_post = event_day if op.post_same_day_ok else event_day + timedelta(days=1)
+    earliest_pre = event_day - timedelta(days=op.search_days_before)
+    last_post = event_day + timedelta(days=op.max_post_latency_days)
+
+    def usable(window: list[S2Day], label: str) -> list[S2Day]:
+        keep = []
+        for d in window:
+            if d.coverage < op.min_aoi_coverage:
+                log.append(f"{label} {d.day}: covers {d.coverage:.0%} of the AOI "
+                           f"(need {op.min_aoi_coverage:.0%}) -> skipped")
+            elif d.cloud_cover > op.max_scene_cloud_cover:
+                log.append(f"{label} {d.day}: {d.cloud_cover:.0f}% cloud "
+                           f"(ceiling {op.max_scene_cloud_cover:.0f}%) -> skipped")
+            else:
+                keep.append(d)
+                log.append(f"{label} {d.day}: {d.cloud_cover:.0f}% cloud, "
+                           f"{d.coverage:.0%} coverage -> candidate")
+        return keep
+
+    pres = usable([d for d in days if earliest_pre <= d.day < event_day], "pre ")
+    posts = usable([d for d in days if first_post <= d.day <= last_post], "post")
+    if not pres:
+        log.append(f"no usable clear-enough Sentinel-2 date in the "
+                   f"{op.search_days_before} days before the event")
+        return None, log
+    if not posts:
+        log.append(f"no usable clear-enough Sentinel-2 date within "
+                   f"{op.max_post_latency_days} days after the event")
+        return None, log
+
+    pre = min(pres, key=lambda d: (d.cloud_cover, (event_day - d.day).days))
+    post = min(posts, key=lambda d: (d.cloud_cover, (d.day - event_day).days))
+    latency = (post.day - event_day).days
+    log.append(f"chosen: pre {pre.day} ({pre.cloud_cover:.0f}% cloud), "
+               f"post {post.day} (+{latency} d, {post.cloud_cover:.0f}% cloud)")
+    notes = []
+    if latency > RunParams.max_post_latency_days:
+        notes.append(
+            f"the optical post-event date is +{latency} d, later than the radar post "
+            f"image: standing water may have drained, so optical water evidence is a "
+            f"lower bound and deposits are the stronger optical signal")
+    return S2Pair(pre=pre, post=post, post_latency_days=latency, notes=notes), log

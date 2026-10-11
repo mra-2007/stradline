@@ -66,6 +66,10 @@ def test_full_run_offline(tmp_path, monkeypatch):
         return path
 
     monkeypatch.setattr(catalog, "search_s1_grd", _fake_scenes)
+    # No Sentinel-2 scene at all: the run must still produce the complete radar
+    # map and say in the report that optical found no clear pair. (Never let a
+    # test reach the real catalogue.)
+    monkeypatch.setattr(catalog, "search_s2_l2a", lambda *a, **k: [])
     monkeypatch.setattr(ingest, "connect", lambda *a, **k: None)
     monkeypatch.setattr(ingest, "download_s1", fake_s1)
     monkeypatch.setattr(ingest, "download_dem", fake_dem)
@@ -79,6 +83,13 @@ def test_full_run_offline(tmp_path, monkeypatch):
         assert (tmp_path / name).exists(), name
 
     report = json.loads((tmp_path / "run_report.json").read_text())
+    assert report["optical"]["status"] == "no_clear_pair"
+    assert report["optical"]["fused_into_map"] is False
+    # The hash records what the run ASKED FOR; `optical.status` records what it
+    # got. This run asked for Sentinel-2 and found none, which is a different
+    # configuration from one that never looked - and a re-run that does find a
+    # scene must not share a hash with this one.
+    assert report["parameters"]["optical"]["enabled"] is True
     assert report["track"]["relative_orbit"] == 85
     assert len(report["track"]["pre"]) == 5
     assert report["attribution"][0].startswith("Contains modified Copernicus Sentinel data")
@@ -115,6 +126,7 @@ def test_full_run_offline(tmp_path, monkeypatch):
 
 def test_dry_run_needs_no_login(tmp_path, monkeypatch):
     monkeypatch.setattr(catalog, "search_s1_grd", _fake_scenes)
+    monkeypatch.setattr(catalog, "search_s2_l2a", lambda *a, **k: [])
 
     def boom(*a, **k):
         raise AssertionError("dry run must not log in")

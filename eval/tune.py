@@ -67,8 +67,11 @@ from strandline import run as pipeline
 from strandline.config import (
     DETECT_MODES,
     DEV_N_PRE,
+    OPTICAL_FUSION_MODES,
+    OPTICAL_TUNE_GRIDS,
     TUNE_GRIDS,
     DetectParams,
+    OpticalParams,
     RunParams,
 )
 
@@ -80,6 +83,11 @@ OBJECTIVE_METRIC = "f1_tolerant"
 CONTROL_METRIC = "false_flood_fraction"
 
 SECTIONS = {"detect": DetectParams, "run": RunParams}
+
+# The optical grid is searched in its own pass, so it has its own sections.
+# `run` is deliberately absent: nothing about the Sentinel-2 channel changes a
+# Sentinel-1 download.
+OPTICAL_SECTIONS = {"detect": DetectParams, "optical": OpticalParams}
 
 
 # --- the grid -----------------------------------------------------------------
@@ -97,6 +105,11 @@ def validate_grid(grids: dict[str, dict[str, tuple]] | None = None
                              "on an axis, or a grid could score a mode it is not for")
         for key, values in grid.items():
             section, _, field_name = key.partition(".")
+            if section == "optical":
+                raise ValueError(
+                    f"TUNE_GRIDS[{mode!r}] key {key!r}: optical axes belong in "
+                    f"OPTICAL_TUNE_GRIDS, which is searched in its own pass. The radar "
+                    f"search runs without any Sentinel-2 data cached.")
             if section not in SECTIONS:
                 raise ValueError(
                     f"TUNE_GRIDS[{mode!r}] key {key!r}: section must be one of "
@@ -114,6 +127,67 @@ def validate_grid(grids: dict[str, dict[str, tuple]] | None = None
             if not values:
                 raise ValueError(f"TUNE_GRIDS[{mode!r}] key {key!r}: no values")
     return grids
+
+
+def validate_optical_grids(grids: dict[str, dict[str, tuple]] | None = None
+                           ) -> dict[str, dict[str, tuple]]:
+    """Reject an optical grid the search could not honour.
+
+    Checked here rather than only in config.py so that a declared grid is
+    MACHINE-verified - every axis names a real field of a real section, and no
+    point varies a parameter its fusion mode ignores - from the moment it is
+    declared, which is before any optical score exists.
+    """
+    grids = OPTICAL_TUNE_GRIDS if grids is None else grids
+    for fusion, grid in grids.items():
+        if fusion not in OPTICAL_FUSION_MODES:
+            raise ValueError(f"OPTICAL_TUNE_GRIDS has a grid for unknown fusion mode "
+                             f"{fusion!r}; known: {', '.join(OPTICAL_FUSION_MODES)}")
+        if "optical.fusion" in grid:
+            raise ValueError("OPTICAL_TUNE_GRIDS keys ARE the fusion modes; do not also "
+                             "put optical.fusion on an axis, or a grid could score "
+                             "a mode it is not for")
+        for key, values in grid.items():
+            section, _, field_name = key.partition(".")
+            if section not in OPTICAL_SECTIONS:
+                raise ValueError(f"OPTICAL_TUNE_GRIDS[{fusion!r}] key {key!r}: section must "
+                                 f"be one of {sorted(OPTICAL_SECTIONS)}")
+            known = {f.name for f in fields(OPTICAL_SECTIONS[section])}
+            if field_name not in known:
+                raise ValueError(f"OPTICAL_TUNE_GRIDS[{fusion!r}] key {key!r}: "
+                                 f"{OPTICAL_SECTIONS[section].__name__} has no field "
+                                 f"{field_name!r}")
+            if section == "detect" and field_name in pipeline.PREPROCESS_FIELDS:
+                raise ValueError(f"OPTICAL_TUNE_GRIDS[{fusion!r}] key {key!r} is applied "
+                                 f"before a scene is prepared and cannot be tuned here.")
+            if not values:
+                raise ValueError(f"OPTICAL_TUNE_GRIDS[{fusion!r}] key {key!r}: no values")
+    return grids
+
+
+def optical_grid_points(grids: dict[str, dict[str, tuple]] | None = None) -> list[dict]:
+    """Every point of every fusion mode's grid, in declaration order.
+
+    These points are crossed with the SAR point already chosen for each
+    leave-one-event-out fold, rather than searched jointly with the SAR grid.
+    That is a declared COST decision, recorded in docs/tuning_log.md before any
+    optical score existed; each fold's SAR point is still chosen without the
+    held-out event, so the result stays out of sample.
+
+    NOT YET WIRED INTO A SCORING PASS: that needs the dev-set Sentinel-2
+    download to exist (eval.fetch_dev_data --optical). What ships now is the
+    declared grid and its validation, so the grid cannot silently drift from
+    the fields it claims to set.
+    """
+    grids = validate_optical_grids(grids)
+    points: list[dict] = []
+    for fusion, grid in grids.items():
+        keys = list(grid)
+        for combo in itertools.product(*(grid[k] for k in keys)):
+            point = {"optical.fusion": fusion}
+            point.update(dict(zip(keys, combo)))
+            points.append(point)
+    return points
 
 
 def grid_points(grids: dict[str, dict[str, tuple]] | None = None) -> list[dict]:

@@ -30,6 +30,21 @@ MODE_ROUGH_WATER = "rough_water"
 DETECT_MODES = (MODE_DARKENING, MODE_ROUGH_WATER)
 
 
+# How Sentinel-2 optical evidence is allowed to act on the class map.
+#
+#   off    optical is still computed, written and reported, but contributes no
+#          pixel to the classes. The map is byte-identical to a SAR-only run.
+#   union  an optical water (or debris) detection that passes the SAME terrain,
+#          minimum-mapping-unit and drainage tests as a SAR detection is added
+#          to the map; where BOTH sensors agree the pixel is high confidence.
+#
+# `off` exists so the two can be compared on the dev set, and so a run can be
+# reproduced without optical even where a clear scene was available.
+FUSION_OFF = "off"
+FUSION_UNION = "union"
+OPTICAL_FUSION_MODES = (FUSION_OFF, FUSION_UNION)
+
+
 @dataclass(frozen=True)
 class DetectParams:
     # Which detection mode (see DETECT_MODES above). Chosen by eval/tune.py
@@ -155,6 +170,179 @@ class RunParams:
             )
 
 
+# --- Sentinel-2 optical evidence ---------------------------------------------
+#
+# Reflectance bands we load, all available at 20 m, plus the scene
+# classification layer. Chosen for what each index needs and nothing more,
+# because every extra band is another download:
+#
+#   B03 green, B11 SWIR1   MNDWI = (green - swir1) / (green + swir1)  [Xu 2006]
+#   B04 red,   B08 NIR     NDVI  = (nir - red) / (nir + red)
+#   B12 SWIR2              reported alongside B11 for the deposit signature
+#
+# SCL is a CLASS band: it must never be resampled bilinearly, which is why it
+# is loaded as its own cube with nearest-neighbour resampling.
+S2_REFLECTANCE_BANDS = ("B03", "B04", "B08", "B11", "B12")
+S2_SCL_BAND = "SCL"
+
+# Scene classification layer codes (Sentinel-2 L2A product specification).
+SCL_NO_DATA = 0
+SCL_SATURATED = 1
+SCL_CAST_SHADOW = 2
+SCL_CLOUD_SHADOW = 3
+SCL_VEGETATION = 4
+SCL_NOT_VEGETATED = 5
+SCL_WATER = 6
+SCL_UNCLASSIFIED = 7
+SCL_CLOUD_MEDIUM = 8
+SCL_CLOUD_HIGH = 9
+SCL_THIN_CIRRUS = 10
+SCL_SNOW_ICE = 11
+
+
+@dataclass(frozen=True)
+class OpticalParams:
+    """Sentinel-2 optical evidence: which scenes, which pixels, which indices.
+
+    Every threshold here is set from the product specification or from the
+    remote-sensing literature, BEFORE any dev-event optical score existed
+    (docs/tuning_log.md). The three that OPTICAL_TUNE_GRID searches are marked.
+    """
+
+    # Optical is ON by default: Track B requires Sentinel-2 to be used when the
+    # sky is clear. A run with no clear pair is identical to a SAR-only run and
+    # says so in run_report.json, so this default costs nothing under cloud.
+    enabled: bool = True
+
+    # What optical evidence is allowed to DO to the classes (see
+    # OPTICAL_FUSION_MODES above). It lives here rather than in DetectParams so
+    # that a radar-only configuration hashes exactly as it did before
+    # Sentinel-2 existed in this pipeline - see params_dict, and
+    # tests/test_params_hash_reproducible.py, which pins the published hashes.
+    #
+    # THE DEFAULT IS `off`, DELIBERATELY. With `off`, Sentinel-2 is still
+    # chosen, downloaded, masked, turned into evidence, written and reported -
+    # every run says what optical saw - but it changes no output pixel, so the
+    # class map is byte-identical to the radar-only detector that the dev-set
+    # numbers actually measured (tests/test_detect_optical_fusion.py). Fusion is
+    # switched to `union` when, and only when, the leave-one-event-out optical
+    # pass over OPTICAL_TUNE_GRIDS says it helps: shipping an unmeasured change
+    # to the scored quantity, and to the 1% false-flood ceiling, is not a trade
+    # this project makes (docs/tuning_log.md, 2026-10-11).
+    fusion: str = FUSION_OFF
+
+    # --- which scenes ------------------------------------------------------
+    search_days_before: int = 60      # pre-event window to find a clear date
+    # Mud and debris scars persist for weeks, and a flooded valley under cloud
+    # on day 1 is often clear a fortnight later, so the post window is much
+    # longer than the SAR one (RunParams.max_post_latency_days = 12). Standing
+    # water may have drained by then: that costs us recall of WATER and is
+    # reported as the post date's latency, never hidden.
+    max_post_latency_days: int = 20
+    post_same_day_ok: bool = False    # event time unknown, as for SAR
+    min_aoi_coverage: float = 0.95    # same as RunParams: no partial AOIs
+
+    # A COST gate, applied to catalogue metadata so a hopeless date is never
+    # downloaded. Scene-level cloudCover is for the whole 110 km tile and says
+    # little about our much smaller AOI, so it is set loose on purpose: the
+    # real decision is min_clear_fraction, measured from SCL after download.
+    max_scene_cloud_cover: float = 70.0
+
+    # Minimum share of the AOI that must be clear - per date, and for the pair
+    # (the two dates' clear masks intersected, which is what the indices need).
+    # Below this, optical is reported as too cloudy and contributes nothing.
+    min_clear_fraction: float = 0.20
+
+    # SCL classes a pixel may have and still be used. Cloud (8, 9), cirrus
+    # (10), both shadow classes (2, 3), snow and ice (11) and the defective
+    # classes (0, 1) are all out.
+    #
+    # UNCLASSIFIED (7) is deliberately KEPT: L2A routinely assigns it to
+    # turbid water and freshly flooded ground, which is exactly our target, so
+    # dropping it would systematically remove the pixels we are looking for.
+    # CAST_SHADOW (2) is deliberately DROPPED even though terrain shadow is
+    # common in the gorges we care about and excluding it costs us coverage
+    # there: a shadowed pixel is dark in every band and its indices are not
+    # trustworthy. Coverage lost this way is reported, not silently filled.
+    scl_valid_classes: tuple[int, ...] = (
+        SCL_VEGETATION, SCL_NOT_VEGETATED, SCL_WATER, SCL_UNCLASSIFIED)
+
+    # --- digital numbers to reflectance ------------------------------------
+    # L2A is distributed as integers. Processing baseline 04.00 (2022-01-25
+    # onward) also carries BOA_ADD_OFFSET = -1000, and because MNDWI and NDVI
+    # are normalised ratios an offset error corrupts them outright (a pure
+    # scale factor cancels; an offset does not). These are the FALLBACK values,
+    # used only when the file itself declares no scale/offset; what was
+    # actually applied is recorded in run_report.json.
+    reflectance_scale: float = 10000.0
+    boa_add_offset: float = -1000.0
+    # Values above this are digital numbers, not reflectance. Physical
+    # reflectance cannot exceed ~1.6 even over snow and specular glint.
+    assume_dn_above: float = 1.5
+    # Refuse the optical stage when more than this share of valid pixels lands
+    # outside plausible reflectance after conversion - a wrong scale or offset
+    # must stop the stage, not quietly produce wrong indices.
+    plausible_reflectance_range: tuple[float, float] = (-0.2, 1.6)
+    max_implausible_fraction: float = 0.05
+
+    # --- indices -----------------------------------------------------------
+    # Water: MNDWI above a threshold AND a real rise since the pre-event date.
+    # Xu (2006) proposes MNDWI > 0 to separate water from built-up land and
+    # soil; 0.0 is therefore the literature value. SEARCHED by
+    # OPTICAL_TUNE_GRID, because flood water in a Himalayan gorge is heavily
+    # sediment-laden and its MNDWI is lower than that of clear water.
+    mndwi_water: float = 0.0
+    # The RISE requirement is what makes this a change detector rather than a
+    # water classifier: permanent water and terrain shadow have a high or
+    # ambiguous MNDWI on BOTH dates and so never qualify. 0.20 is four times
+    # the ~0.05 index scatter that atmospheric and BRDF differences between two
+    # clear dates produce; not set from any score.
+    mndwi_rise_min: float = 0.20
+
+    # Debris, mud and deposits: vegetation or soil buried by sediment loses
+    # NDVI and gains SWIR brightness. 0.15 is a loss well outside seasonal
+    # phenology over a few weeks. SEARCHED by OPTICAL_TUNE_GRID.
+    ndvi_drop_min: float = 0.15
+    # Fresh mud and boulder deposits are brighter in SWIR than the vegetation
+    # or wet soil they bury. 0.03 reflectance is roughly three times the
+    # radiometric uncertainty of an L2A SWIR band. Not searched.
+    swir_rise_min: float = 0.03
+
+    def __post_init__(self) -> None:
+        if self.fusion not in OPTICAL_FUSION_MODES:
+            raise ValueError(
+                f"optical fusion {self.fusion!r} is not supported; "
+                f"choose one of {', '.join(OPTICAL_FUSION_MODES)}.")
+        if not 0.0 <= self.min_clear_fraction <= 1.0:
+            raise ValueError(
+                f"min_clear_fraction must be in [0, 1], got {self.min_clear_fraction!r}.")
+        if not self.scl_valid_classes:
+            raise ValueError("scl_valid_classes is empty: no pixel could ever be used.")
+        lo, hi = self.plausible_reflectance_range
+        if not lo < hi:
+            raise ValueError(
+                f"plausible_reflectance_range must be (low, high), got {(lo, hi)!r}.")
+        if self.max_post_latency_days < 0 or self.search_days_before <= 0:
+            raise ValueError("optical search windows must be positive.")
+
+
+# Per-pixel provenance of a flood-affected pixel. Its own small raster, NOT
+# mixed into the class map: a reader must be able to see WHAT a pixel is and
+# WHICH SENSOR said so independently (the same separation as the reliability
+# layer).
+SOURCE_NONE = 0        # not flood-affected
+SOURCE_SAR = 1         # Sentinel-1 only
+SOURCE_OPTICAL = 2     # Sentinel-2 only
+SOURCE_BOTH = 3        # both sensors agree
+
+SOURCE_NAMES = {
+    SOURCE_NONE: "not flood-affected",
+    SOURCE_SAR: "Sentinel-1 radar only",
+    SOURCE_OPTICAL: "Sentinel-2 optical only",
+    SOURCE_BOTH: "Sentinel-1 and Sentinel-2 agree",
+}
+
+
 @dataclass(frozen=True)
 class ReliabilityParams:
     """Where the map should be read with less confidence. Reporting only.
@@ -180,8 +368,22 @@ class ReliabilityParams:
                 f"min_valley_width_px must be positive, got {self.min_valley_width_px!r}.")
 
 
-def params_dict(detect: DetectParams, run: RunParams) -> dict:
+def params_dict(detect: DetectParams, run: RunParams,
+                optical: "OpticalParams | None" = None) -> dict:
     """The parameters that PRODUCED the classes, i.e. what params_hash covers.
+
+    The `optical` section appears ONLY when optical evidence was enabled, and
+    NO optical field lives in DetectParams or RunParams. That is not cosmetic:
+    it is what keeps every params_hash already recorded in eval/results/
+    reproducible, because a radar-only configuration hashes byte-identically to
+    the way it did before Sentinel-2 existed in this pipeline. Pinned by
+    tests/test_params_hash_reproducible.py against the hashes actually published
+    in eval/chosen_params.json, eval/results/flood.csv and docs/tuning_log.md.
+
+    A run that consulted Sentinel-2 is a different configuration and gets a
+    different hash, whether or not a clear scene turned out to be available -
+    what the run DID with the data it found is recorded separately, in
+    run_report.json's `optical.status`.
 
     ReliabilityParams is deliberately NOT in here. It cannot change a single
     output pixel of the class map, so folding it into params_hash would give a
@@ -190,7 +392,10 @@ def params_dict(detect: DetectParams, run: RunParams) -> dict:
     run_report.json under its own `reliability.parameters` key instead, so it
     is still fully recorded.
     """
-    return {"detect": asdict(detect), "run": asdict(run)}
+    out = {"detect": asdict(detect), "run": asdict(run)}
+    if optical is not None and optical.enabled:
+        out["optical"] = asdict(optical)
+    return out
 
 
 # Output class codes (uint8 GeoTIFF). Kept stable: dashboard, copilot and
@@ -293,6 +498,44 @@ TUNE_GRIDS: dict[str, dict[str, tuple]] = {
         "detect.z_seed": (2.5, 3.0, 3.5),
         "detect.hand_max_water_m": (20.0, 35.0),
         "detect.min_abs_change_db": (2.0, 3.0),
+    },
+}
+
+
+# --- Optical parameter search grid (eval/tune.py, leave-one-event-out) -------
+#
+# DECLARED BEFORE A SINGLE OPTICAL SCORE EXISTS (docs/tuning_log.md, 2026-10-11)
+# and deliberately tiny: 5 points in total.
+#
+# ONE GRID PER FUSION MODE, exactly as TUNE_GRIDS is one grid per detection
+# mode, so that no point ever varies a parameter its mode ignores: with fusion
+# `off` an MNDWI threshold cannot change a single pixel, so `off` is ONE point
+# rather than four identical ones. The keys ARE the fusion modes, so
+# `optical.fusion` must not also appear on an axis.
+#
+# `off` is in the grid because the honest comparison has to be possible: does
+# optical evidence help at all? It must be able to win.
+#
+# This grid is searched as a SECOND leave-one-event-out pass, crossed with the
+# SAR point already chosen for that fold, rather than folded into TUNE_GRIDS.
+# That is a cost decision - a joint search would be 12 x 5 = 60 detections per
+# event per fold instead of 5 - taken in advance and written down, not after
+# seeing a score. Each fold's SAR point is still the one chosen without the
+# held-out event, so the result stays out of sample.
+#
+#   optical.mndwi_water     0.0 is Xu (2006). 0.2 asks whether a stricter
+#                           threshold is needed once the rise test already
+#                           removes permanent water.
+#   optical.ndvi_drop_min   0.10 / 0.20 around the 0.15 set from phenology.
+#
+# Everything else - the SCL class list, the MNDWI rise, the SWIR rise, the
+# scene-selection windows - stays at its specification- or literature-set value.
+# Adding an axis must be justified here, not by a score.
+OPTICAL_TUNE_GRIDS: dict[str, dict[str, tuple]] = {
+    FUSION_OFF: {},                                      # 1 point
+    FUSION_UNION: {                                      # 2 x 2 = 4
+        "optical.mndwi_water": (0.0, 0.2),
+        "optical.ndvi_drop_min": (0.10, 0.20),
     },
 }
 

@@ -6,6 +6,7 @@ and never touches reference data.
 
     venv/Scripts/python.exe -m eval.fetch_dev_data --estimate      # plan only, no network
     venv/Scripts/python.exe -m eval.fetch_dev_data                 # download
+    venv/Scripts/python.exe -m eval.fetch_dev_data --optical       # + Sentinel-2
     venv/Scripts/python.exe -m eval.fetch_dev_data --events norway_selsverket_2023
 
 Everything is cached under runs/eval/<event>/cache with the same names the
@@ -41,9 +42,9 @@ from datetime import date
 from pathlib import Path
 
 from eval import scoreboard as sb
-from strandline import ingest, run as pipeline
+from strandline import ingest, optical, run as pipeline
 from strandline.catalog import TrackChoice
-from strandline.config import BACKSCATTER_COEFFICIENTS, DEV_N_PRE, RunParams
+from strandline.config import BACKSCATTER_COEFFICIENTS, DEV_N_PRE, OpticalParams, RunParams
 
 ROOT = Path(__file__).resolve().parents[1]
 EVAL_RUNS = ROOT / "runs" / "eval"
@@ -65,6 +66,22 @@ GATE_PLAN_CONTROLS = (
 BYTES_PER_PIXEL_S1 = 9.8
 BYTES_PER_PIXEL_DEM = 4.5
 
+# Sentinel-2: DERIVED, NOT MEASURED. Half of BYTES_PER_PIXEL_S1 per band (that
+# figure covers two bands), plus a little for the single-byte class layer, which
+# compresses well. No Sentinel-2 file has been downloaded yet, so this is the
+# one part of the estimate not grounded in a real file. Recalibrate both numbers
+# from the first real download, and say which they are when quoting a size.
+BYTES_PER_PIXEL_S2_BAND = 4.9
+BYTES_PER_PIXEL_S2_SCL = 1.3
+S2_DATES_PER_EVENT = 2          # one clear pre-event date, one clear post-event
+
+ESTIMATE_CAVEAT = (
+    "\nEstimate only. The Sentinel-1 and DEM bytes per pixel are MEASURED from the"
+    "\nruns/case_smoke cache; the Sentinel-2 figures are DERIVED from them and not yet"
+    "\nconfirmed against a real file. The acquisition count assumes every event finds a"
+    "\nfull stack, and the S2 column assumes a clear pair exists - pre-flight confirms"
+    "\nboth, and an event with no clear pair downloads no Sentinel-2 at all."
+)
 
 def dev_run_params(coefficient: str = RunParams.backscatter_coefficient,
                    n_pre: int = DEV_N_PRE) -> RunParams:
@@ -126,29 +143,60 @@ def coverage(scored: list[str], plan: str = "gates", events: dict[str, dict] | N
 @dataclass
 class Task:
     event: str
-    kind: str                 # "s1" | "dem"
+    kind: str                 # "s1" | "dem" | "s2"
     coefficient: str | None
     day: date | None
     path: Path
     grid: ingest.Grid
     acq: object = None
+    # "s2" only: both files of one date (reflectance and the class layer), and
+    # the parameters that name them.
+    s2_paths: dict | None = None
+    op: OpticalParams | None = None
 
     @property
     def label(self) -> str:
         if self.kind == "dem":
             return f"{self.event} DEM"
+        if self.kind == "s2":
+            return f"{self.event} S2 {self.day}"
         return f"{self.event} {self.coefficient} {self.day}"
 
     @property
+    def paths(self) -> list[Path]:
+        if self.kind == "s2" and self.s2_paths is not None:
+            return [self.s2_paths["refl"], self.s2_paths["scl"]]
+        return [self.path]
+
+    @property
+    def done(self) -> bool:
+        """Every file this task produces is already on disk."""
+        return all(q.exists() for q in self.paths)
+
+    @property
+    def size_on_disk(self) -> int:
+        return sum(q.stat().st_size for q in self.paths if q.exists())
+
+    @property
     def expected_bytes(self) -> int:
+        px = self.grid.width * self.grid.height
+        if self.kind == "s2":
+            return int(px * (len(optical.S2_REFLECTANCE_BANDS) * BYTES_PER_PIXEL_S2_BAND
+                             + BYTES_PER_PIXEL_S2_SCL))
         per_px = BYTES_PER_PIXEL_S1 if self.kind == "s1" else BYTES_PER_PIXEL_DEM
-        return int(self.grid.width * self.grid.height * per_px)
+        return int(px * per_px)
 
 
 def plan_event(event: dict, coefficients: list[str], runs_root: Path | None = None,
                n_pre: int = DEV_N_PRE, choice: TrackChoice | None = None,
-               log=print) -> list[Task]:
-    """Pre-flight one event and list the files its runs will need."""
+               op: OpticalParams | None = None, log=print) -> list[Task]:
+    """Pre-flight one event and list the files its runs will need.
+
+    With `op`, the Sentinel-2 pair is pre-flighted too. An event with no clear
+    pair is NOT a failure - it is the normal state of a clouded monsoon flood,
+    and scoring it radar-only is the honest outcome - so it is logged and
+    skipped rather than refused.
+    """
     bbox = tuple(float(v) for v in event["bbox"])
     event_day = date.fromisoformat(str(event["event_date"]))
     name = str(event["name"])
@@ -170,6 +218,17 @@ def plan_event(event: dict, coefficients: list[str], runs_root: Path | None = No
             tasks.append(Task(name, "s1", coefficient, acq.day, paths["s1"][acq.day], grid, acq))
         if i == 0:  # the DEM does not depend on the coefficient
             tasks.append(Task(name, "dem", None, None, paths["dem"], grid))
+
+    if op is not None and op.enabled:
+        pair = pipeline.optical_preflight(bbox, event_day, op, log=log)
+        if pair is None:
+            log(f"  {name}: no clear Sentinel-2 pair; this event will be scored "
+                f"radar-only")
+        else:
+            for day in (pair.pre.day, pair.post.day):
+                s2_paths = optical.s2_cache_paths(cache, day, grid.res)
+                tasks.append(Task(name, "s2", None, day, s2_paths["refl"], grid,
+                                  s2_paths=s2_paths, op=op))
     return tasks
 
 
@@ -189,11 +248,13 @@ def _connection():
 
 def _download(task: Task) -> tuple[Task, float, str]:
     t0 = time.time()
-    if task.path.exists():
+    if task.done:
         return task, 0.0, "cached"
     conn = _connection()
     if task.kind == "dem":
         ingest.download_dem(conn, task.grid, task.path)
+    elif task.kind == "s2":
+        optical.download_s2_date(conn, task.day, task.grid, task.s2_paths, task.op)
     else:
         rp = dev_run_params(task.coefficient)
         ingest.download_s1(conn, task.acq, task.grid, task.path, task.coefficient,
@@ -217,32 +278,49 @@ def main(argv=None) -> int:
                     help="pre-event images per stack (default from config.DEV_N_PRE)")
     ap.add_argument("--workers", type=int, default=3, help="parallel openEO downloads")
     ap.add_argument("--runs-root", type=Path, default=EVAL_RUNS)
+    ap.add_argument("--optical", action="store_true",
+                    help="also fetch the Sentinel-2 pair for each event, so the dev set can "
+                         "be scored with the optical evidence the live pipeline uses")
+    ap.add_argument("--optical-post-days", type=int,
+                    default=OpticalParams.max_post_latency_days,
+                    help="days after the event to look for a clear Sentinel-2 scene "
+                         "(default: %(default)s)")
     ap.add_argument("--estimate", action="store_true",
                     help="print the size estimate from the grids alone and exit (no network)")
     args = ap.parse_args(argv)
 
+    op = (replace(OpticalParams(), enabled=True, max_post_latency_days=args.optical_post_days)
+          if args.optical else None)
+
     events = select_events(args.plan, args.events)
     print(f"Plan '{args.plan}': {len(events)} event(s), coefficients "
-          f"{', '.join(args.coefficients)}, n_pre={args.n_pre}\n")
+          f"{', '.join(args.coefficients)}, n_pre={args.n_pre}, "
+          f"sentinel-2 {'ON' if op else 'off'}\n")
 
     if args.estimate:
-        total = 0
-        print(f"{'event':<34} {'kind':<16} {'grid':>13} {'Mpx':>7} {'est. download':>14}")
-        print("-" * 90)
+        total = s2_total = 0
+        print(f"{'event':<34} {'kind':<16} {'grid':>13} {'Mpx':>7} {'S1+DEM':>11} "
+              f"{'S2':>11} {'total':>11}")
+        print("-" * 108)
         for ev in events:
             grid = ingest.make_grid(tuple(float(v) for v in ev["bbox"]), RunParams.resolution_m)
-            mpx = grid.width * grid.height / 1e6
-            per_event = (mpx * 1e6 * BYTES_PER_PIXEL_S1 * (args.n_pre + 1) * len(args.coefficients)
-                         + mpx * 1e6 * BYTES_PER_PIXEL_DEM)
-            total += per_event
+            px = grid.width * grid.height
+            radar = (px * BYTES_PER_PIXEL_S1 * (args.n_pre + 1) * len(args.coefficients)
+                     + px * BYTES_PER_PIXEL_DEM)
+            s2 = (px * (len(optical.S2_REFLECTANCE_BANDS) * BYTES_PER_PIXEL_S2_BAND
+                        + BYTES_PER_PIXEL_S2_SCL) * S2_DATES_PER_EVENT) if op else 0
+            total += radar + s2
+            s2_total += s2
             print(f"{ev['name']:<34} {sb.row_kind(ev):<16} {grid.width:>6}x{grid.height:<6} "
-                  f"{mpx:>7.2f} {_mb(per_event):>14}")
-        n_files = sum(len(args.coefficients) * (args.n_pre + 1) + 1 for _ in events)
-        print("-" * 90)
-        print(f"{'TOTAL':<34} {'':<16} {'':>13} {'':>7} {_mb(total):>14}  in {n_files} files")
-        print("\nEstimate only: bytes per pixel measured from the runs/case_smoke cache, "
-              "and the\nacquisition count assumes every event finds a full stack "
-              "(pre-flight confirms).")
+                  f"{px / 1e6:>7.2f} {_mb(radar):>11} {_mb(s2):>11} {_mb(radar + s2):>11}")
+        per_event_files = len(args.coefficients) * (args.n_pre + 1) + 1
+        if op:
+            per_event_files += 2 * S2_DATES_PER_EVENT    # reflectance + class layer
+        n_files = per_event_files * len(events)
+        print("-" * 108)
+        print(f"{'TOTAL':<34} {'':<16} {'':>13} {'':>7} {_mb(total - s2_total):>11} "
+              f"{_mb(s2_total):>11} {_mb(total):>11}  in {n_files} files")
+        print(ESTIMATE_CAVEAT)
         return 0
 
     print("Pre-flight (catalogue only, no login) ...")
@@ -251,11 +329,11 @@ def main(argv=None) -> int:
     for ev in events:
         try:
             tasks += plan_event(ev, args.coefficients, args.runs_root, args.n_pre,
-                                log=lambda *_: None)
+                                op=op, log=lambda *_: None)
         except pipeline.PipelineError as err:
             print(f"  REFUSED {ev['name']}: {err}")
             failed.append(str(ev["name"]))
-    todo = [t for t in tasks if not t.path.exists()]
+    todo = [t for t in tasks if not t.done]
     have = len(tasks) - len(todo)
     print(f"  {len(tasks)} file(s) needed, {have} already cached, {len(todo)} to download "
           f"(~{_mb(sum(t.expected_bytes for t in todo))})\n")
@@ -278,7 +356,7 @@ def main(argv=None) -> int:
                     failed.append(task.label)
                     continue
                 done += 1
-                size = task.path.stat().st_size if task.path.exists() else 0
+                size = task.size_on_disk
                 bytes_got += size
                 elapsed = time.time() - t0
                 rate = done / max(elapsed, 1e-9)

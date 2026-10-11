@@ -77,8 +77,10 @@ No-go if downloads keep failing or no usable same-track pair exists.
 | `zscore_combined.tif` | change z-score: negative = darker, positive = brighter |
 | `hand_m.tif` | height above nearest drainage (m) |
 | `flood_polygons.geojson` | flood and debris polygons (EPSG:4326) with area in ha |
+| `reliability_narrow_valley.tif` | uint8: 0 not valley floor, 1 valley floor resolved, 2 low confidence (floor narrower than `min_valley_width_px`) |
+| `reliability_narrow_valley.geojson` | the code-2 zone as polygons, each carrying the caveat sentence |
 | `quicklook.png` | before, after, change and classification panels |
-| `run_report.json` | provenance: scenes, track, dates, every parameter, areas, runtime, attribution |
+| `run_report.json` | provenance: scenes, track, dates, every parameter, areas, runtime, attribution, and `reliability.narrow_valley` |
 | `cache\` | downloaded rasters, reused on every rerun |
 
 | Code | Meaning |
@@ -96,12 +98,25 @@ No-go if downloads keep failing or no usable same-track pair exists.
 1. **Track selection.** Pick the relative orbit with the earliest post-event image and at least 3 pre-event images. If none qualifies, refuse rather than guess.
 2. **Speckle filtering.** Lee filter on linear backscatter, then dB.
 3. **Change scoring.** Per-pixel z-score of the post-event image against the pre-event stack, VV and VH (multi-temporal approach, DeVries et al., 2020).
-4. **Water and debris rules.** Water: strong darkening and post-event VV below an Otsu threshold on the valley floor. Debris: brightening in both polarisations with a rough post-event surface.
+4. **Water and debris rules**, by mode (`detect.mode`, chosen by `eval/tune.py`, never per area).
+   - `rough_water` (**the default**): a coherent change of *either sign* low on the valley floor is water — at least `min_abs_change_db` (3 dB) in both polarisations, both moving the same way, and |z| past `z_seed`. A turbulent, sediment-laden gorge flood is a *rough* scatterer at C-band and can brighten rather than darken, so the sign of the change is not a reliable signature there. Water and debris are separated by terrain position: on the valley floor a strong change is water, above it strong brightening is debris. Darkness becomes the high-confidence test only.
+   - `darkening`: water is dark and darkens — strong darkening plus post-event VV below an Otsu threshold on the valley floor; debris brightens in both polarisations with a rough post-event surface. The correct physics on a flat floodplain, and infeasible on the dev controls (see Status).
 5. **Hysteresis growing.** Strong-change seeds start a region; weaker change joins only if connected.
 6. **Terrain masks.** HAND and slope from the Copernicus DEM; permanent water excluded.
 7. **Cleanup.** Minimum mapping unit; every region must connect to the drainage network.
+8. **Reliability layer (no effect on detection).** From the DEM alone: valley-floor pixels whose
+   local floor thickness is below `min_valley_width_px` (default 3 px = 60 m at the shipped 20 m
+   grid) are marked *"low confidence: valley narrower than radar resolution"*. A resolution cell
+   there straddles water, bank and wall, so its class is a statement about which scatterer
+   dominated a mixed pixel. Thickness is measured by morphological opening of the valley-floor
+   mask with a disc of radius `min_valley_width_px / 2`. `run_report.json` records the zone's
+   area and **what share of the flood-affected area falls inside it**; the dashboard and the
+   copilot attach that sentence to any number drawn from it. The layer never reads the class map
+   except to count that share, and never changes a detected pixel (`tests/test_reliability.py`).
 
-All parameters live in `strandline/config.py`.
+The detection runs in `rough_water` mode (see Status below). All parameters live in
+`strandline/config.py`; `ReliabilityParams` is deliberately outside `params_hash`, because it
+cannot change an output pixel and must not give a new hash to an unchanged detection.
 
 ## Scoring the dev set (checking only, never an input)
 

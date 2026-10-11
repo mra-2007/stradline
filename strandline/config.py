@@ -155,7 +155,41 @@ class RunParams:
             )
 
 
+@dataclass(frozen=True)
+class ReliabilityParams:
+    """Where the map should be read with less confidence. Reporting only.
+
+    This changes NO detection. It is a DEM-only statement about where the
+    ground is too narrow for the sensor to resolve, computed and written
+    alongside the classes so a dashboard, a copilot answer or a sitrep can
+    qualify a number instead of presenting it flat.
+    """
+
+    # A valley floor this many pixels wide or narrower cannot be resolved by a
+    # 20 m sensor: a single resolution cell then straddles water and wall, so
+    # every pixel in it is a mixture and its class is a guess about which
+    # scatterer dominated. Set from the imaging geometry, not from any score -
+    # at the shipped 20 m grid, 3 px is 60 m, and the measured failure this
+    # layer exists to flag (docs/tuning_log.md, 2026-10-11) is in gorges of
+    # roughly that width. Width is in PIXELS, so it follows resolution_m.
+    min_valley_width_px: float = 3.0
+
+    def __post_init__(self) -> None:
+        if not self.min_valley_width_px > 0:
+            raise ValueError(
+                f"min_valley_width_px must be positive, got {self.min_valley_width_px!r}.")
+
+
 def params_dict(detect: DetectParams, run: RunParams) -> dict:
+    """The parameters that PRODUCED the classes, i.e. what params_hash covers.
+
+    ReliabilityParams is deliberately NOT in here. It cannot change a single
+    output pixel of the class map, so folding it into params_hash would give a
+    new hash to an unchanged detection and make every already-recorded row in
+    eval/results/ look like a different configuration. It is written to
+    run_report.json under its own `reliability.parameters` key instead, so it
+    is still fully recorded.
+    """
     return {"detect": asdict(detect), "run": asdict(run)}
 
 
@@ -261,3 +295,23 @@ TUNE_GRIDS: dict[str, dict[str, tuple]] = {
         "detect.min_abs_change_db": (2.0, 3.0),
     },
 }
+
+
+# --- Reliability layer class codes (uint8 GeoTIFF) ---------------------------
+#
+# Its own small raster, NOT mixed into the class map: a reader must be able to
+# see the class and the confidence qualifier independently.
+RELIABILITY_OUTSIDE_VALLEY = 0   # not valley floor by HAND and slope
+RELIABILITY_RESOLVED = 1         # valley floor, wider than min_valley_width_px
+RELIABILITY_NARROW_VALLEY = 2    # valley floor, narrower: low confidence
+
+RELIABILITY_NAMES = {
+    RELIABILITY_OUTSIDE_VALLEY: "not valley floor",
+    RELIABILITY_RESOLVED: "valley floor, resolved",
+    RELIABILITY_NARROW_VALLEY: "low confidence: valley narrower than radar resolution",
+}
+
+# The exact wording the dashboard, the copilot and the sitrep must use for a
+# number that falls inside the narrow-valley zone. Kept here so the three of
+# them cannot drift apart, and so the Nepali translation has one source string.
+NARROW_VALLEY_CAVEAT = RELIABILITY_NAMES[RELIABILITY_NARROW_VALLEY]

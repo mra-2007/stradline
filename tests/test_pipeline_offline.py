@@ -74,13 +74,33 @@ def test_full_run_offline(tmp_path, monkeypatch):
     assert run.run(BBOX, EVENT, tmp_path, rp, DetectParams(), dry_run=False) == 0
 
     for name in ("flood_classes.tif", "zscore_combined.tif", "hand_m.tif",
-                 "flood_polygons.geojson", "quicklook.png", "run_report.json"):
+                 "flood_polygons.geojson", "reliability_narrow_valley.tif",
+                 "reliability_narrow_valley.geojson", "quicklook.png", "run_report.json"):
         assert (tmp_path / name).exists(), name
 
     report = json.loads((tmp_path / "run_report.json").read_text())
     assert report["track"]["relative_orbit"] == 85
     assert len(report["track"]["pre"]) == 5
     assert report["attribution"][0].startswith("Contains modified Copernicus Sentinel data")
+
+    # The narrow-valley reliability layer is reported, with its own parameters,
+    # and is NOT folded into the hash that identifies the detection.
+    narrow = report["reliability"]["narrow_valley"]
+    assert narrow["parameters"] == {"min_valley_width_px": 3.0}
+    assert narrow["min_valley_width_m"] == 60.0
+    assert narrow["valley_floor_pixels"] > 0
+    assert 0 <= narrow["narrow_valley_pixels"] <= narrow["valley_floor_pixels"]
+    assert narrow["flood_affected_pixels"] > 0
+    share = narrow["flood_affected_fraction_in_narrow_valley"]
+    assert 0.0 <= share <= 1.0, share
+    assert "min_valley_width_px" not in json.dumps(report["parameters"])
+
+    with rasterio.open(tmp_path / "reliability_narrow_valley.tif") as src:
+        codes = src.read(1)
+        assert src.crs.to_epsg() == grid.epsg
+        assert codes.shape == (grid.height, grid.width)
+    assert set(np.unique(codes)) <= {0, 1, 2}
+    assert int((codes == 2).sum()) == narrow["narrow_valley_pixels"]
 
     with rasterio.open(tmp_path / "flood_classes.tif") as src:
         classes = src.read(1)

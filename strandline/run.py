@@ -33,8 +33,14 @@ from pathlib import Path
 
 import numpy as np
 
-from strandline import catalog, detect, ingest, outputs, terrain
-from strandline.config import BACKSCATTER_COEFFICIENTS, DetectParams, RunParams, params_dict
+from strandline import catalog, detect, ingest, outputs, reliability, terrain
+from strandline.config import (
+    BACKSCATTER_COEFFICIENTS,
+    DetectParams,
+    ReliabilityParams,
+    RunParams,
+    params_dict,
+)
 
 # DetectParams fields consumed before `classify`, i.e. baked into a prepared
 # scene. A caller that varies one of these must prepare the scene again;
@@ -187,7 +193,8 @@ def classify(scene: PreparedScene, dp: DetectParams) -> detect.DetectionResult:
 
 
 def build_report(scene: PreparedScene, result: detect.DetectionResult, bbox, event_day: date,
-                 rp: RunParams, dp: DetectParams, runtime_s: float, n_poly: int | None) -> dict:
+                 rp: RunParams, dp: DetectParams, runtime_s: float, n_poly: int | None,
+                 rel: reliability.Reliability | None = None) -> dict:
     choice, grid, terr = scene.choice, scene.grid, scene.terrain
     params = params_dict(dp, rp)
     report = {
@@ -209,6 +216,11 @@ def build_report(scene: PreparedScene, result: detect.DetectionResult, bbox, eve
     }
     if n_poly is not None:
         report["n_polygons"] = n_poly
+    if rel is not None:
+        # Outside "parameters"/"parameters_hash" by design: this layer changes
+        # no output pixel of the class map, so it must not change the hash that
+        # identifies a detection (see config.params_dict).
+        report["reliability"] = {"narrow_valley": rel.stats}
     return report
 
 
@@ -219,16 +231,22 @@ def params_hash(dp: DetectParams, rp: RunParams) -> str:
 
 def write(out: Path, scene: PreparedScene, result: detect.DetectionResult, bbox,
           event_day: date, rp: RunParams, dp: DetectParams, runtime_s: float,
-          log=print) -> dict:
+          relp: ReliabilityParams | None = None, log=print) -> dict:
     grid, choice = scene.grid, scene.choice
+    relp = relp if relp is not None else ReliabilityParams()
+    rel = reliability.compute_reliability(
+        scene.terrain.hand_m, scene.terrain.slope_deg, result.classes, dp, relp, grid.res)
     outputs.write_geotiff(out / "flood_classes.tif", result.classes, grid, nodata=0)
     outputs.write_geotiff(out / "zscore_combined.tif", result.z_combined.astype(np.float32), grid)
     outputs.write_geotiff(out / "hand_m.tif", scene.terrain.hand_m.astype(np.float32), grid)
     n_poly = outputs.write_polygons(out / "flood_polygons.geojson", result.classes, grid)
+    outputs.write_geotiff(out / "reliability_narrow_valley.tif", rel.codes, grid)
+    outputs.write_reliability_polygons(
+        out / "reliability_narrow_valley.geojson", rel.codes, grid)
     outputs.write_quicklook(out / "quicklook.png", result,
                             f"Event {event_day} | track {choice.track[1]} {choice.track[2]} | "
                             f"post {choice.post.day}")
-    report = build_report(scene, result, bbox, event_day, rp, dp, runtime_s, n_poly)
+    report = build_report(scene, result, bbox, event_day, rp, dp, runtime_s, n_poly, rel=rel)
     outputs.write_report(out / "run_report.json", report)
     return report
 

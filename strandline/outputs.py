@@ -17,7 +17,12 @@ from rasterio.features import shapes  # noqa: E402
 from rasterio.warp import transform_geom  # noqa: E402
 from shapely.geometry import shape  # noqa: E402
 
-from strandline.config import CLASS_NAMES  # noqa: E402
+from strandline.config import (  # noqa: E402
+    CLASS_NAMES,
+    NARROW_VALLEY_CAVEAT,
+    RELIABILITY_NAMES,
+    RELIABILITY_NARROW_VALLEY,
+)
 
 CLASS_COLORS = {
     0: "#000000", 1: "#d9d9d6", 2: "#1f5fbf", 3: "#7fb2e8",
@@ -58,6 +63,31 @@ def write_polygons(path: Path, classes: np.ndarray, grid, export=(2, 3, 4)) -> i
             "geometry": transform_geom(grid.crs, "EPSG:4326", geom),
             "properties": {"class_code": v, "class_name": CLASS_NAMES[v],
                            "area_ha": round(area_ha, 3)},
+        })
+    path.write_text(json.dumps({"type": "FeatureCollection", "features": features}))
+    return len(features)
+
+
+def write_reliability_polygons(path: Path, codes: np.ndarray, grid) -> int:
+    """Vectorise the narrow-valley zone as its own layer.
+
+    A separate file from flood_polygons.geojson on purpose: this is a qualifier
+    on the map, not a detection, and a consumer must be able to draw it (or not)
+    without touching the flood layer. Every feature carries the caveat text, so
+    a dashboard or a sitrep cannot render the geometry without the sentence.
+    """
+    features = []
+    mask = codes == RELIABILITY_NARROW_VALLEY
+    for geom, _ in shapes(codes, mask=mask, transform=grid.transform, connectivity=8):
+        features.append({
+            "type": "Feature",
+            "geometry": transform_geom(grid.crs, "EPSG:4326", geom),
+            "properties": {
+                "reliability_code": int(RELIABILITY_NARROW_VALLEY),
+                "reliability_name": RELIABILITY_NAMES[RELIABILITY_NARROW_VALLEY],
+                "caveat": NARROW_VALLEY_CAVEAT,
+                "area_ha": round(shape(geom).area / 10_000.0, 3),
+            },
         })
     path.write_text(json.dumps({"type": "FeatureCollection", "features": features}))
     return len(features)

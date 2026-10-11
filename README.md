@@ -144,7 +144,9 @@ partly downloaded can never be mistaken for the whole one.
 ### One event, by hand
 
 ```
-venv\Scripts\python.exe -m validation.compare --pred runs\<dev_event>lood_classes.tif --reference dataeference\<dev_event>\<observed_event_file> --classes "Flooded area" --aoi dataeference\<dev_event>\<aoi_file> --tolerance-px 1 --out runs\<dev_event>alidation
+venv\Scripts\python.exe -m validation.compare --pred runs\<dev_event>lood_classes.tif --reference data
+eference\<dev_event>\<observed_event_file> --classes "Flooded area" --aoi data
+eference\<dev_event>\<aoi_file> --tolerance-px 1 --out runs\<dev_event>alidation
 ```
 
 Reports strict and boundary-tolerant precision, recall, F1 and IoU, plus an error map.
@@ -160,13 +162,29 @@ not real-world accuracy.
 **Verified against real data:** the live Copernicus catalogue and openEO download path; the
 evaluation chain end to end on one independent dev event (Konjic, EMSR770) from cached Sentinel-1.
 
-**Not yet verified:** every real-world gate. All gates read NO DATA: the dev-set download is
-incomplete, so no `split=loeo` row has been written. The first real event scored **F1 0.00** with
-default parameters, for a measured reason — the reference flood brightened rather than darkened
-(combined z median **+3.30**, 0.0% of reference pixels below the -15 dB open-water gate), so the
-darkening channel cannot fire there. Evidence, options and what was deliberately *not* changed are
-in `docs/tuning_log.md` (2026-10-11); the number is from
-`runs/eval/bosnia_konjic_2024/scores/3674bd8ba80a.json` and is one event, not a gate.
+**Not yet verified:** every real-world gate. All gates read NO DATA — the dev-set download is
+incomplete, so no `split=loeo` row has been written.
+
+Two backend limits found on the first full download attempt (38 of 90 files succeeded), both now
+handled and both recorded in `docs/tuning_log.md` (2026-10-11):
+
+- **SRTM stops at 60°N.** openEO's `sar_backscatter` defaults to SRTM for orthorectification, so
+  every Norwegian event died on missing tile N61E009 — including `sigma0-ellipsoid` jobs, since
+  geocoding needs a DEM whatever the radiometric reference. `elevation_model` is now passed
+  explicitly as `COPERNICUS_30`, the same DEM the terrain stage uses, and it is part of every cache
+  filename and of `params_hash`, so SRTM- and COP30-geocoded dates can never share a stack.
+- **`gamma0-terrain` is unavailable here.** The backend advertises `coefficient` as
+  `enum: ["sigma0-ellipsoid"]` and refuses anything else before a job exists. It has been removed
+  from `BACKSCATTER_COEFFICIENTS`; the tuning grid drops from 18 points to 9. This means the
+  terrain-flattening question raised by the steep-terrain failure mode **cannot be answered on this
+  backend** — not that it was tested and lost.
+
+The first real event scored **F1 0.00** with default parameters, for a measured reason: the
+reference flood brightened rather than darkened (combined z median **+3.30**, 0.0% of reference
+pixels below the −15 dB open-water gate), so the darkening channel cannot fire there. That number
+is from `runs/eval/bosnia_konjic_2024/scores/3674bd8ba80a.json` — one event, not a gate, and
+measured on SRTM-geocoded input, so it must be re-measured once the stack is refetched under
+`COPERNICUS_30`.
 
 ## Known limitations (for the report)
 

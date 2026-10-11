@@ -151,7 +151,8 @@ def missing_cache(event: dict, rp: RunParams, runs_root: Path | None = None,
             f"{event['name']}: no usable same-track pair; the event cannot be scored.")
     grid = ingest.make_grid(bbox, rp.resolution_m)
     paths = pipeline.scene_cache_paths(choice, cache_dir(str(event["name"]), runs_root),
-                                       grid.res, rp.backscatter_coefficient)
+                                       grid.res, rp.backscatter_coefficient,
+                                       rp.elevation_model)
     return [p for p in list(paths["s1"].values()) + [paths["dem"]] if not p.exists()]
 
 

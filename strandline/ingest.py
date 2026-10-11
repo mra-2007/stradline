@@ -22,7 +22,7 @@ from rasterio.transform import Affine, from_origin
 from rasterio.warp import Resampling, reproject, transform_bounds
 
 from strandline.catalog import Acquisition
-from strandline.config import BACKSCATTER_COEFFICIENTS
+from strandline.config import BACKSCATTER_COEFFICIENTS, ELEVATION_MODELS
 
 OPENEO_BACKEND = "openeo.dataspace.copernicus.eu"
 
@@ -117,20 +117,43 @@ def coefficient_slug(coefficient: str) -> str:
     return coefficient.replace("-", "_")
 
 
-def s1_cache_name(track_tag: str, day, res: float, coefficient: str) -> str:
+def elevation_model_slug(elevation_model: str) -> str:
+    """Filename-safe form of the openEO elevation-model collection id."""
+    if elevation_model not in ELEVATION_MODELS:
+        raise ValueError(
+            f"elevation_model {elevation_model!r} is not supported; "
+            f"choose one of {', '.join(ELEVATION_MODELS)}."
+        )
+    return elevation_model.lower().replace("-", "_")
+
+
+def s1_cache_name(track_tag: str, day, res: float, coefficient: str,
+                  elevation_model: str) -> str:
     """Cache filename for one acquisition.
 
-    The coefficient is part of the name on purpose: sigma0-ellipsoid and
-    gamma0-terrain are different measurements of the same scene, and a stack
-    that silently mixed them would produce change where there was none.
+    The coefficient AND the elevation model are both part of the name on
+    purpose. Each is a different measurement of the same scene: a coefficient
+    changes the radiometric reference area, and the elevation model changes
+    where every pixel is placed during orthorectification. A stack that
+    silently mixed either would show change that came from the processing
+    rather than from the flood. Both are therefore required arguments - there
+    is no default that could quietly produce a mixed cache.
     """
-    return f"s1_{coefficient_slug(coefficient)}_{track_tag}_{day}_{int(res)}m.tif"
+    return (f"s1_{coefficient_slug(coefficient)}_{elevation_model_slug(elevation_model)}"
+            f"_{track_tag}_{day}_{int(res)}m.tif")
 
 
 def download_s1(conn, acq: Acquisition, grid: Grid, out_path: Path,
-                coefficient: str, with_mask: bool) -> Path:
-    """One acquisition -> GeoTIFF with bands VV, VH (+ mask). Linear backscatter."""
-    coefficient_slug(coefficient)  # reject an unsupported value before any network call
+                coefficient: str, with_mask: bool,
+                elevation_model: str = "COPERNICUS_30") -> Path:
+    """One acquisition -> GeoTIFF with bands VV, VH (+ mask). Linear backscatter.
+
+    `elevation_model` is passed to sar_backscatter explicitly. Left unset, the
+    backend falls back to SRTMGL1, which has no data above 60 deg N and fails
+    outright there (see strandline/config.py ELEVATION_MODELS).
+    """
+    coefficient_slug(coefficient)      # reject unsupported values before any
+    elevation_model_slug(elevation_model)  # network call
     if out_path.exists():
         return out_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -138,7 +161,8 @@ def download_s1(conn, acq: Acquisition, grid: Grid, out_path: Path,
     t0, t1 = acq.start - timedelta(minutes=2), acq.stop + timedelta(minutes=2)
     cube = conn.load_collection("SENTINEL1_GRD", spatial_extent=grid.openeo_extent(),
                                 temporal_extent=[_iso(t0), _iso(t1)], bands=["VV", "VH"])
-    cube = cube.sar_backscatter(coefficient=coefficient, mask=with_mask)
+    cube = cube.sar_backscatter(coefficient=coefficient, mask=with_mask,
+                                elevation_model=elevation_model)
     cube = cube.resample_spatial(resolution=grid.res, projection=grid.epsg, method="bilinear")
     cube = cube.reduce_dimension(dimension="t", reducer="mean")
     return _download(cube, out_path)

@@ -164,7 +164,8 @@ def plan_event(event: dict, coefficients: list[str], runs_root: Path | None = No
                 raise pipeline.PipelineError(
                     f"{name}: no usable same-track pair with n_pre={n_pre}; "
                     "this event cannot be scored and must be reported as such, not dropped.")
-        paths = pipeline.scene_cache_paths(choice, cache, grid.res, coefficient)
+        paths = pipeline.scene_cache_paths(choice, cache, grid.res, coefficient,
+                                           rp.elevation_model)
         for acq in list(choice.pre) + [choice.post]:
             tasks.append(Task(name, "s1", coefficient, acq.day, paths["s1"][acq.day], grid, acq))
         if i == 0:  # the DEM does not depend on the coefficient
@@ -195,7 +196,8 @@ def _download(task: Task) -> tuple[Task, float, str]:
         ingest.download_dem(conn, task.grid, task.path)
     else:
         rp = dev_run_params(task.coefficient)
-        ingest.download_s1(conn, task.acq, task.grid, task.path, task.coefficient, rp.use_sar_mask)
+        ingest.download_s1(conn, task.acq, task.grid, task.path, task.coefficient,
+                           rp.use_sar_mask, rp.elevation_model)
     return task, time.time() - t0, "downloaded"
 
 

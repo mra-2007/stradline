@@ -92,14 +92,14 @@ def preflight(bbox, event_day: date, rp: RunParams, log=print) -> catalog.TrackC
 
 
 def scene_cache_paths(choice: catalog.TrackChoice, cache: Path, res: float,
-                      coefficient: str) -> dict:
+                      coefficient: str, elevation_model: str) -> dict:
     """Where every file of this scene is cached. Pure path arithmetic.
 
     The fetch script and the scoreboard both ask this function, so a file
     downloaded once is found again rather than downloaded twice.
     """
     tag = f"t{choice.track[1]}_{choice.track[2]}"
-    s1 = {acq.day: cache / ingest.s1_cache_name(tag, acq.day, res, coefficient)
+    s1 = {acq.day: cache / ingest.s1_cache_name(tag, acq.day, res, coefficient, elevation_model)
           for acq in list(choice.pre) + [choice.post]}
     return {"s1": s1, "dem": cache / f"dem_{int(res)}m.tif",
             "terrain": cache / f"terrain_{int(res)}m.npz"}
@@ -108,7 +108,8 @@ def scene_cache_paths(choice: catalog.TrackChoice, cache: Path, res: float,
 def fetch(choice: catalog.TrackChoice, grid: ingest.Grid, cache: Path, rp: RunParams,
           conn=None, log=print) -> dict:
     """Download (or reuse from cache) every raster this scene needs."""
-    paths = scene_cache_paths(choice, cache, grid.res, rp.backscatter_coefficient)
+    paths = scene_cache_paths(choice, cache, grid.res, rp.backscatter_coefficient,
+                              rp.elevation_model)
     missing = [p for p in list(paths["s1"].values()) + [paths["dem"]] if not p.exists()]
     if not missing:
         log(f"[3/6] All {len(paths['s1']) + 1} rasters already cached")
@@ -117,7 +118,8 @@ def fetch(choice: catalog.TrackChoice, grid: ingest.Grid, cache: Path, rp: RunPa
     for acq in list(choice.pre) + [choice.post]:
         path = paths["s1"][acq.day]
         log(f"      S1 {acq.day} -> {path.name}")
-        ingest.download_s1(conn, acq, grid, path, rp.backscatter_coefficient, rp.use_sar_mask)
+        ingest.download_s1(conn, acq, grid, path, rp.backscatter_coefficient,
+                           rp.use_sar_mask, rp.elevation_model)
     ingest.download_dem(conn, grid, paths["dem"])
     return paths
 

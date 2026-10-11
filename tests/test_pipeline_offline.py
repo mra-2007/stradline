@@ -47,7 +47,9 @@ def test_full_run_offline(tmp_path, monkeypatch):
     grid = ingest.make_grid(BBOX, 20.0)
     post_day = EVENT + timedelta(days=4)
 
-    def fake_s1(conn, acq, grid_, path, coefficient, with_mask):
+    def fake_s1(conn, acq, grid_, path, coefficient, with_mask,
+                elevation_model="COPERNICUS_30"):
+        assert elevation_model == "COPERNICUS_30", "SRTM would fail above 60N"
         path.parent.mkdir(parents=True, exist_ok=True)
         with rasterio.open(path, "w", driver="GTiff", height=grid_.height, width=grid_.width,
                            count=2, dtype="float32", crs=grid_.crs, transform=grid_.transform) as dst:

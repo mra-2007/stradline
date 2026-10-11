@@ -68,20 +68,22 @@ def harness(monkeypatch, tmp_path):
         return _FakeScene(rp.backscatter_coefficient)
 
     def fake_score(event, scene, dp, tolerance_px=1, **k):
-        """A deterministic stand-in: the best grid point is the declared one.
+        """A deterministic stand-in with a known optimum.
 
-        F1 peaks at z_seed 3.0 with gamma0-terrain, and sigma0-ellipsoid floods
-        one control, so the expected choice is known without any real data.
+        F1 peaks at z_seed 2.5 and prefers water_db_max -18.0, while the most
+        permissive darkness gate (-12.0) floods every control. So the expected
+        choice is z_seed 2.5 / water_db_max -18.0, and it differs from the
+        config.py defaults, which is what makes the diff non-empty. No real
+        data is involved.
         """
         name = str(event["name"])
         rp = scene.run_params
         phash = pipeline.params_hash(dp, rp)
         kind = sb.row_kind(event)
-        penalty = abs(dp.z_seed - 3.0) * 0.10
-        bonus = 0.02 if rp.backscatter_coefficient == "gamma0-terrain" else 0.0
+        penalty = abs(dp.z_seed - 2.5) * 0.10
+        bonus = 0.02 if dp.water_db_max == -18.0 else 0.0
         if kind == sb.KIND_CONTROL:
-            ffr = CONTROL_FFR[name] + (0.05 if rp.backscatter_coefficient
-                                       == "sigma0-ellipsoid" else 0.0)
+            ffr = CONTROL_FFR[name] + (0.05 if dp.water_db_max == -12.0 else 0.0)
             return EventScore(event=name, kind=kind, params_hash=phash,
                               metrics={"false_flood_fraction": round(ffr, 6)},
                               provenance={"domain_pixels": 1_000_000,
@@ -153,9 +155,10 @@ def test_chosen_params_records_the_method_and_the_diff(harness):
     assert saved["method"]["objective"].startswith("maximise mean f1_tolerant")
     assert "0.01" in saved["method"]["constraint"]
     assert saved["method"]["split"] == "leave-one-event-out over the flood events in the pool"
-    assert saved["chosen_parameters"]["run"]["backscatter_coefficient"] == "gamma0-terrain"
-    assert saved["chosen_parameters"]["detect"]["z_seed"] == 3.0
-    assert {d["key"] for d in saved["config_diff"]} >= {"run.backscatter_coefficient"}
+    assert saved["chosen_parameters"]["detect"]["z_seed"] == 2.5
+    assert saved["chosen_parameters"]["detect"]["water_db_max"] == -18.0
+    assert saved["chosen_parameters"]["run"]["elevation_model"] == "COPERNICUS_30"
+    assert {d["key"] for d in saved["config_diff"]} >= {"detect.z_seed", "detect.water_db_max"}
     assert any("in-sample" in c for c in saved["caveats"])
     assert any("n_pre" in c for c in saved["caveats"])
 
@@ -165,17 +168,18 @@ def test_every_event_has_its_own_recorded_selection(harness):
     assert set(saved["loeo"]) == set(FLOOD_F1)
     for held, sel in saved["loeo"].items():
         assert held not in sel["train_events"], f"{held} trained on itself"
-        assert len(sel["candidates"]) == 18
+        assert len(sel["candidates"]) == 9
         assert sel["chosen"]["worst_control_false_flood_fraction"] <= 0.01
 
 
-def test_the_control_constraint_rejected_the_other_coefficient(harness):
-    """sigma0 floods a control in this stand-in, so it must be rejected."""
+def test_the_control_constraint_rejected_the_permissive_darkness_gate(harness):
+    """water_db_max -12.0 floods a control in this stand-in: it must be
+    rejected, and only it, however good its flood F1."""
     saved = json.loads(harness["chosen"].read_text(encoding="utf-8"))
-    rejected = [c for c in saved["final"]["candidates"] if c["rejected"]]
-    assert rejected, "no candidate was rejected at all"
-    assert all("sigma0" in str(c["point"]["run.backscatter_coefficient"])
-               for c in rejected if "false-flood" in str(c["rejected"]))
+    rejected = [c for c in saved["final"]["candidates"]
+                if c["rejected"] and "false-flood" in str(c["rejected"])]
+    assert rejected, "no candidate was rejected by the control constraint"
+    assert {c["point"]["detect.water_db_max"] for c in rejected} == {-12.0}
 
 
 # --- the gates actually move with the rows ------------------------------------

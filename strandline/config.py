@@ -54,13 +54,31 @@ class DetectParams:
 #                     still drives much of the brightness, so backscatter is
 #                     dominated by geometry in steep country; for same-orbit
 #                     change detection that term largely cancels between dates.
-#   gamma0-terrain    radiometric terrain flattening (RTC) against the DEM,
-#                     which removes most of that geometric term.
 #
-# The default stays sigma0-ellipsoid. It changes only if the dev-event
-# scoreboard shows gamma0-terrain is better (see docs/tuning_log.md); it is
-# never switched for one area or one event.
-BACKSCATTER_COEFFICIENTS = ("sigma0-ellipsoid", "gamma0-terrain")
+# gamma0-terrain (radiometric terrain flattening against the DEM) was listed
+# here until 2026-10-11 and has been REMOVED: the Copernicus Data Space openEO
+# backend does not offer it. Its own `sar_backscatter` process description
+# declares coefficient as enum ["sigma0-ellipsoid"], and a request for
+# gamma0-terrain is refused before a batch job is even created:
+#
+#     OpenEoClientException: Invalid `sar_backscatter` coefficient
+#     'gamma0-terrain'. Should be one of ['sigma0-ellipsoid']
+#
+# So terrain flattening is not a choice we have on this backend, and the
+# tuning question it was raised for cannot be answered here (docs/tuning_log.md,
+# 2026-10-11). Put the name back only after the backend's own process schema
+# advertises it; TUNE_GRID then searches it again with no further change.
+BACKSCATTER_COEFFICIENTS = ("sigma0-ellipsoid",)
+
+# DEM used by openEO's sar_backscatter for orthorectification. The backend
+# default (None) resolves to SRTMGL1, which ENDS AT 60 deg N: every Norwegian
+# dev event failed with FileNotFoundError on tile N61E009 until this was set.
+# COPERNICUS_30 is global and is the same DEM the terrain stage uses, so
+# geocoding and HAND now rest on one elevation source rather than two.
+#
+# It is part of the processing, not a preference: it changes where pixels land,
+# so it belongs in params_hash and in every cache filename.
+ELEVATION_MODELS = ("COPERNICUS_30",)
 
 
 @dataclass(frozen=True)
@@ -74,6 +92,7 @@ class RunParams:
     search_days_before: int = 75
     stream_threshold_km2: float = 5.0  # upstream area that defines a channel
     backscatter_coefficient: str = "sigma0-ellipsoid"
+    elevation_model: str = "COPERNICUS_30"
     use_sar_mask: bool = False     # layover/shadow band: verify encoding first
 
     def __post_init__(self) -> None:
@@ -81,6 +100,11 @@ class RunParams:
             raise ValueError(
                 f"backscatter_coefficient {self.backscatter_coefficient!r} is not supported; "
                 f"choose one of {', '.join(BACKSCATTER_COEFFICIENTS)}."
+            )
+        if self.elevation_model not in ELEVATION_MODELS:
+            raise ValueError(
+                f"elevation_model {self.elevation_model!r} is not supported; "
+                f"choose one of {', '.join(ELEVATION_MODELS)}."
             )
 
 

@@ -25,7 +25,12 @@ from eval import scoreboard as sb
 from eval import tune
 from eval.run_scoreboard import EventScore
 from strandline import run as pipeline
-from strandline.config import DetectParams, RunParams, TUNE_GRID
+from strandline.config import (
+    BACKSCATTER_COEFFICIENTS,
+    DetectParams,
+    RunParams,
+    TUNE_GRID,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 GATES = yaml.safe_load((ROOT / "eval" / "gates.yaml").read_text(encoding="utf-8"))
@@ -62,7 +67,7 @@ def matrix_from(spec: dict, points: list[dict]) -> tune.Matrix:
 
 def test_the_real_grid_is_valid_and_small():
     points = tune.grid_points()
-    assert len(points) == 18, "the declared grid changed size"
+    assert len(points) == 9, "the declared grid changed size"
     assert len(points) == len(set(tune.point_hash(p) for p in points)), "two points collide"
 
 
@@ -72,10 +77,14 @@ def test_grid_points_are_deterministic():
         "backscatter_coefficient="), "grid order is not declaration order"
 
 
-def test_both_backscatter_coefficients_are_in_the_grid():
-    """Required by the tuning question in docs/tuning_log.md."""
+def test_the_grid_searches_exactly_the_coefficients_the_backend_offers():
+    """gamma0-terrain was dropped on 2026-10-11: the Copernicus Data Space
+    backend declares coefficient as enum ["sigma0-ellipsoid"] and refuses it
+    before a job is created. The axis stays declared, so putting the name back
+    in BACKSCATTER_COEFFICIENTS re-enables the search with no other change."""
     coeffs = {tune.coefficient_of(p) for p in tune.grid_points()}
-    assert coeffs == {"sigma0-ellipsoid", "gamma0-terrain"}
+    assert coeffs == set(BACKSCATTER_COEFFICIENTS) == {"sigma0-ellipsoid"}
+    assert "run.backscatter_coefficient" in TUNE_GRID
 
 
 @pytest.mark.parametrize("bad", [
@@ -93,8 +102,8 @@ def test_an_untunable_grid_is_rejected(bad):
 
 def test_materialise_puts_each_value_on_the_right_dataclass():
     dp, rp = tune.materialise({"detect.z_seed": 2.5,
-                               "run.backscatter_coefficient": "gamma0-terrain"}, N_PRE)
-    assert dp.z_seed == 2.5 and rp.backscatter_coefficient == "gamma0-terrain"
+                               "run.max_post_latency_days": 9}, N_PRE)
+    assert dp.z_seed == 2.5 and rp.max_post_latency_days == 9
     assert dp.z_grow == DetectParams().z_grow, "an untouched field changed"
     assert rp.n_pre == N_PRE
 
@@ -267,11 +276,11 @@ def test_config_diff_is_empty_for_the_declared_defaults():
 
 
 def test_config_diff_names_every_change():
-    dp = replace(DetectParams(), z_seed=2.5)
-    rp = replace(RunParams(), backscatter_coefficient="gamma0-terrain", n_pre=3)
+    dp = replace(DetectParams(), z_seed=2.5, water_db_max=-18.0)
+    rp = replace(RunParams(), n_pre=3)
     diff = {d["key"]: (d["config_py"], d["chosen"]) for d in tune.config_diff(dp, rp)}
     assert diff["detect.z_seed"] == (3.0, 2.5)
-    assert diff["run.backscatter_coefficient"] == ("sigma0-ellipsoid", "gamma0-terrain")
+    assert diff["detect.water_db_max"] == (-15.0, -18.0)
     assert diff["run.n_pre"] == (5, 3)
 
 
@@ -312,7 +321,11 @@ class _FakeScene:
 
 
 def test_a_scene_is_prepared_once_per_event_and_coefficient(monkeypatch, tmp_path):
-    """18 grid points over 2 coefficients must cost 2 preparations, not 18."""
+    """9 grid points over 1 coefficient must cost 1 preparation, not 9.
+
+    The expensive stage is per (event, coefficient); the cheap stage is per
+    point. Were this to regress, tuning would re-download the dev set.
+    """
     prepared, scored = [], []
 
     def fake_prepare(event, rp, dp, *a, **k):
@@ -332,9 +345,10 @@ def test_a_scene_is_prepared_once_per_event_and_coefficient(monkeypatch, tmp_pat
     points = tune.grid_points()
     m = tune.build_matrix(events, points, tmp_path, n_pre=N_PRE, reuse=False,
                           log=lambda *a: None)
-    assert len(prepared) == 2, f"prepared {len(prepared)} scenes, expected one per coefficient"
-    assert len(scored) == len(points) == 18
-    assert len(m) == 18
+    coefficients = {c for _, c in prepared}
+    assert len(prepared) == len(coefficients) == 1,         f"prepared {len(prepared)} scenes, expected one per coefficient"
+    assert len(scored) == len(points) == 9
+    assert len(m) == 9
 
 
 def test_cached_scores_are_reused_and_nothing_is_prepared(monkeypatch, tmp_path):
@@ -352,7 +366,7 @@ def test_cached_scores_are_reused_and_nothing_is_prepared(monkeypatch, tmp_path)
     monkeypatch.setattr(tune, "prepare_event", boom)
     m = tune.build_matrix([event], points, tmp_path, n_pre=N_PRE, reuse=True,
                           log=lambda *a: None)
-    assert len(m) == 18
+    assert len(m) == len(points) == 9
     assert all(s.value("f1_tolerant") == 0.77 for s in m.values())
 
 

@@ -212,3 +212,80 @@ search's clothes. The decision below is the human's.
 Recommendation: (2) then (1), with the terrain-zone widening of (3) folded in,
 and all three scored by `eval/tune.py` over the whole dev set rather than this
 one event.
+
+---
+
+## 2026-10-11 — Change: elevation model set explicitly; gamma0-terrain removed
+
+**Status:** two processing changes, both forced by measured backend behaviour.
+No detection parameter was tuned.
+
+**Where it came from:** the first full dev-set download, which finished 38 of
+90 files and failed 52. Two distinct causes, both diagnosed from openEO itself.
+
+### Cause 1: SRTM has no data above 60 deg N
+
+Every Norwegian job (Selsverket and Ringebu, both ~61.5 deg N) failed. The batch
+job logs show the failure inside
+`openeogeotrellis/collections/s1backscatter_orfeo.py::_get_dem_dir_context`,
+with `elevation_model=None` in the `sar_backscatter` arguments and a missing
+SRTMGL1 tile N61E009. The backend default resolves to SRTM, which stops at
+60 deg N.
+
+Note this bit **sigma0-ellipsoid** jobs, not only terrain-flattened ones:
+orthorectification needs a DEM whatever the radiometric reference area is.
+
+**Changed:** `ingest.download_s1` now passes `elevation_model` to
+`sar_backscatter` explicitly, and `RunParams.elevation_model` declares it
+(`COPERNICUS_30`, the only supported value, global, and the same DEM the terrain
+stage already uses - so geocoding and HAND now rest on one elevation source
+instead of two).
+
+**Consequence for the cache, deliberately:** the elevation model is now part of
+every Sentinel-1 cache filename and of `params_hash`. It changes where pixels
+land, so a stack mixing SRTM- and COPERNICUS_30-geocoded dates would show change
+that came from the processing. The 28 Sentinel-1 files already downloaded under
+the old names are therefore **stale and unreadable by name** and must be
+fetched again; the 10 DEM files are unaffected (`download_dem` never called
+`sar_backscatter`). Cached SCORES are invalidated too, because `params_hash`
+changed - which is the behaviour we want.
+
+### Cause 2: this backend cannot do gamma0-terrain at all
+
+Every gamma0-terrain job failed, and none of them appears in the account's job
+list, because they were refused before a job was created. The backend's own
+process description settles it:
+
+    conn.describe_process("sar_backscatter")
+    coefficient: {"enum": ["sigma0-ellipsoid"], "type": "string"}
+
+and a request is refused client-side from that schema:
+
+    OpenEoClientException: Invalid `sar_backscatter` coefficient
+    'gamma0-terrain'. Should be one of ['sigma0-ellipsoid']
+
+**Changed:** `BACKSCATTER_COEFFICIENTS` is now `("sigma0-ellipsoid",)`.
+`TUNE_GRID` keeps the `run.backscatter_coefficient` axis, which now has one
+value, so the grid drops from 18 points to 9; putting the name back in
+`BACKSCATTER_COEFFICIENTS` re-enables the search with no other edit if the
+backend ever advertises it.
+
+**What this costs us, stated plainly.** The open question from the
+2026-10-11 observation above - whether radiometric terrain flattening separates
+the valley-floor histogram that sigma0 leaves unimodal - **cannot be answered on
+this backend**. It is not that gamma0-terrain scored worse; it is unavailable,
+so there is no measurement either way. Terrain flattening remains a real
+candidate explanation for the steep-terrain failure mode and would need a
+different processing route (for example local RTC from the GRD with the
+Copernicus DEM) to test. That is a build, not a parameter, and it is not
+attempted here.
+
+### What this does to the Konjic observation above
+
+The EMSR770 numbers in the previous entry were measured on SRTM-geocoded
+Sentinel-1 files, since Konjic at 43.7 deg N is inside SRTM coverage and those
+downloads succeeded. They must be **re-measured** once the stack is refetched
+under COPERNICUS_30. The finding is radiometric (the flood brightened: combined
+z median +3.30, 0.0% of reference pixels below -15 dB) and a geocoding change of
+a pixel or two is unlikely to reverse it, but "unlikely" is not "measured", and
+the earlier numbers should not be quoted after the refetch.

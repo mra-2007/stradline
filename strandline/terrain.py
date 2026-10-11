@@ -6,6 +6,7 @@ valley wall, so HAND removes most mountain false positives (radar shadow,
 wet snow, dark rock) that fool simple thresholding.
 """
 
+import hashlib
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -90,3 +91,48 @@ def compute_terrain(dem: np.ndarray, transform: Affine, crs: CRS,
     return Terrain(slope_deg=slope_degrees(dem, pixel_size), hand_m=hand, streams=streams,
                    flow_dir=np.asarray(fdir), accumulation=np.asarray(acc),
                    hand_fallback_fraction=round(fallback_fraction, 4))
+
+
+# --- Caching -----------------------------------------------------------------
+#
+# D8 flow routing and HAND take minutes on a large grid and depend only on the
+# DEM, the grid and the stream threshold - never on a detection parameter. The
+# evaluation harness prepares the same event under several parameter sets, so
+# the layers are cached to disk and reused byte-for-byte (Rule 5: cache every
+# stage; identical inputs give identical outputs).
+
+TERRAIN_CACHE_KEYS = ("slope_deg", "hand_m", "streams", "flow_dir", "accumulation")
+
+
+def _cache_key(dem: np.ndarray, transform: Affine, stream_threshold_km2: float) -> str:
+    finite = np.isfinite(dem)
+    digest = hashlib.sha256()
+    digest.update(np.asarray(dem.shape, dtype=np.int64).tobytes())
+    digest.update(np.asarray(tuple(transform)[:6], dtype=np.float64).tobytes())
+    digest.update(np.asarray([stream_threshold_km2], dtype=np.float64).tobytes())
+    digest.update(np.ascontiguousarray(np.where(finite, dem, -9999.0), dtype=np.float64).tobytes())
+    return digest.hexdigest()[:16]
+
+
+def load_or_compute_terrain(dem: np.ndarray, transform: Affine, crs: CRS,
+                            stream_threshold_km2: float, cache_path: Path | None = None,
+                            log=print) -> Terrain:
+    """compute_terrain, memoised on disk. The key covers the DEM pixels too,
+    so a different DEM or threshold can never be served from a stale cache."""
+    key = _cache_key(dem, transform, stream_threshold_km2)
+    if cache_path is not None and cache_path.exists():
+        with np.load(cache_path, allow_pickle=False) as z:
+            if str(z["key"]) == key:
+                log(f"      terrain layers from cache {cache_path.name}")
+                return Terrain(**{k: z[k] for k in TERRAIN_CACHE_KEYS},
+                               hand_fallback_fraction=float(z["hand_fallback_fraction"]))
+        log(f"      terrain cache {cache_path.name} is for a different DEM; recomputing")
+    terr = compute_terrain(dem, transform, crs, stream_threshold_km2)
+    if cache_path is not None:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache_path.with_suffix(".part.npz")
+        np.savez_compressed(tmp, key=key,
+                            hand_fallback_fraction=terr.hand_fallback_fraction,
+                            **{k: getattr(terr, k) for k in TERRAIN_CACHE_KEYS})
+        tmp.replace(cache_path)
+    return terr

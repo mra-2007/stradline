@@ -109,3 +109,56 @@ CLASS_NAMES = {
 }
 
 FLOOD_CLASSES = (CLASS_FLOOD_HIGH, CLASS_FLOOD_MEDIUM)
+
+
+# --- Dev-event scoring cost ---------------------------------------------------
+#
+# Scoring the dev set means downloading a Sentinel-1 stack per event per
+# backscatter coefficient. DEV_N_PRE trades reference-stack depth for download
+# time and openEO quota: 3 is `RunParams.min_pre`, the thinnest stack the
+# pipeline will accept, and one dev event (the steepest) has only 3 pre images
+# available anyway.
+#
+# This is a COST setting, not a tuned value, and it is not free: a 3-image
+# reference stack gives a noisier per-pixel std than 5, so `std_floor_db` does
+# more of the work and z-scores are less stable. Numbers measured at
+# DEV_N_PRE therefore describe a thinner stack than the shipped default
+# (RunParams.n_pre = 5) and must be reported as such. Every params_hash
+# records n_pre, so any row can be traced back to the stack depth used.
+DEV_N_PRE = 3
+
+
+# --- Parameter search grid (eval/tune.py, leave-one-event-out) ----------------
+#
+# Rule 3.4: parameter values are chosen by eval/tune.py with leave-one-event-out,
+# or set from physics or literature without looking at scores. Never hand-tuned.
+# Rule 3.7: the grid itself is a tunable, so it lives here.
+#
+# Keys are "<section>.<field>", section being "run" (RunParams) or "detect"
+# (DetectParams). The search is exhaustive over the cartesian product, so the
+# grid is deliberately small: every axis costs one detection pass per event,
+# and a backscatter axis costs a whole extra download of the dev set.
+#
+# Why these three axes and not others:
+#   run.backscatter_coefficient  the open question from docs/tuning_log.md:
+#                                real VV correlates with DEM-simulated terrain
+#                                brightness at r = 0.75, so radiometric terrain
+#                                flattening may separate the valley-floor
+#                                histogram that sigma0 leaves unimodal.
+#   detect.z_seed                the multi-temporal change threshold. 2.5-3.5
+#                                sigma is the range used in the literature this
+#                                detector follows (DeVries et al. 2020).
+#   detect.water_db_max          the ceiling on the open-water darkness gate,
+#                                which the tuning log shows is the operative
+#                                threshold in steep terrain (Otsu returns a
+#                                land-like value there and the clamp bites).
+#
+# Everything else stays at its physics- or literature-set value: HAND and slope
+# limits describe where water can lie, the Lee window and ENL describe the
+# sensor, and the minimum mapping units describe the resolution. Adding an axis
+# must be justified here, not by a score.
+TUNE_GRID: dict[str, tuple] = {
+    "run.backscatter_coefficient": BACKSCATTER_COEFFICIENTS,
+    "detect.z_seed": (2.5, 3.0, 3.5),
+    "detect.water_db_max": (-18.0, -15.0, -12.0),
+}

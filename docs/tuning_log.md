@@ -124,3 +124,91 @@ bytes already on disk; nothing was re-downloaded and no pixel changed.
 
 The default moves only on leave-one-event-out scoreboard evidence, recorded
 here as a new entry.
+
+---
+
+## 2026-10-11 — Observation: on an independent mountain reference, flood water BRIGHTENED
+
+**Status:** observation only. No parameter changed. No value chosen from a score.
+
+**Where it came from:** the first real scoreboard run of `eval/run_scoreboard.py`,
+on `bosnia_konjic_2024` (Neretva gorge, Copernicus EMS EMSR770 AOI01, reference
+SPOT-6/7 optical at +3.4 d, INDEPENDENT of our Sentinel-1 input). Scored from
+the cache with default `config.py` parameters, `n_pre=3`, `--no-write`, so no
+row reached `eval/results/`. Numbers below are from
+`runs/eval/bosnia_konjic_2024/scores/3674bd8ba80a.json`. One event is not a
+gate and these are not gate numbers.
+
+### What was measured
+
+Reference `water` class = `event_type` "5-Flood", 3 polygons, 19.3 ha inside an
+31 823 ha domain (0.06% positives). Domain fraction 1.00 - nothing was excluded
+from scoring.
+
+| Quantity | Value |
+|---|---|
+| Flood precision / recall / F1 (strict and tolerant) | **0.00 / 0.00 / 0.00** |
+| Predicted flood area | 1.52 ha against 19.3 ha of reference |
+| Combined z-score under the reference flood | median **+3.30**, p10 +0.60 |
+| ...of those pixels, passing the darkening seed (z <= -3.0) | **3.3%** |
+| Post-event VV under the reference flood | median **-8.0 dB**, p10 -9.2 dB |
+| ...passing the darkness gate (<= -15 dB `water_db_max`) | **0.0%** |
+| Reference flood pixels inside the water terrain zone | **94.2%** |
+| Reference flood classified as `possible debris / deposit` | **79.0%** |
+| Reference flood classified as `no significant change` | 20.7% |
+| Debris class vs the reference mass-movement class | precision **0.0062**, recall 0.3213 |
+| Debris class extent | 1 197 ha, i.e. 3.8% of the whole AOI |
+
+### What it means
+
+**The terrain mask is not the problem.** 94.2% of the reference flood sits
+inside the HAND <= 20 m, slope <= 15 deg water zone, so the flood was reachable.
+Widening the zone to HAND <= 35 m / slope <= 25 deg would reach 99.8% and cost
+little, but it would not change the result: the pixels are already analysed.
+
+**The darkening assumption is the problem, and it fails in the same direction as
+the case-study observation above.** The reference flood *brightened* (median
+combined z **+3.30**) and its post-event VV is **-8.0 dB**, nowhere near the
+-15 dB open-water gate: 0.0% of reference pixels pass it. No value of
+`water_db_max` in the declared grid (-18, -15, -12 dB) and no value of `z_seed`
+can recover this flood, because the sign of the change is wrong, not its
+magnitude. A turbulent, sediment-laden flood in a gorge is a rough scatterer,
+and CEMS still maps it as flood trace.
+
+**The brightening channel is not a free fix.** It covers 79% of the reference
+flood, but it also covers 3.8% of the entire AOI and scores precision 0.0062
+against the reference mass-movement class it is supposed to find. Its overlap
+with the flood is mostly coincidence of extent. Scoring flood as
+water OR debris would give recall ~0.79 at precision ~0.013 - F1 about 0.03.
+
+So on this event both channels fail: one cannot fire, the other fires almost
+everywhere. This is a method limitation, consistent with the 2026-10-11
+case-study observation, now confirmed against an INDEPENDENT expert reference.
+
+### What was NOT done, and why
+
+No parameter was changed and no axis was added to `TUNE_GRID` on the strength of
+this number. Rule 3.4: values come from leave-one-event-out or from physics, and
+a grid widened because one event scored badly is in-sample tuning wearing a
+search's clothes. The decision below is the human's.
+
+### Options, with their costs
+
+1. **Add a rough-water channel to `detect.py`**: inside the water terrain zone,
+   accept a strong change of EITHER sign when the drainage-connection and HAND
+   tests pass, and keep darkness only for the high-confidence class. Justified
+   by surface-roughness physics rather than by a score, but it is a method
+   change and the no-flood controls must prove it does not raise the false-flood
+   rate - that is exactly what the controls in the plan are for.
+2. **Tighten the debris channel first.** 3.8% of an AOI is not a debris map;
+   precision 0.0062 against the mass-movement reference says the brightening
+   seed is far too permissive. Worth fixing on its own merits whatever happens
+   to the flood class.
+3. **Widen the water terrain zone** to HAND <= 35 m / slope <= 25 deg. Cheap,
+   physically defensible (flood water on a gorge floor is not confined to 20 m
+   above the channel), reaches 99.8% of this reference, and changes nothing
+   about the sign problem. Do it as part of (1), not instead of it.
+
+Recommendation: (2) then (1), with the terrain-zone widening of (3) folded in,
+and all three scored by `eval/tune.py` over the whole dev set rather than this
+one event.

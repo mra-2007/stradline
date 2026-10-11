@@ -103,10 +103,48 @@ No-go if downloads keep failing or no usable same-track pair exists.
 
 All parameters live in `strandline/config.py`.
 
-## Scoring a dev event (checking only, never an input)
+## Scoring the dev set (checking only, never an input)
+
+Three steps. Nothing here is ever a pipeline input: references are read only by `validation/` and
+`eval/`, and `strandline/` cannot import either (tested).
 
 ```
-venv\Scripts\python.exe -m validation.compare --pred runs\<dev_event>\flood_classes.tif --reference data\reference\<dev_event>\<observed_event_file> --aoi data\reference\<dev_event>\<aoi_file> --tolerance-px 1 --out runs\<dev_event>\validation
+rem 1. fetch the Sentinel-1 and DEM rasters the scoreboard needs (openEO, resumable, 3 in parallel)
+venv\Scripts\python.exe -m eval.fetch_dev_data --estimate
+venv\Scripts\python.exe -m eval.fetch_dev_data --plan gates --workers 3
+
+rem 2. run and score every event at the current config.py parameters
+venv\Scripts\python.exe -m eval.run_scoreboard --no-write
+
+rem 3. choose parameters by leave-one-event-out and score each left-out event
+venv\Scripts\python.exe -m eval.tune
+venv\Scripts\python.exe -m eval.check_gates
+```
+
+| Script | What it does |
+|---|---|
+| `eval/fetch_dev_data.py` | Downloads only allowed inputs (Sentinel-1, Copernicus DEM) into `runs/eval/<event>/cache`, resumable, `--estimate` for a size plan with no network. |
+| `eval/run_scoreboard.py` | Runs the pipeline per event from the cache and scores floods against their reference using each event's `reference_classes`; controls on `false_flood_fraction`. Appends rows to `eval/results/flood.csv`. |
+| `eval/tune.py` | Leave-one-event-out over the grid in `config.py::TUNE_GRID`: maximise mean tolerant F1 on the OTHER events subject to every control ≤ 1% false flood, then score the left-out event (`split=loeo`). Writes `eval/chosen_params.json` and a diff against `config.py` — it never edits `config.py`. |
+| `validation/compare.py` | The metric definitions, used by both the scoreboard and the CLI below, so a manual check and a gate row cannot disagree. |
+
+Things these scripts refuse to do, by design:
+
+- **Download during scoring.** A missing raster is an error naming the fetch command.
+- **Write a partial set of rows.** If any planned flood event fails, no flood row is written at all,
+  so a gate is never an average over whichever events happened to work.
+- **Shrink the scoring area.** The domain is every analysed pixel of the event's published bbox,
+  terrain-excluded ground included; the domain fraction is reported next to every score. An event
+  too large for memory is refused, never clipped.
+- **Apply its own answer.** The tuner prints a diff; a human edits `config.py`.
+
+Coverage is printed as *scored / planned / declared* after every run, so a dev set that is only
+partly downloaded can never be mistaken for the whole one.
+
+### One event, by hand
+
+```
+venv\Scripts\python.exe -m validation.compare --pred runs\<dev_event>lood_classes.tif --reference dataeference\<dev_event>\<observed_event_file> --classes "Flooded area" --aoi dataeference\<dev_event>\<aoi_file> --tolerance-px 1 --out runs\<dev_event>alidation
 ```
 
 Reports strict and boundary-tolerant precision, recall, F1 and IoU, plus an error map.
@@ -119,14 +157,24 @@ permanent river; near-zero false flood on no-event scenes; track selection; HAND
 offline end-to-end run with mocked downloads; the gate checker. Synthetic results prove the logic,
 not real-world accuracy.
 
-**Not yet verified:** live Copernicus catalogue and openEO calls, and every real-world gate.
+**Verified against real data:** the live Copernicus catalogue and openEO download path; the
+evaluation chain end to end on one independent dev event (Konjic, EMSR770) from cached Sentinel-1.
+
+**Not yet verified:** every real-world gate. All gates read NO DATA: the dev-set download is
+incomplete, so no `split=loeo` row has been written. The first real event scored **F1 0.00** with
+default parameters, for a measured reason — the reference flood brightened rather than darkened
+(combined z median **+3.30**, 0.0% of reference pixels below the -15 dB open-water gate), so the
+darkening channel cannot fire there. Evidence, options and what was deliberately *not* changed are
+in `docs/tuning_log.md` (2026-10-11); the number is from
+`runs/eval/bosnia_konjic_2024/scores/3674bd8ba80a.json` and is one event, not a gate.
 
 ## Known limitations (for the report)
 
 - **Revisit time.** Sentinel-1 images an area only every few days: it maps aftermath, it cannot warn.
 - **Narrow gorges.** At 20 m, edges are uncertain; boundary-tolerant and strict scores are both reported.
 - **Radar geometry.** Layover and shadow on steep slopes; the SAR mask band stays off until its encoding is verified.
-- **Debris ambiguity.** Brightening can also come from vegetation or structural change, hence "possible debris".
+- **Debris ambiguity.** Brightening can also come from vegetation or structural change, hence "possible debris". Measured on EMSR770: the current debris channel covers 3.8% of that AOI at precision 0.0062 against the expert mass-movement class — far too permissive, see `docs/tuning_log.md`.
+- **Rough water.** The detector assumes open water is dark. In a steep gorge a turbulent, sediment-laden flood is a rough scatterer and brightens instead; measured on EMSR770, 0.0% of the expert flood extent passes the darkness gate. This is a method limitation, not a threshold to retune.
 - **Bridges.** Too narrow to confirm collapse at this resolution.
 
 ## Attribution

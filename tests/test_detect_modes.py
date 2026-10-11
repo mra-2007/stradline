@@ -65,10 +65,18 @@ def water_only(result):
 
 # --- the modes exist and the default is unchanged ----------------------------
 
-def test_both_modes_are_available_and_the_default_is_the_old_one():
+def test_both_modes_are_available_and_the_default_is_the_chosen_one():
+    """The default is the mode eval/tune.py chose by leave-one-event-out.
+
+    It was MODE_DARKENING while the two modes were being compared. The
+    comparison finished on 2026-10-11 (eval/chosen_params.json, run_id
+    20261011T110254Z): rough_water wins on 5 of 6 held-out events and
+    darkening is infeasible - all 18 of its grid points breach the 1% control
+    ceiling. Both modes stay selectable, so the comparison is still runnable.
+    """
     assert DETECT_MODES == (MODE_DARKENING, MODE_ROUGH_WATER)
-    assert DetectParams().mode == MODE_DARKENING, \
-        "the default must stay the baseline, so a comparison is against the real thing"
+    assert DetectParams().mode == MODE_ROUGH_WATER, \
+        "the default must be the mode the tuner chose, not a hand-picked one"
 
 
 def test_an_unknown_mode_is_refused():

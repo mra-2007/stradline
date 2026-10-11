@@ -8,11 +8,24 @@ from strandline.config import (
     CLASS_PERMANENT_WATER,
     CLASS_TERRAIN_EXCLUDED,
     FLOOD_CLASSES,
+    MODE_DARKENING,
     DetectParams,
 )
 from validation.compare import flood_metrics
 
-P = DetectParams()
+# This file is the `darkening`-mode regression suite: its synthetic scene is a
+# flood that DARKENS plus a separate brightening debris fan, and its assertions
+# are about that physics (dark water as water, the fan as debris). The mode is
+# pinned here rather than taken from the default so these assertions keep their
+# original strength now that the default is `rough_water` (2026-10-11).
+#
+# Under `rough_water` this same scene is still fully detected - recall 1.00,
+# fn = 0 - but terrain position, not radiometry, assigns the class, so the fan
+# on the valley floor comes out as water rather than debris (771 px moved).
+# That behaviour is asserted in tests/test_detect_modes.py, which parametrises
+# the bait, speck, dry-scene and determinism checks over BOTH modes and adds
+# `test_the_debris_fan_is_still_found_somewhere_in_the_union`.
+P = DetectParams(mode=MODE_DARKENING)
 
 
 def _run(s):

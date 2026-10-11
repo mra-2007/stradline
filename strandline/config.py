@@ -8,8 +8,13 @@ used into run_report.json, so any result can be reproduced.
 from dataclasses import asdict, dataclass
 
 
-# Detection modes. Both stay available; the default is the one that has been
-# in use, so a comparison is always against the real baseline.
+# Detection modes. Both stay available. The default is `rough_water`, adopted
+# on 2026-10-11 by the leave-one-event-out run in eval/chosen_params.json
+# (run_id 20261011T110254Z): it wins on 5 of the 6 held-out flood events, and
+# `darkening` turned out to be INFEASIBLE - all 18 of its grid points breach
+# the 1% control ceiling (worst 4.9% false flood on a dry Norwegian valley).
+# `darkening` is kept so that comparison remains runnable, and because it is
+# the correct physics on a flat floodplain (it wins at Larkana).
 #
 #   darkening    open water is dark and darkens: specular scattering from a
 #                flat water surface. True on a floodplain.
@@ -29,7 +34,7 @@ DETECT_MODES = (MODE_DARKENING, MODE_ROUGH_WATER)
 class DetectParams:
     # Which detection mode (see DETECT_MODES above). Chosen by eval/tune.py
     # over the dev set, never per area or per event.
-    mode: str = MODE_DARKENING
+    mode: str = MODE_ROUGH_WATER
 
     # Speckle filter (Lee), applied to linear backscatter before dB conversion.
     lee_window: int = 5

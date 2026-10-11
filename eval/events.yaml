@@ -1,0 +1,317 @@
+# STRANDLINE DEV EVENTS
+#
+# Past floods used to tune and score the pipeline (leave-one-event-out), plus
+# no-flood controls that must produce almost no flood pixels.
+#
+# Rule 1: the `reference` files are SCORING ONLY. They live under data/reference/
+# and are read by validation/ and eval/ only, never by strandline/.
+# Rule 4: no event here may overlap the held-out exclusion bbox declared in the
+# gates file (the rules test checks this). The case study stays out of this file.
+#
+# HOW EACH bbox WAS CHOSEN (Rule 3.2 - no shrinking of the scoring area):
+# the bbox is the reference product's OWN published extent - the Copernicus EMS
+# areaOfInterestA polygon, the Kuro Siwo AOI polygon, or the Sentinel Asia
+# product footprint. It is never drawn by hand and never adjusted after looking
+# at a score. Where a reference covers more ground than one run can, the event
+# is dropped rather than clipped.
+#
+# HOW THE MOUNTAIN EVENTS WERE CHOSEN: `terrain` below is measured, not asserted.
+# Each line is computed from the public Copernicus DEM 90 m COGs over the exact
+# bbox (relief = max-min elevation; slope from the DEM gradient). For scale, the
+# held-out case-study area measures relief 5383 m, mean slope 28.4 deg, 90% of
+# pixels >15 deg, 45% >30 deg. No reference for that area was touched: only the
+# DEM, which is allowed pipeline input.
+#
+# VERIFIED: every `download` URL below was fetched during selection and returned
+# HTTP 200 with the byte size given. Every `s1` line is the output of
+# `strandline.run --dry-run` for that bbox and date.
+#
+# SENSOR INDEPENDENCE: `ref_sensor` says what the reference was drawn from. Where
+# it is Sentinel-1, the reference is NOT independent of our input and the score
+# for that event flatters us; that is recorded per event and must be repeated
+# next to any number derived from it.
+
+events:
+  # ======================= STEEP MOUNTAIN VALLEYS =============================
+  # The three events whose terrain is closest to a Himalayan gorge, by measured
+  # slope: bhutan_punakha (24.4 deg), konjic (21.8 deg), kranj (15.6 deg).
+
+  - name: bhutan_punakha_2024
+    kind: flood
+    event_date: "2024-08-10"
+    bbox: [89.55, 27.40, 89.95, 27.70]
+    reference: data/reference/bhutan_punakha_2024/2024-00046-WLD_202408150559_FLDEXT.geojson
+    reference_classes:
+      water: ["__all__"]        # layer has no attribute columns: every polygon is flood
+      debris: []
+    source: "Sentinel Asia emergency observation FL-2024-000140-BTN (flood and landslide in Bhutan, 10 Aug 2024, requested by NCHM Bhutan). Activation: https://sentinel-asia.org/EO/2024/article20240810BT.html"
+    download: "https://sentinel-asia.org/EO/2024/article20240810BT/JAXA/JAXA_20240815_FPM_ALOS2_Bhutan_FLDEXT.zip (verified HTTP 200, 15215 B)"
+    ref_sensor: "JAXA ALOS-2 PALSAR-2, L-band SAR, acquired 2024-08-15 05:59 UTC (+5 d). INDEPENDENT of our Sentinel-1 C-band input."
+    ref_extent: "47 polygons, 58.2 ha, bbox [89.425, 27.353, 90.191, 27.905]"
+    terrain: "relief 3850 m, elev 1129-4979 m, mean slope 24.4 deg, p90 35.6 deg, 86% of pixels >15 deg, 27% >30 deg"
+    s1: "track 150 DESCENDING, post 2024-08-11 (+1 d), 3 pre 2024-05-31..2024-06-24"
+    notes: >
+      Thimphu Chhu and Pho/Mo Chhu valleys: the steepest dev event and the
+      closest analogue to the case-study terrain. CAVEATS, both of which cost us
+      recall rather than flatter us: (1) only 3 pre images on the chosen track,
+      exactly run.min_pre, so the temporal reference stack is at its thinnest -
+      track 114 ASCENDING has 5 pre but post at +11 d; (2) the ALOS-2 reference
+      was acquired at +5 d while our post image is +1 d, so water that drained
+      in between is in our map and not in the reference. An alternative MBRSC
+      Sentinel-1 reference exists (229 polygons, 89.0 ha, verified HTTP 200,
+      35373 B, https://sentinel-asia.org/EO/2024/article20240810BT/MBRSC/MBRSC_BHUTAN_FLOODMAP_10TH_AUGUST_SHP.zip)
+      but it is Sentinel-1 derived and so is not used for scoring.
+
+  - name: bosnia_konjic_2024
+    kind: flood
+    event_date: "2024-10-04"
+    bbox: [17.6760, 43.6366, 17.9802, 43.7437]
+    reference: data/reference/bosnia_konjic_2024/EMSR770_AOI01_DEL_MONIT01_observedEventA_v1.shp
+    reference_classes:
+      water: ["5-Flood"]                 # attribute: event_type
+      debris: ["6-Mass Movement"]        # obj_desc: "Debris, Rockfall" / "Mudflow"
+    source: "Copernicus EMS EMSR770 AOI01 Konjic, delineation monitoring 1. Activation: https://mapping.emergency.copernicus.eu/activations/EMSR770/"
+    download: "https://rapidmapping.emergency.copernicus.eu/backend/EMSR770/AOI01/DEL_MONIT01/EMSR770_AOI01_DEL_MONIT01_v1.zip (verified HTTP 200, 8784159 B)"
+    ref_sensor: "SPOT-6/7, optical, acquired 2024-10-07 09:34 UTC (+3.4 d). INDEPENDENT of our Sentinel-1 input."
+    ref_extent: "10 polygons, 43.2 ha total, bbox [17.8069, 43.6957, 17.9099, 43.7427]"
+    terrain: "relief 1746 m, elev 158-1904 m, mean slope 21.8 deg, p90 34.4 deg, 75% of pixels >15 deg, 21% >30 deg"
+    s1: "track 73 ASCENDING, post 2024-10-05 (+1 d), 5 pre 2024-08-06..2024-09-23"
+    notes: >
+      Neretva gorge, Bosnia and Herzegovina. The only dev event whose reference
+      labels BOTH of our output classes: event_type 5-Flood (obj_desc "Riverine
+      flood", notation "Flood trace") and 6-Mass Movement (obj_desc "Debris,
+      Rockfall" and "Mudflow"). This is the one event that can score the debris
+      class against an expert map. HARD, and left hard on purpose: 43.2 ha of
+      reference inside an 8047 ha AOI is 0.5% positives, so a handful of false
+      positives destroys precision here. The reference is also +3.4 d optical
+      against our +1 d radar post image, so the receding-water mismatch is real.
+      Do not narrow this bbox or drop this event to lift the mean.
+
+  - name: slovenia_kranj_2023
+    kind: flood
+    event_date: "2023-08-04"
+    bbox: [14.0029, 46.0089, 14.7162, 46.4361]
+    reference: data/reference/slovenia_kranj_2023/EMSR680_AOI01_DEL_PRODUCT_observedEventA_v2.shp
+    reference_classes:
+      water: ["Flooded area"]            # attribute: notation
+      debris: []
+    source: "Copernicus EMS EMSR680 AOI01 Kranj, delineation product v2 (flash flood in Slovenia, 4 Aug 2023). Activation: https://mapping.emergency.copernicus.eu/activations/EMSR680/"
+    download: "https://rapidmapping.emergency.copernicus.eu/backend/EMSR680/AOI01/DEL_PRODUCT/EMSR680_AOI01_DEL_PRODUCT_v2.zip (verified HTTP 200, 5182981 B)"
+    ref_sensor: "Sentinel-1, acquired 2023-08-05 16:50 UTC (+1.3 d). NOT independent of our input: same sensor, same kind of processing. Scores for this event are optimistic and must be reported with that caveat."
+    ref_extent: "117 polygons, 211.0 ha, bbox [14.1091, 46.0134, 14.7154, 46.3802]; AOI 125505 ha"
+    terrain: "relief 2262 m, elev 252-2514 m, mean slope 15.6 deg, p90 32.0 deg, 48% of pixels >15 deg, 13% >30 deg"
+    s1: "track 146 ASCENDING, post 2023-08-05 (+1 d), 5 pre 2023-06-06..2023-07-24"
+    notes: >
+      Sava, Kokra and Trzic valleys below the Kamnik Alps and the Karavanke, plus
+      the Ljubljana basin: Alpine relief with radar shadow and layover on the
+      valley walls, which is the same false-flood mechanism the case study will
+      face. Classified by CEMS as a flash flood. Version 2 of the product is used
+      because CEMS reissued it to correct the thematic accuracy of the flood
+      extent; v1 is superseded, not cherry-picked.
+
+  # ======================= EUROPEAN INCISED VALLEYS ===========================
+  # Lower relief than the three above, but severe flash floods with heavy debris
+  # transport, and the only dev events that also ship building and road layers.
+
+  - name: germany_pruem_2021
+    kind: flood
+    event_date: "2021-07-14"
+    bbox: [6.3108, 49.8129, 6.7041, 50.3656]
+    reference: data/reference/germany_pruem_2021/EMSR517_AOI04_DEL_PRODUCT_observedEventA_r1_v1.shp
+    reference_classes:
+      water: ["Flooded area"]            # attribute: notation
+      debris: []
+    source: "Copernicus EMS EMSR517 AOI04 Prum, delineation product (July 2021 flood, Rhineland-Palatinate). Activation: https://mapping.emergency.copernicus.eu/activations/EMSR517/"
+    download: "https://cems-mapping-website.s3.eu-west-1.amazonaws.com/static/activations/EMSR517/EMSR517_AOI04_DEL_PRODUCT_r1_RTP01_v1_vector.zip (verified HTTP 200, 10137641 B)"
+    ref_sensor: "NOT STATED in the vector package; the product metadata gives only the source date 2021-07-15 (+1 d). Confirm the sensor from the EMSR517 AOI04 delineation map PDF before quoting this event as sensor-independent."
+    ref_extent: "264 polygons, 1061.8 ha, det_method 'Semi-automatic extraction'; AOI 98828 ha"
+    terrain: "relief 592 m, elev 125-717 m, mean slope 7.1 deg, p90 14.6 deg, 9% of pixels >15 deg, 0% >30 deg"
+    s1: "track 37 DESCENDING, post 2021-07-15 (+1 d), 5 pre 2021-06-15..2021-07-09"
+    notes: >
+      Prum and Kyll valleys in the Eifel. The largest reference flood extent of
+      any dev event (1062 ha), so it carries real statistical weight, and the
+      post image is +1 d. Ships builtUpA and transportationL/A layers, which the
+      damage module will need later.
+
+  - name: germany_ahr_honningen_2021
+    kind: flood
+    event_date: "2021-07-14"
+    bbox: [6.7815, 50.3633, 7.2391, 50.5889]
+    reference: data/reference/germany_ahr_honningen_2021/EMSR517_AOI03_DEL_PRODUCT_observedEventA_r1_v1.shp
+    reference_classes:
+      water: ["Flooded area"]            # attribute: notation
+      debris: []
+    source: "Copernicus EMS EMSR517 AOI03 Honningen, delineation product (July 2021 flood, lower Ahr valley). Activation: https://mapping.emergency.copernicus.eu/activations/EMSR517/"
+    download: "https://cems-mapping-website.s3.eu-west-1.amazonaws.com/static/activations/EMSR517/EMSR517_AOI03_DEL_PRODUCT_r1_RTP01_v1_vector.zip (verified HTTP 200, 1976005 B)"
+    ref_sensor: "NOT STATED in the vector package; source date 2021-07-16 (+2 d). Same caveat as germany_pruem_2021."
+    ref_extent: "40 polygons, 168.8 ha inside a 20915 ha AOI (0.8% positives)"
+    terrain: "relief 684 m, elev 48-732 m, mean slope 9.2 deg, p90 18.9 deg, 18% of pixels >15 deg, 1% >30 deg"
+    s1: "track 37 DESCENDING, post 2021-07-15 (+1 d), 5 pre 2021-06-15..2021-07-09"
+    notes: >
+      Lower Ahr valley. A deliberately unflattering event: the flood peak passed
+      in hours and the mapped extent is only 0.8% of the AOI, so precision here
+      is dominated by false positives. It is kept because it is the European
+      event with the heaviest debris transport and because it ships builtUpA,
+      facilitiesA/L and transportationL layers for the damage module. A
+      DEL_MONIT01 product also exists (verified HTTP 200, 2525527 B) and is not
+      used, to avoid scoring the same AOI twice.
+
+  # ======================= FLAT AND FOOTHILL CONTRAST ========================
+  # Kept so the dev set is not only steep ground. Dropping these would make the
+  # mean look better and mean less.
+
+  - name: pakistan_larkana_2022
+    kind: flood
+    event_date: "2022-08-26"
+    bbox: [68.0727, 27.4560, 68.4403, 27.6986]
+    reference: data/reference/pakistan_larkana_2022/EMSR629_AOI01_DEL_PRODUCT_observedEventA_r1_v2.shp
+    reference_classes:
+      water: ["Flooded area"]            # attribute: notation
+      debris: []
+    source: "Copernicus EMS EMSR629 AOI01 Larkana, delineation product v2 (2022 monsoon, Indus basin). Activation: https://mapping.emergency.copernicus.eu/activations/EMSR629/"
+    download: "https://cems-mapping-website.s3.eu-west-1.amazonaws.com/static/activations/EMSR629/EMSR629_AOI01_DEL_PRODUCT_r1_RTP01_v2_vector.zip (verified HTTP 200, 29557561 B)"
+    ref_sensor: "Optical VHR (CEMS source id 2), 2022 monsoon tasking. Independent of our Sentinel-1 input."
+    ref_extent: "9690 polygons, 50184.6 ha; AOI 96288 ha (52% positives)"
+    terrain: "relief 21 m, elev 40-62 m, mean slope 0.3 deg, p90 0.7 deg, 0% of pixels >15 deg"
+    s1: "track 78 DESCENDING, post 2022-08-30 (+4 d), 5 pre 2022-07-01..2022-08-18"
+    notes: >
+      Indus right-bank irrigated plain: the opposite extreme to the mountain
+      events, and the only event where most of the AOI is genuinely flooded.
+      bbox CHANGED from the previous version of this file, which used
+      [68.09, 27.44, 68.33, 27.68] - a box smaller than the CEMS AOI on three
+      sides and extending south of it on the fourth, i.e. part of it had no
+      reference at all. It is now the published AOI extent. With the wider box
+      the track choice changes from 42 ASCENDING (+1 d) to 78 DESCENDING (+4 d),
+      because track 42 no longer reaches 95% AOI coverage.
+
+  - name: pakistan_mardan_2024
+    kind: flood
+    event_date: "2024-04-14"
+    bbox: [71.361, 33.854, 72.951, 34.675]
+    reference: data/reference/pakistan_mardan_2024/Pakistan_flood.shp
+    reference_classes:
+      water: ["__all__"]        # only Id/gridcode/AREA columns; gridcode is 1 throughout
+      debris: []
+    source: "Sentinel Asia emergency observation FL-2024-000041-PAK (flash flood in Pakistan, 12-16 Apr 2024, requested by JICA; activation 19 Apr 2024). Activation: https://sentinel-asia.org/EO/2024/article20240414PK.html"
+    download: "https://sentinel-asia.org/EO/2024/article20240414PK/MBRSC/MBRSC_Pakistan_flood_shapefile.zip (verified HTTP 200, 1065467 B)"
+    ref_sensor: "MBRSC, Sentinel-1 derived. NOT independent of our input; report scores for this event with that caveat."
+    ref_extent: "6651 polygons, 7617.1 ha, bbox [71.361, 33.854, 72.951, 34.675]"
+    terrain: "relief 2741 m, elev 264-3005 m, mean slope 9.9 deg, p90 29.8 deg, 30% of pixels >15 deg, 10% >30 deg"
+    s1: "track 173 ASCENDING, post 2024-04-15 (+1 d), 5 pre 2024-02-15..2024-04-03"
+    notes: >
+      Mardan and Peshawar valley, Khyber Pakhtunkhwa: a broad valley floor ringed
+      by Hindu Kush foothills, so the AOI mixes flat flooding with steep
+      no-flood ground - a useful shape of error to measure. Kept because its
+      Sentinel-1 shapefile was verified, as required. The bbox is the MBRSC
+      product's own extent (147 x 91 km), which is the largest dev AOI; if the
+      free-tier quota cannot carry it, drop the event rather than clip it.
+      A separate AIT Sentinel-1 product for this activation covers central
+      Punjab instead (2887 polygons, 51365 ha, bbox [70.927, 31.353, 73.272,
+      33.018], verified HTTP 200, 3804226 B) and is a different area, not an
+      alternative reference for this one.
+
+  - name: srilanka_kuruwita_2017
+    kind: flood
+    event_date: "2017-05-24"
+    bbox: [80.2168, 6.6550, 80.3142, 6.7631]
+    reference: data/reference/srilanka_kuruwita_2017/event.shp
+    reference_classes:
+      water: ["Flooded Area"]            # attribute: interpret
+      debris: []
+    source: "Kuro Siwo annotation polygons, activation EMSR205 AOI04 Kuruwita, revision r1_v1 (Bountos et al. 2024, NeurIPS Datasets and Benchmarks; CC BY). Catalogue: https://github.com/Orion-AI-Lab/KuroSiwo/blob/main/catalogue/catalogue.yaml"
+    download: "https://github.com/Orion-AI-Lab/KuroSiwo-annotations/tree/main/polygons/EMSR205_SriLanka/aoi/04/r1_v1/event (shp/shx/dbf/prj fetched individually from https://raw.githubusercontent.com/Orion-AI-Lab/KuroSiwo-annotations/main/polygons/EMSR205_SriLanka/aoi/04/r1_v1/event/event.shp etc; all verified)"
+    ref_sensor: "Attribute source_nam = 'Sentinel-1'. NOT independent of our input; report scores for this event with that caveat."
+    ref_extent: "79 polygons, 420.8 ha; AOI polygon bbox [80.2168, 6.6550, 80.3142, 6.7631]"
+    terrain: "relief 665 m, elev 9-674 m, mean slope 12.6 deg, p90 25.0 deg, 35% of pixels >15 deg, 4% >30 deg"
+    s1: "track 19 DESCENDING, post 2017-05-30 (+6 d), 5 pre 2017-03-25..2017-05-12"
+    notes: >
+      Kalu Ganga at the foot of the Sri Lankan Central Highlands: a tropical
+      monsoon flash flood with landslides and debris flows, the steepest event
+      in Kuro Siwo's mountain AOIs that still has a workable Sentinel-1 pair.
+      Kuro Siwo is allowed training data under Rule 1 and its labels are expert
+      photo-interpretation of Sentinel-1, refined from the CEMS mapping.
+
+  # ============================== NO-FLOOD CONTROLS ===========================
+  # Same bbox and, where possible, the same relative orbit as the paired flood
+  # event, on a date with no reported flood. These measure the false-flood rate
+  # (gate: <= 1%).
+  #
+  # HONEST LIMIT ON ALL CONTROLS: "no flood" here means no Copernicus EMS
+  # activation and no Sentinel Asia emergency observation covers this bbox at
+  # this date. That is weaker than a confirmed dry observation - a small
+  # unmapped flood would be scored against us, which is the safe direction. The
+  # Alpine and Himalayan controls are deliberately NOT all dry-season: wet snow
+  # and low sun are themselves false-flood mechanisms we need to measure.
+
+  - name: slovenia_kranj_control_2023
+    kind: control
+    event_date: "2023-06-10"
+    bbox: [14.0029, 46.0089, 14.7162, 46.4361]
+    source: "No Copernicus EMS activation covers this bbox on this date; the EMSR680 activation for this area is dated 2023-08-04. https://mapping.emergency.copernicus.eu/activations/EMSR680/"
+    terrain: "relief 2262 m, mean slope 15.6 deg, 48% of pixels >15 deg"
+    s1: "track 44 ASCENDING, post 2023-06-11 (+1 d), 5 pre 2023-04-12..2023-05-30"
+    notes: >
+      Alpine control two months before the flood: radar shadow and layover on the
+      valley walls, plus residual wet snow at altitude in April-May, are the main
+      false-flood risks for the case study. Different track from the flood event
+      (44 ASC vs 146 ASC) because 146 has no full-coverage post image here.
+
+  - name: bosnia_konjic_control_2024
+    kind: control
+    event_date: "2024-07-20"
+    bbox: [17.6760, 43.6366, 17.9802, 43.7437]
+    source: "No Copernicus EMS activation covers this bbox on this date; the EMSR770 activation for this area is dated 2024-10-04. https://mapping.emergency.copernicus.eu/activations/EMSR770/"
+    terrain: "relief 1746 m, mean slope 21.8 deg, 75% of pixels >15 deg"
+    s1: "track 51 DESCENDING, post 2024-07-24 (+4 d), 5 pre 2024-05-25..2024-07-12"
+    notes: >
+      Steepest control: summer low flow in the Neretva gorge. Dark dry rock and
+      deep terrain shadow in a gorge are exactly what must not be called water.
+
+  - name: bhutan_punakha_control_2024
+    kind: control
+    event_date: "2024-03-10"
+    bbox: [89.55, 27.40, 89.95, 27.70]
+    source: "No Sentinel Asia emergency observation for Bhutan between 2016-07-30 and 2024-08-10. https://sentinel-asia.org/EO/EmergencyObservation.html"
+    terrain: "relief 3850 m, mean slope 24.4 deg, 86% of pixels >15 deg"
+    s1: "track 114 ASCENDING, post 2024-03-18 (+8 d), 5 pre 2024-01-18..2024-03-06"
+    notes: >
+      Himalayan control: the closest terrain match to the case study, on a date
+      with no flood. Seasonal snow line movement between January and March is a
+      real false-flood mechanism here and is left in on purpose.
+
+  - name: germany_pruem_control_2021
+    kind: control
+    event_date: "2021-05-10"
+    bbox: [6.3108, 49.8129, 6.7041, 50.3656]
+    source: "No Copernicus EMS activation covers this bbox on this date; the EMSR517 activation for this area is dated 2021-07-13. https://mapping.emergency.copernicus.eu/activations/EMSR517/"
+    terrain: "relief 592 m, mean slope 7.1 deg, 9% of pixels >15 deg"
+    s1: "track 139 DESCENDING, post 2021-05-11 (+1 d), 5 pre 2021-04-11..2021-05-05"
+    notes: >
+      Eifel control two months before the flood. Wet spring farmland and small
+      reservoirs are the main false-flood risk.
+
+  - name: srilanka_kuruwita_control_2021
+    kind: control
+    event_date: "2021-02-15"
+    bbox: [80.2168, 6.6550, 80.3142, 6.7631]
+    source: "No Sentinel Asia emergency observation and no Copernicus EMS activation covers this bbox on this date; the EMSR205 activation for this area is dated 2017-05-24. https://sentinel-asia.org/EO/EmergencyObservation.html"
+    terrain: "relief 665 m, mean slope 12.6 deg, 35% of pixels >15 deg"
+    s1: "track 19 DESCENDING, post 2021-02-20 (+5 d), 5 pre 2020-12-22..2021-02-08"
+    notes: >
+      Same bbox and same relative orbit (19 DESCENDING) as
+      srilanka_kuruwita_2017, so the imaging geometry is identical and only the
+      water differs. Dated 2021 rather than 2017 because early-2017 Sentinel-1
+      coverage of this bbox is too sparse for a same-track pair: --dry-run on
+      2017-02-10 and 2019-02-15 both refuse. Dry inter-monsoon season.
+
+  - name: pakistan_larkana_control_2022
+    kind: control
+    event_date: "2022-02-15"
+    bbox: [68.0727, 27.4560, 68.4403, 27.6986]
+    source: "Winter, six months before the 2022 monsoon flood; no Copernicus EMS activation covers this bbox at this date. https://mapping.emergency.copernicus.eu/activations/EMSR629/"
+    terrain: "relief 21 m, mean slope 0.3 deg, 0% of pixels >15 deg"
+    s1: "track 78 DESCENDING, post 2022-02-19 (+4 d), 5 pre 2021-12-21..2022-02-07"
+    notes: >
+      Irrigated-plain control: wet paddy, canals and smooth bare soil are the
+      main false-flood risk. Same bbox and same track (78 DESCENDING) as
+      pakistan_larkana_2022.

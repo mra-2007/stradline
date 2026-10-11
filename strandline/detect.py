@@ -20,6 +20,7 @@ Method (per pixel):
 
 import warnings
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 import numpy as np
 from scipy import ndimage
@@ -95,12 +96,32 @@ def combine_z(z_vv: np.ndarray, z_vh: np.ndarray) -> np.ndarray:
     return np.where(both, (z_vv + z_vh) / np.sqrt(2.0), z_vv)
 
 
+class WaterThreshold(NamedTuple):
+    """The darkness threshold actually used, plus how it was arrived at.
+
+    `value` is what the classifier uses; `otsu_raw` is what Otsu returned
+    before clamping, and `clamped` says which bound bit (or None). In steep
+    valleys the valley-floor histogram is often unimodal land, so Otsu
+    returns a land-like value and the clamp becomes the operative threshold.
+    Reporting only `value` would present a parameter ceiling as a
+    measurement, so all three go into run_report.json.
+    """
+
+    value: float
+    otsu_raw: float | None      # None when there were too few pixels to run Otsu
+    clamped: str | None         # "low" | "high" | None
+    n_pixels: int
+
+
 def otsu_water_threshold(post_vv_db: np.ndarray, region: np.ndarray, lo: float, hi: float,
-                         min_pixels: int = 500) -> float:
+                         min_pixels: int = 500) -> WaterThreshold:
     values = post_vv_db[region & np.isfinite(post_vv_db)]
     if values.size < min_pixels:
-        return hi
-    return float(np.clip(threshold_otsu(values), lo, hi))
+        return WaterThreshold(hi, None, "high", int(values.size))
+    raw = float(threshold_otsu(values))
+    value = float(np.clip(raw, lo, hi))
+    clamped = "low" if raw < lo else "high" if raw > hi else None
+    return WaterThreshold(value, raw, clamped, int(values.size))
 
 
 # --- Morphology --------------------------------------------------------------
@@ -180,7 +201,8 @@ def detect_flood(
     zone_water = valid & (hand_m <= p.hand_max_water_m) & (slope_deg <= p.slope_max_water_deg)
     zone_debris = valid & (hand_m <= p.hand_max_debris_m) & (slope_deg <= p.slope_max_debris_deg)
 
-    t_water = otsu_water_threshold(post_vv_db, zone_water, p.water_db_min, p.water_db_max)
+    thr = otsu_water_threshold(post_vv_db, zone_water, p.water_db_min, p.water_db_max)
+    t_water = thr.value
 
     with np.errstate(invalid="ignore"):
         permanent = zone_water & (mean_vv <= t_water) & (post_vv_db <= t_water)
@@ -219,6 +241,9 @@ def detect_flood(
 
     stats = {
         "water_threshold_db": round(t_water, 3),
+        "water_threshold_otsu_raw_db": (None if thr.otsu_raw is None else round(thr.otsu_raw, 3)),
+        "water_threshold_clamped": thr.clamped,
+        "water_threshold_zone_pixels": thr.n_pixels,
         "pixels": {int(c): int(np.sum(classes == c)) for c in np.unique(classes)},
         "valid_fraction": round(float(np.mean(valid)), 4),
     }

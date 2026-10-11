@@ -259,12 +259,43 @@ def test_provenance_records_how_the_reference_was_selected(synthetic):
     assert score.provenance["parameters"]["detect"]["z_seed"] == DetectParams().z_seed
 
 
-def test_debris_class_is_reported_but_never_gated(synthetic):
+def test_the_primary_metric_is_the_flood_affected_union(synthetic):
+    """Decided in docs/tuning_log.md before the new mode was scored: the gate
+    columns carry our flood classes UNION debris, scored against the
+    reference's flooded + debris/mass-movement classes."""
     score = rs.score_with_scene(synthetic["event"], synthetic["scene"], DetectParams(),
                                 log=lambda *a: None)
-    assert "debris_report_only" in score.provenance
-    assert not any(k.startswith("debris") for k in score.metrics), \
-        "debris must not reach a CSV metric column"
+    assert score.provenance["scored_quantity"].startswith("flood_affected")
+    assert score.provenance["reference"]["scored_classes"] == ["Flooded area", "Not Applicable"]
+
+
+def test_water_only_and_debris_only_are_reported_next_to_the_union(synthetic):
+    score = rs.score_with_scene(synthetic["event"], synthetic["scene"], DetectParams(),
+                                log=lambda *a: None)
+    assert score.provenance["water_only"]["scored_classes"] == ["Flooded area"]
+    assert "f1_tolerant" in score.provenance["water_only"]["metrics"]
+    assert score.provenance["debris_only"]["scored_classes"] == ["Not Applicable"]
+    assert not any(k.startswith("debris") or k.startswith("water_only")
+                   for k in score.metrics), "only the union reaches a CSV metric column"
+
+
+def test_the_union_reference_is_at_least_as_large_as_water_alone(synthetic):
+    score = rs.score_with_scene(synthetic["event"], synthetic["scene"], DetectParams(),
+                                log=lambda *a: None)
+    assert (score.provenance["reference"]["reference_ha"]
+            >= score.provenance["water_only"]["reference_ha"])
+
+
+def test_a_control_false_flood_fraction_uses_the_same_union(synthetic):
+    """So the 1% ceiling constrains the debris channel too."""
+    control = {**synthetic["event"], "name": "syn_control", "kind": "control",
+               "independent_reference": None}
+    control.pop("reference")
+    score = rs.score_with_scene(control, synthetic["scene"], DetectParams(),
+                                log=lambda *a: None)
+    union = float(score.metrics["false_flood_fraction"])
+    water = float(score.provenance["false_flood_fraction_water_only"])
+    assert union >= water, "the gated control metric must not be the narrower one"
 
 
 # --- rows and the column contract --------------------------------------------

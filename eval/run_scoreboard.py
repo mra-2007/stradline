@@ -185,18 +185,30 @@ def prepare_event(event: dict, rp: RunParams, dp: DetectParams,
 
 
 def score_with_scene(event: dict, scene: pipeline.PreparedScene, dp: DetectParams,
-                     tolerance_px: int = 1, include_debris: bool = False,
-                     out_dir: Path | None = None, log=print) -> EventScore:
+                     tolerance_px: int = 1, out_dir: Path | None = None,
+                     log=print) -> EventScore:
     """Classify an already-prepared scene and score it. The cheap stage.
 
-    Flood events are compared with their reference map; controls, which have
-    no reference, are scored on the share of the analysed area called flood.
+    THE PRIMARY METRIC is flood-affected area: our water OR debris classes,
+    against the union of the event's reference `water` and `debris` classes.
+    Track B asks for flooded and debris-covered areas, and this is what the
+    gate columns of flood.csv carry. Decided and recorded in
+    docs/tuning_log.md on 2026-10-11, before the rough_water mode was scored.
+
+    Water-only scores (our flood classes against the reference `water` class
+    alone) are computed too and kept in the score file, so both readings of
+    every event are always available.
+
+    Controls have no reference, so they are scored on the share of the analysed
+    area called flood-affected - the same union, so the 1% ceiling constrains
+    the debris channel as well.
     """
     t0 = time.time()
     rp = scene.run_params
     kind = sb.row_kind(event)
     result = pipeline.classify(scene, dp)
-    pred = compare.flood_mask(result.classes, include_debris)
+    affected = compare.flood_affected_mask(result.classes)
+    water_pred = compare.flood_mask(result.classes, include_debris=False)
     domain = compare.scoring_domain(result.classes)
     grid = scene.grid
     px_ha = grid.res * grid.res / 10_000.0
@@ -211,11 +223,14 @@ def score_with_scene(event: dict, scene: pipeline.PreparedScene, dp: DetectParam
                   "post_latency_days": scene.choice.latency_days,
                   "pre_days": [str(a.day) for a in scene.choice.pre]},
         "n_pre": len(scene.choice.pre),
+        "mode": dp.mode,
         "backscatter_coefficient": rp.backscatter_coefficient,
+        "elevation_model": rp.elevation_model,
+        "scored_quantity": "flood_affected = flood classes UNION debris class",
         "domain_pixels": int(domain.sum()),
         "domain_fraction": round(float(domain.mean()), 4),
-        "predicted_flood_ha": round(float(pred.sum()) * px_ha, 2),
-        "include_debris": include_debris,
+        "predicted_flood_affected_ha": round(float(affected.sum()) * px_ha, 2),
+        "predicted_water_only_ha": round(float(water_pred.sum()) * px_ha, 2),
         "tolerance_px": tolerance_px,
         "water_threshold": {k: result.stats[k] for k in result.stats
                             if k.startswith("water_threshold")},
@@ -226,7 +241,9 @@ def score_with_scene(event: dict, scene: pipeline.PreparedScene, dp: DetectParam
 
     metrics: dict = {}
     if kind == sb.KIND_CONTROL:
-        metrics["false_flood_fraction"] = compare.false_flood_fraction(pred, domain)
+        metrics["false_flood_fraction"] = compare.false_flood_fraction(affected, domain)
+        provenance["false_flood_fraction_water_only"] = compare.false_flood_fraction(
+            water_pred, domain)
     else:
         ref_path = ROOT / str(event["reference"])
         if not ref_path.exists():
@@ -234,10 +251,12 @@ def score_with_scene(event: dict, scene: pipeline.PreparedScene, dp: DetectParam
                 f"{event['name']}: reference {ref_path} is missing. Fetch it with "
                 f"eval/fetch_references.py; scoring without it is not possible.")
         classes_map = event.get("reference_classes") or {}
-        ref, selection = compare.reference_mask(ref_path, grid, classes_map.get("water", []))
-        metrics.update(compare.flood_metrics(pred, ref, domain, tolerance_px))
+        union_values = compare.reference_class_values(classes_map, "water", "debris")
+        ref, selection = compare.reference_mask(ref_path, grid, union_values)
+        metrics.update(compare.flood_metrics(affected, ref, domain, tolerance_px))
         provenance["reference"] = {
             "path": _rel(ref_path),
+            "scored_classes": union_values,
             "selection": asdict(selection),
             "selected_by": selection.describe(),
             "reference_ha": round(float((ref & domain).sum()) * px_ha, 2),
@@ -247,13 +266,28 @@ def score_with_scene(event: dict, scene: pipeline.PreparedScene, dp: DetectParam
             "independent_reference": event.get("independent_reference"),
             "ref_sensor_name": event.get("ref_sensor_name"),
         }
-        debris_values = classes_map.get("debris") or []
-        if debris_values:  # reported, never gated: only one dev event has it
+
+        # Water-only, reported next to the primary numbers, never gated.
+        water_values = compare.reference_class_values(classes_map, "water")
+        if water_values:
+            w_ref, w_sel = compare.reference_mask(ref_path, grid, water_values)
+            provenance["water_only"] = {
+                "scored_classes": water_values,
+                "selected_by": w_sel.describe(),
+                "reference_ha": round(float((w_ref & domain).sum()) * px_ha, 2),
+                "metrics": compare.flood_metrics(water_pred, w_ref, domain, tolerance_px),
+            }
+
+        # Debris alone, where the reference declares it. One dev event does.
+        debris_values = compare.reference_class_values(classes_map, "debris")
+        if debris_values:
             d_ref, d_sel = compare.reference_mask(ref_path, grid, debris_values)
-            d_pred = result.classes == CLASS_DEBRIS
-            provenance["debris_report_only"] = {
+            provenance["debris_only"] = {
+                "scored_classes": debris_values,
                 "selected_by": d_sel.describe(),
-                "metrics": compare.flood_metrics(d_pred, d_ref, domain, tolerance_px),
+                "reference_ha": round(float((d_ref & domain).sum()) * px_ha, 2),
+                "metrics": compare.flood_metrics(result.classes == CLASS_DEBRIS, d_ref,
+                                                 domain, tolerance_px),
             }
 
     provenance["scored_s"] = round(time.time() - t0, 1)
@@ -350,20 +384,20 @@ def write_rows(scores: list[EventScore], planned: list[dict], events: dict[str, 
 # --- reporting ----------------------------------------------------------------
 
 def print_table(scores: list[EventScore], log=print) -> None:
-    head = (f"{'event':<32} {'kind':<16} {'Mpx':>5} {'ref ha':>8} "
+    head = (f"{'event':<28} {'kind':<16} {'mode':<12} {'ref ha':>8} "
             f"{'P':>6} {'R':>6} {'F1':>6} {'IoU':>6} | "
             f"{'P tol':>6} {'R tol':>6} {'F1 tol':>6} {'FFR':>7}")
     log(head)
     log("-" * len(head))
     for s in scores:
         if not s.ok:
-            log(f"{s.event:<32} {s.kind:<16} {'FAILED':>5}  {s.error[:80]}")
+            log(f"{s.event:<28} {s.kind:<16} {'FAILED':<12}  {s.error[:80]}")
             continue
         p = s.provenance
-        mpx = p.get("domain_pixels", 0) / 1e6
+        mode = str(p.get("mode", "?"))
         ref_ha = p.get("reference", {}).get("reference_ha")
         f = lambda k: ("-" if s.value(k) is None else f"{s.value(k):.4f}")  # noqa: E731
-        log(f"{s.event:<32} {s.kind:<16} {mpx:>5.2f} "
+        log(f"{s.event:<28} {s.kind:<16} {mode:<12} "
             f"{('-' if ref_ha is None else f'{ref_ha:>8.1f}'):>8} "
             f"{f('precision'):>6} {f('recall'):>6} {f('f1'):>6} {f('iou'):>6} | "
             f"{f('precision_tolerant'):>6} {f('recall_tolerant'):>6} "

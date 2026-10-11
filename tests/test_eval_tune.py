@@ -27,9 +27,12 @@ from eval.run_scoreboard import EventScore
 from strandline import run as pipeline
 from strandline.config import (
     BACKSCATTER_COEFFICIENTS,
+    DETECT_MODES,
+    MODE_DARKENING,
+    MODE_ROUGH_WATER,
     DetectParams,
     RunParams,
-    TUNE_GRID,
+    TUNE_GRIDS,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,14 +70,41 @@ def matrix_from(spec: dict, points: list[dict]) -> tune.Matrix:
 
 def test_the_real_grid_is_valid_and_small():
     points = tune.grid_points()
-    assert len(points) == 9, "the declared grid changed size"
+    assert len(points) == 30, "the declared grid changed size"
     assert len(points) == len(set(tune.point_hash(p) for p in points)), "two points collide"
+
+
+def test_the_grid_covers_both_modes_with_their_own_axes():
+    per_mode = tune.points_by_mode(tune.grid_points())
+    assert set(per_mode) == set(DETECT_MODES)
+    assert len(per_mode[MODE_DARKENING]) == 18
+    assert len(per_mode[MODE_ROUGH_WATER]) == 12
+    # Each mode only varies parameters it actually uses.
+    assert all("detect.water_db_max" in p for p in per_mode[MODE_DARKENING])
+    assert all("detect.min_abs_change_db" in p for p in per_mode[MODE_ROUGH_WATER])
+    assert not any("detect.min_abs_change_db" in p for p in per_mode[MODE_DARKENING])
+    assert not any("detect.water_db_max" in p for p in per_mode[MODE_ROUGH_WATER])
+
+
+def test_the_terrain_axis_is_searched_in_both_modes():
+    """So the scoreboard can say whether a gain came from the rough-water
+    channel or merely from widening the terrain zone."""
+    per_mode = tune.points_by_mode(tune.grid_points())
+    for mode, pts in per_mode.items():
+        assert {p["detect.hand_max_water_m"] for p in pts} == {20.0, 35.0}, mode
+
+
+def test_the_mode_reaches_the_materialised_params():
+    for mode in DETECT_MODES:
+        pts = [p for p in tune.grid_points() if tune.mode_of(p) == mode]
+        dp, _ = tune.materialise(pts[0], N_PRE)
+        assert dp.mode == mode
 
 
 def test_grid_points_are_deterministic():
     assert tune.grid_points() == tune.grid_points()
-    assert [tune.point_label(p) for p in tune.grid_points()][0].startswith(
-        "backscatter_coefficient="), "grid order is not declaration order"
+    first = tune.point_label(tune.grid_points()[0])
+    assert first.startswith(f"mode={MODE_DARKENING}"),         f"grid order is not declaration order: {first}"
 
 
 def test_the_grid_searches_exactly_the_coefficients_the_backend_offers():
@@ -84,7 +114,7 @@ def test_the_grid_searches_exactly_the_coefficients_the_backend_offers():
     in BACKSCATTER_COEFFICIENTS re-enables the search with no other change."""
     coeffs = {tune.coefficient_of(p) for p in tune.grid_points()}
     assert coeffs == set(BACKSCATTER_COEFFICIENTS) == {"sigma0-ellipsoid"}
-    assert "run.backscatter_coefficient" in TUNE_GRID
+    assert all("run.backscatter_coefficient" in axes for axes in TUNE_GRIDS.values())
 
 
 @pytest.mark.parametrize("bad", [
@@ -94,10 +124,16 @@ def test_the_grid_searches_exactly_the_coefficients_the_backend_offers():
     {"detect.lee_window": (5, 7)},           # applied before a scene is prepared
     {"detect.enl": (4.4,)},
     {"detect.z_seed": ()},                   # no values
+    {"detect.mode": (MODE_DARKENING,)},      # the mode is the grid's key, not an axis
 ])
 def test_an_untunable_grid_is_rejected(bad):
     with pytest.raises(ValueError):
-        tune.validate_grid(bad)
+        tune.validate_grid({MODE_DARKENING: bad})
+
+
+def test_a_grid_for_an_unknown_mode_is_rejected():
+    with pytest.raises(ValueError, match="unknown detection mode"):
+        tune.validate_grid({"magic": {"detect.z_seed": (3.0,)}})
 
 
 def test_materialise_puts_each_value_on_the_right_dataclass():
@@ -347,8 +383,8 @@ def test_a_scene_is_prepared_once_per_event_and_coefficient(monkeypatch, tmp_pat
                           log=lambda *a: None)
     coefficients = {c for _, c in prepared}
     assert len(prepared) == len(coefficients) == 1,         f"prepared {len(prepared)} scenes, expected one per coefficient"
-    assert len(scored) == len(points) == 9
-    assert len(m) == 9
+    assert len(scored) == len(points) == 30
+    assert len(m) == 30
 
 
 def test_cached_scores_are_reused_and_nothing_is_prepared(monkeypatch, tmp_path):
@@ -366,7 +402,7 @@ def test_cached_scores_are_reused_and_nothing_is_prepared(monkeypatch, tmp_path)
     monkeypatch.setattr(tune, "prepare_event", boom)
     m = tune.build_matrix([event], points, tmp_path, n_pre=N_PRE, reuse=True,
                           log=lambda *a: None)
-    assert len(m) == len(points) == 9
+    assert len(m) == len(points) == 30
     assert all(s.value("f1_tolerant") == 0.77 for s in m.values())
 
 
@@ -397,8 +433,9 @@ def test_one_unusable_event_does_not_lose_the_matrix(monkeypatch, tmp_path):
 
 def test_the_grid_axes_exist_in_config_and_are_documented():
     source = (ROOT / "strandline" / "config.py").read_text(encoding="utf-8")
-    assert "TUNE_GRID" in source
-    for key in TUNE_GRID:
-        field = key.split(".", 1)[1]
-        assert field in source, f"{field} is not declared in config.py"
+    assert "TUNE_GRIDS" in source
+    for axes in TUNE_GRIDS.values():
+        for key in axes:
+            field = key.split(".", 1)[1]
+            assert field in source, f"{field} is not declared in config.py"
     assert "Rule 3.4" in source, "the grid must say where parameter values may come from"

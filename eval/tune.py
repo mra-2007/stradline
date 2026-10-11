@@ -64,7 +64,13 @@ from eval.run_scoreboard import (
     MAX_SCENE_PIXELS,
 )
 from strandline import run as pipeline
-from strandline.config import DEV_N_PRE, TUNE_GRID, DetectParams, RunParams
+from strandline.config import (
+    DETECT_MODES,
+    DEV_N_PRE,
+    TUNE_GRIDS,
+    DetectParams,
+    RunParams,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 GATES = ROOT / "eval" / "gates.yaml"
@@ -78,32 +84,65 @@ SECTIONS = {"detect": DetectParams, "run": RunParams}
 
 # --- the grid -----------------------------------------------------------------
 
-def validate_grid(grid: dict[str, tuple] | None = None) -> dict[str, tuple]:
+def validate_grid(grids: dict[str, dict[str, tuple]] | None = None
+                  ) -> dict[str, dict[str, tuple]]:
     """Reject a grid the search cannot honour, before anything expensive runs."""
-    grid = TUNE_GRID if grid is None else grid
-    for key, values in grid.items():
-        section, _, field_name = key.partition(".")
-        if section not in SECTIONS:
-            raise ValueError(f"TUNE_GRID key {key!r}: section must be one of {sorted(SECTIONS)}")
-        known = {f.name for f in fields(SECTIONS[section])}
-        if field_name not in known:
-            raise ValueError(f"TUNE_GRID key {key!r}: {SECTIONS[section].__name__} has no "
-                             f"field {field_name!r}")
-        if section == "detect" and field_name in pipeline.PREPROCESS_FIELDS:
-            raise ValueError(
-                f"TUNE_GRID key {key!r} is applied before a scene is prepared, so varying it "
-                f"would need the whole stack re-filtered per point. Prepare-time fields "
-                f"({', '.join(pipeline.PREPROCESS_FIELDS)}) cannot be tuned by this search.")
-        if not values:
-            raise ValueError(f"TUNE_GRID key {key!r}: no values")
-    return grid
+    grids = TUNE_GRIDS if grids is None else grids
+    for mode, grid in grids.items():
+        if mode not in DETECT_MODES:
+            raise ValueError(f"TUNE_GRIDS has a grid for unknown detection mode {mode!r}; "
+                             f"known: {', '.join(DETECT_MODES)}")
+        if "detect.mode" in grid:
+            raise ValueError("TUNE_GRIDS keys ARE the modes; do not also put detect.mode "
+                             "on an axis, or a grid could score a mode it is not for")
+        for key, values in grid.items():
+            section, _, field_name = key.partition(".")
+            if section not in SECTIONS:
+                raise ValueError(
+                    f"TUNE_GRIDS[{mode!r}] key {key!r}: section must be one of "
+                    f"{sorted(SECTIONS)}")
+            known = {f.name for f in fields(SECTIONS[section])}
+            if field_name not in known:
+                raise ValueError(f"TUNE_GRIDS[{mode!r}] key {key!r}: "
+                                 f"{SECTIONS[section].__name__} has no field {field_name!r}")
+            if section == "detect" and field_name in pipeline.PREPROCESS_FIELDS:
+                raise ValueError(
+                    f"TUNE_GRIDS[{mode!r}] key {key!r} is applied before a scene is prepared, "
+                    f"so varying it would need the whole stack re-filtered per point. "
+                    f"Prepare-time fields ({', '.join(pipeline.PREPROCESS_FIELDS)}) cannot be "
+                    f"tuned by this search.")
+            if not values:
+                raise ValueError(f"TUNE_GRIDS[{mode!r}] key {key!r}: no values")
+    return grids
 
 
-def grid_points(grid: dict[str, tuple] | None = None) -> list[dict]:
-    """The cartesian product, in declaration order. Deterministic."""
-    grid = validate_grid(grid)
-    keys = list(grid)
-    return [dict(zip(keys, combo)) for combo in itertools.product(*(grid[k] for k in keys))]
+def grid_points(grids: dict[str, dict[str, tuple]] | None = None) -> list[dict]:
+    """Every point of every mode's grid, in declaration order. Deterministic.
+
+    One grid per mode, so a point never varies a parameter its mode ignores.
+    `detect.mode` is added from the grid's key, which is why it must not also
+    appear as an axis.
+    """
+    grids = validate_grid(grids)
+    points: list[dict] = []
+    for mode, grid in grids.items():
+        keys = list(grid)
+        for combo in itertools.product(*(grid[k] for k in keys)):
+            point = {"detect.mode": mode}
+            point.update(dict(zip(keys, combo)))
+            points.append(point)
+    return points
+
+
+def mode_of(point: dict) -> str:
+    return str(point.get("detect.mode", DetectParams().mode))
+
+
+def points_by_mode(points: list[dict]) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    for p in points:
+        out.setdefault(mode_of(p), []).append(p)
+    return out
 
 
 def materialise(point: dict, n_pre: int = DEV_N_PRE, base_dp: DetectParams | None = None,
@@ -124,6 +163,30 @@ def point_hash(point: dict, n_pre: int = DEV_N_PRE) -> str:
 
 def point_label(point: dict) -> str:
     return " ".join(f"{k.split('.', 1)[1]}={v}" for k, v in point.items())
+
+
+def best_per_mode(sel: "Selection") -> dict[str, dict]:
+    """The best feasible candidate of each mode, for the A/B comparison.
+
+    Reported so a mode is never adopted on a training-set margin alone: the
+    two modes have different numbers of candidates, so the count of candidates
+    and the best objective of each are both recorded.
+    """
+    out: dict[str, dict] = {}
+    for cand in sel.candidates:
+        mode = mode_of(cand.point)
+        row = out.setdefault(mode, {"candidates": 0, "feasible": 0, "best_objective": None,
+                                    "best_point": None, "rejected_by_control": 0})
+        row["candidates"] += 1
+        if cand.rejected and "false-flood" in cand.rejected:
+            row["rejected_by_control"] += 1
+        if not cand.feasible or cand.objective is None:
+            continue
+        row["feasible"] += 1
+        if row["best_objective"] is None or cand.objective > row["best_objective"]:
+            row["best_objective"] = cand.objective
+            row["best_point"] = dict(cand.point)
+    return out
 
 
 def coefficient_of(point: dict, n_pre: int = DEV_N_PRE) -> str:
@@ -158,6 +221,8 @@ def build_matrix(events: list[dict], points: list[dict], runs_root: Path | None 
     so an interrupted run resumes.
     """
     matrix: Matrix = {}
+    # Grouped by coefficient only: the detection mode is a classify-time
+    # choice, so every mode reuses the same prepared scene.
     by_coefficient: dict[str, list[dict]] = {}
     for p in points:
         by_coefficient.setdefault(coefficient_of(p, n_pre), []).append(p)
@@ -248,6 +313,7 @@ class Selection:
                 "worst_control_event": self.chosen.worst_control_event,
             },
             "ties_at_best_objective": self.ties,
+            "by_mode": best_per_mode(self),
             "candidates": [asdict(c) for c in self.candidates],
         }
 
@@ -381,8 +447,12 @@ def main(argv=None) -> int:
     run_id = sb.new_run_id()
 
     print(f"run_id {run_id}")
-    print(f"grid: {len(points)} point(s) over {len(TUNE_GRID)} axis/axes "
-          f"{list(TUNE_GRID)}")
+    per_mode = points_by_mode(points)
+    print(f"grid: {len(points)} point(s) over {len(per_mode)} mode(s): "
+          + ", ".join(f"{m} {len(ps)}" for m, ps in per_mode.items()))
+    for mode, axes in TUNE_GRIDS.items():
+        print(f"      {mode}: " + ", ".join(f"{k.split('.', 1)[1]}={list(v)}"
+                                            for k, v in axes.items()))
     print(f"pool: {len(floods)} flood event(s) ({len(gate_floods)} gate-eligible), "
           f"{len(controls)} control(s); n_pre {args.n_pre}; tolerance {tolerance_px} px; "
           f"control ceiling {ceiling}")
@@ -435,6 +505,32 @@ def main(argv=None) -> int:
         if final.ties > 1:
             print(f"  {final.ties} point(s) tied at this objective; grid order decided")
 
+    print("\n=== MODE COMPARISON (training mean, all pool events) ===")
+    print("A mode with more candidates has more chances to fit the training set,")
+    print("so a narrow win here means little: the held-out column decides.")
+    ab = best_per_mode(final)
+    head = f"  {'mode':<14} {'candidates':>10} {'feasible':>9} {'rejected by control':>20} {'best train F1 tol':>18}"
+    print(head)
+    for mode in sorted(ab):
+        row = ab[mode]
+        best = row["best_objective"]
+        print(f"  {mode:<14} {row['candidates']:>10} {row['feasible']:>9} "
+              f"{row['rejected_by_control']:>20} "
+              f"{('-' if best is None else f'{best:.4f}'):>18}")
+    held_by_mode: dict[str, list[float]] = {}
+    for held, sel in selections.items():
+        if sel.ok and (held, sel.chosen.params_hash) in matrix:
+            sc = matrix[(held, sel.chosen.params_hash)]
+            if sc.ok and sc.value(OBJECTIVE_METRIC) is not None:
+                held_by_mode.setdefault(mode_of(sel.chosen.point), []).append(
+                    sc.value(OBJECTIVE_METRIC))
+    if held_by_mode:
+        print("\n  held-out events per chosen mode (this is the number that decides):")
+        for mode, vals in sorted(held_by_mode.items()):
+            print(f"    {mode:<14} {len(vals)} event(s), mean held-out "
+                  f"{OBJECTIVE_METRIC} {sum(vals) / len(vals):.4f}, "
+                  f"worst {min(vals):.4f}")
+
     control_scores: list[EventScore] = []
     diff: list[dict] = []
     dp_final = rp_final = None
@@ -464,7 +560,9 @@ def main(argv=None) -> int:
             "tolerance_px": tolerance_px,
             "n_pre": args.n_pre,
         },
-        "grid": {k: list(v) for k, v in TUNE_GRID.items()},
+        "grid": {mode: {k: list(v) for k, v in axes.items()}
+                 for mode, axes in TUNE_GRIDS.items()},
+        "modes_compared": sorted(points_by_mode(points)),
         "pool": {"flood_events": floods, "gate_eligible": gate_floods, "controls": controls},
         "coverage": coverage([s.event for s in loeo_scores + control_scores], args.plan),
         "loeo": {held: sel.report() for held, sel in selections.items()},
@@ -474,7 +572,16 @@ def main(argv=None) -> int:
                               {"detect": asdict(dp_final), "run": asdict(rp_final),
                                "params_hash": final.chosen.params_hash}),
         "config_diff": diff,
+        "mode_comparison": best_per_mode(final),
         "caveats": [
+            "The two modes have different numbers of grid candidates "
+            f"({', '.join(f'{m}: {len(ps)}' for m, ps in points_by_mode(points).items())}), "
+            "so the mode with more candidates has more chances to fit the training events. "
+            "Only the held-out numbers decide which mode is adopted.",
+            "The primary metric is flood-affected area (our flood classes UNION debris) "
+            "against each reference's flooded + debris/mass-movement classes, decided in "
+            "docs/tuning_log.md before this mode was scored. Water-only scores are in each "
+            "event's score file.",
             f"Measured with n_pre={args.n_pre} pre-event images, not the shipped default "
             f"{RunParams.n_pre}: a thinner reference stack gives noisier per-pixel std.",
             "Control false-flood rates are in-sample: every control was used as a feasibility "

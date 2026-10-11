@@ -168,7 +168,7 @@ def test_every_event_has_its_own_recorded_selection(harness):
     assert set(saved["loeo"]) == set(FLOOD_F1)
     for held, sel in saved["loeo"].items():
         assert held not in sel["train_events"], f"{held} trained on itself"
-        assert len(sel["candidates"]) == 9
+        assert len(sel["candidates"]) == 30
         assert sel["chosen"]["worst_control_false_flood_fraction"] <= 0.01
 
 

@@ -8,8 +8,29 @@ used into run_report.json, so any result can be reproduced.
 from dataclasses import asdict, dataclass
 
 
+# Detection modes. Both stay available; the default is the one that has been
+# in use, so a comparison is always against the real baseline.
+#
+#   darkening    open water is dark and darkens: specular scattering from a
+#                flat water surface. True on a floodplain.
+#   rough_water  a confined, turbulent, sediment-laden flood in a gorge is a
+#                ROUGH surface at C-band and can scatter MORE than the dry
+#                valley floor it replaced, so the SIGN of the change is not a
+#                reliable flood signature there and the magnitude of a coherent
+#                change low on the valley floor is used instead. Darkness is
+#                kept only as the high-confidence criterion.
+#                See docs/tuning_log.md, 2026-10-11.
+MODE_DARKENING = "darkening"
+MODE_ROUGH_WATER = "rough_water"
+DETECT_MODES = (MODE_DARKENING, MODE_ROUGH_WATER)
+
+
 @dataclass(frozen=True)
 class DetectParams:
+    # Which detection mode (see DETECT_MODES above). Chosen by eval/tune.py
+    # over the dev set, never per area or per event.
+    mode: str = MODE_DARKENING
+
     # Speckle filter (Lee), applied to linear backscatter before dB conversion.
     lee_window: int = 5
     enl: float = 4.4  # equivalent number of looks, Sentinel-1 IW GRDH
@@ -41,11 +62,32 @@ class DetectParams:
     # speckle at river banks being called debris.
     debris_min_post_vv_db: float = -12.0
 
+    # --- rough_water mode only -------------------------------------------
+    # Minimum absolute backscatter change, in dB, in BOTH polarisations, for a
+    # pixel to count as changed at all. Sentinel-1 GRD radiometric stability is
+    # of order 0.5 dB, so a z-score alone can call a 0.75 dB wobble a change
+    # (z_grow 1.5 x std_floor_db 0.5): that is what made the old debris channel
+    # fire on 3.8% of an AOI. 3 dB is a factor of 2 in power and the long-
+    # standing convention in SAR change detection. Not set from any dev-event
+    # score; see docs/tuning_log.md, 2026-10-11.
+    min_abs_change_db: float = 3.0
+
+    # Both polarisations must move in the SAME direction for a seed. A real
+    # surface change moves VV and VH together; speckle does not.
+    require_pol_agreement: bool = True
+
     # Cleanup.
     mmu_pixels: int = 6                     # minimum mapping unit (water)
     mmu_pixels_debris: int = 10             # debris fans are larger
     require_drainage_connection: bool = True
     drainage_buffer_px: int = 3
+
+    def __post_init__(self) -> None:
+        if self.mode not in DETECT_MODES:
+            raise ValueError(
+                f"detect mode {self.mode!r} is not supported; "
+                f"choose one of {', '.join(DETECT_MODES)}."
+            )
 
 
 # Sentinel-1 backscatter coefficients we support, as openEO names them.
@@ -134,6 +176,19 @@ CLASS_NAMES = {
 
 FLOOD_CLASSES = (CLASS_FLOOD_HIGH, CLASS_FLOOD_MEDIUM)
 
+# THE PRIMARY SCORED QUANTITY: flood-affected area.
+#
+# Track B asks for flooded AND debris-covered areas, so what the gates measure
+# is the union of our flood and debris classes, scored against each reference's
+# flooded + debris/mass-movement classes (that event's `reference_classes`).
+# Water-only scores are still computed and reported alongside.
+#
+# Decided and recorded in docs/tuning_log.md on 2026-10-11, BEFORE the new mode
+# was scored. Note it makes the task harder on five of the six independent
+# events: only one declares a reference debris class, so for the others the
+# reference union is unchanged while our prediction gains the debris class.
+FLOOD_AFFECTED_CLASSES = (CLASS_FLOOD_HIGH, CLASS_FLOOD_MEDIUM, CLASS_DEBRIS)
+
 
 # --- Dev-event scoring cost ---------------------------------------------------
 #
@@ -152,37 +207,52 @@ FLOOD_CLASSES = (CLASS_FLOOD_HIGH, CLASS_FLOOD_MEDIUM)
 DEV_N_PRE = 3
 
 
-# --- Parameter search grid (eval/tune.py, leave-one-event-out) ----------------
+# --- Parameter search grids (eval/tune.py, leave-one-event-out) --------------
 #
 # Rule 3.4: parameter values are chosen by eval/tune.py with leave-one-event-out,
 # or set from physics or literature without looking at scores. Never hand-tuned.
 # Rule 3.7: the grid itself is a tunable, so it lives here.
 #
-# Keys are "<section>.<field>", section being "run" (RunParams) or "detect"
-# (DetectParams). The search is exhaustive over the cartesian product, so the
-# grid is deliberately small: every axis costs one detection pass per event,
-# and a backscatter axis costs a whole extra download of the dev set.
+# One grid PER DETECTION MODE, so no point ever varies a parameter its mode
+# ignores. Keys are "<section>.<field>", section being "run" (RunParams) or
+# "detect" (DetectParams). The search is exhaustive over each mode's cartesian
+# product, so the grids are deliberately small: every point costs one detection
+# pass per event.
 #
-# Why these three axes and not others:
-#   run.backscatter_coefficient  the open question from docs/tuning_log.md:
-#                                real VV correlates with DEM-simulated terrain
-#                                brightness at r = 0.75, so radiometric terrain
-#                                flattening may separate the valley-floor
-#                                histogram that sigma0 leaves unimodal.
-#   detect.z_seed                the multi-temporal change threshold. 2.5-3.5
-#                                sigma is the range used in the literature this
-#                                detector follows (DeVries et al. 2020).
-#   detect.water_db_max          the ceiling on the open-water darkness gate,
-#                                which the tuning log shows is the operative
-#                                threshold in steep terrain (Otsu returns a
-#                                land-like value there and the clamp bites).
+# DECLARED BEFORE THE NEW MODE WAS SCORED, with every value justified in
+# docs/tuning_log.md (2026-10-11):
 #
-# Everything else stays at its physics- or literature-set value: HAND and slope
-# limits describe where water can lie, the Lee window and ENL describe the
-# sensor, and the minimum mapping units describe the resolution. Adding an axis
-# must be justified here, not by a score.
-TUNE_GRID: dict[str, tuple] = {
-    "run.backscatter_coefficient": BACKSCATTER_COEFFICIENTS,
-    "detect.z_seed": (2.5, 3.0, 3.5),
-    "detect.water_db_max": (-18.0, -15.0, -12.0),
+#   z_seed             2.5-3.5 sigma, the range in the multi-temporal change
+#                      literature this detector follows (DeVries et al. 2020).
+#   hand_max_water_m   in BOTH grids, so the scoreboard can say whether a gain
+#                      came from the rough-water channel or merely from the
+#                      terrain widening. 20 m is the current value; HAND-based
+#                      floodplain delineation uses 5-30 m (Rennó et al. 2008;
+#                      Nobre et al. 2011) and a confined gorge flood adds flow
+#                      depth plus superelevation, so 35 m is the physical upper
+#                      end.
+#   water_db_max       darkening mode only; unchanged from the earlier grid.
+#   min_abs_change_db  rough_water mode only; see the field's comment above.
+#
+# slope_max_water_deg is deliberately NOT widened and NOT searched: a water
+# surface is flat, and a 20 m DEM slope above 15 deg on a valley floor is far
+# more likely a wall pixel than a flooded one. Holding it fixed also keeps the
+# two modes comparable on it.
+#
+# Everything else stays at its physics- or literature-set value: the Lee window
+# and ENL describe the sensor, the minimum mapping units describe the
+# resolution. Adding an axis must be justified here, not by a score.
+TUNE_GRIDS: dict[str, dict[str, tuple]] = {
+    MODE_DARKENING: {                                    # 1 x 3 x 2 x 3 = 18
+        "run.backscatter_coefficient": BACKSCATTER_COEFFICIENTS,
+        "detect.z_seed": (2.5, 3.0, 3.5),
+        "detect.hand_max_water_m": (20.0, 35.0),
+        "detect.water_db_max": (-18.0, -15.0, -12.0),
+    },
+    MODE_ROUGH_WATER: {                                  # 1 x 3 x 2 x 2 = 12
+        "run.backscatter_coefficient": BACKSCATTER_COEFFICIENTS,
+        "detect.z_seed": (2.5, 3.0, 3.5),
+        "detect.hand_max_water_m": (20.0, 35.0),
+        "detect.min_abs_change_db": (2.0, 3.0),
+    },
 }

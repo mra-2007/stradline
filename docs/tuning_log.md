@@ -289,3 +289,114 @@ under COPERNICUS_30. The finding is radiometric (the flood brightened: combined
 z median +3.30, 0.0% of reference pixels below -15 dB) and a geocoding change of
 a pixel or two is unlikely to reverse it, but "unlikely" is not "measured", and
 the earlier numbers should not be quoted after the refetch.
+
+---
+
+## 2026-10-11 — Change (DECLARED BEFORE SCORING): rough-water detection mode
+
+**Status:** method change, approved by the human after the two observations
+above. This entry is written **before any score of the new mode exists** and
+before the dev-set download finished. Everything decided here - the grid, the
+parameter values, the scoring definition - is fixed by this entry. Nothing in
+it comes from a Konjic number; where a value could have been read off the
+Konjic reachability table, it is instead put in the grid for
+leave-one-event-out to choose. Order of work, deliberately: declare, implement,
+test on synthetic data, download, then score.
+
+### What is being changed, and why
+
+Two measured facts motivate it, both recorded above: in a steep gorge the flood
+water **brightened** (combined z +3.30, 0.0% below the -15 dB darkness gate), so
+the darkening channel cannot fire; and the existing debris channel fires on
+**3.8% of a whole AOI** at precision 0.0062, so it is no use as a substitute.
+
+Physical reading: specular dark water is a floodplain phenomenon. A confined,
+turbulent, sediment- and debris-laden flood in a gorge is a **rough** surface at
+C-band, and can scatter more than the dry valley floor it replaced. The sign of
+the backscatter change is therefore not a reliable signature of flooding in this
+terrain; the **magnitude** of a coherent change low on the valley floor is.
+
+### The new mode
+
+`DetectParams.mode` selects between:
+
+- `darkening` - **today's algorithm, unchanged.** It stays the default and stays
+  available, so the comparison is against the real baseline rather than against
+  a rewritten one.
+- `rough_water` - three changes together:
+  1. **Rough-water channel.** On the valley floor, a *significant change of
+     either sign* is flood water. HAND, slope, minimum mapping unit and the
+     drainage-connection test all still apply, so the change must be low, flat
+     and connected to the channel network to count.
+  2. **Tightened debris.** Every change, of either channel, must now also exceed
+     an absolute dB threshold and move **both** polarisations in the **same
+     direction**. The old debris grow step asked only for z >= 1.5, which with
+     `std_floor_db` 0.5 is a 0.75 dB change - at the radiometric noise level of
+     Sentinel-1 GRD, which is why it fired almost everywhere.
+  3. **Terrain widening** folded in, as a grid axis rather than an assertion
+     (see below).
+  Debris and water are separated by **terrain position**, not by radiometry:
+  inside the valley-floor zone a strong change is water; above it, within the
+  debris zone, strong *brightening* is debris. Water lies low and near the
+  channel; debris fans sit higher and steeper. Darkness is kept only as the
+  **high-confidence** criterion for water, where it still means specular water.
+
+### The grid, declared now (30 points)
+
+Per mode, so no point varies a parameter its mode ignores:
+
+| Axis | Values | Where the values come from |
+|---|---|---|
+| `run.backscatter_coefficient` | sigma0-ellipsoid | the only one this backend offers |
+| `detect.z_seed` | 2.5, 3.0, 3.5 | 2.5-3.5 sigma, the range in the multi-temporal change literature this detector follows (DeVries et al. 2020) |
+| `detect.hand_max_water_m` | 20.0, 35.0 | **both modes.** 20 m is the current value; HAND-based floodplain delineation uses 5-30 m (Rennó et al. 2008; Nobre et al. 2011), and a confined gorge flood adds flow depth plus superelevation on bends, so 35 m is the physical upper end. Put in the grid rather than set, because the Konjic reachability table would otherwise be choosing it. |
+| `detect.water_db_max` | -18, -15, -12 dB | **darkening mode only.** Unchanged from the previous grid. |
+| `detect.min_abs_change_db` | 2.0, 3.0 dB | **rough_water mode only.** Sentinel-1 GRD radiometric stability is of order 0.5 dB, so a physically meaningful surface change must clear a few dB; 3 dB (a factor of 2 in power) is the long-standing convention in SAR change detection. |
+
+`detect.slope_max_water_deg` is **not** widened and **not** in the grid: a water
+surface is flat, and a 20 m DEM slope above 15 deg on a valley floor is far more
+likely a wall pixel than a flooded one. Keeping it fixed also keeps the two
+modes comparable on it.
+
+Grid sizes: `darkening` 1x3x2x3 = **18**, `rough_water` 1x3x2x2 = **12**.
+`hand_max_water_m` is in both grids on purpose, so the scoreboard can say
+whether any gain came from the rough-water channel or merely from the terrain
+widening.
+
+**Stated caveat on the comparison:** 18 candidates against 12 is not a like-for-
+like contest. A mode with more candidates has more chances to fit the training
+events, so a narrow win on the training mean would mean little. Only the
+held-out (leave-one-event-out) numbers decide, and the margin is reported
+per event.
+
+### The scoring definition, decided now
+
+Track B asks for flooded **and debris-covered** areas, so the primary quantity
+becomes **flood-affected area = water ∪ rough-water ∪ debris** - in class terms
+`CLASS_FLOOD_HIGH ∪ CLASS_FLOOD_MEDIUM ∪ CLASS_DEBRIS`. It is scored against
+each reference's **flooded + debris/mass-movement** classes, taken from that
+event's own `reference_classes` mapping in events.yaml. These are the numbers
+that go in the gate columns of `eval/results/flood.csv`. Controls'
+`false_flood_fraction` is computed on the same union, so the 1% ceiling now
+constrains the debris channel too.
+
+Water-only precision, recall, F1 and IoU (our flood classes against the
+reference `water` class alone) continue to be computed and are recorded in each
+event's score file, next to the union numbers.
+
+**This change makes the task harder on five of the six independent events, not
+easier.** Only Konjic declares a reference debris class, so for the other five
+the reference union is identical to the reference water class while our
+prediction gains the debris class - i.e. more opportunity for false positives
+against the same truth. That asymmetry is the honest direction and is the reason
+it is safe to decide this before seeing a score.
+
+### How the decision will be taken
+
+`eval/tune.py` runs leave-one-event-out over both modes' grids on all six
+independent flood events, with the four controls as a hard feasibility
+constraint. The new mode is adopted **only** if it beats `darkening` on the
+held-out events and every control stays at or under 1% false flood. If it wins
+on the training mean but not on held-out events, it is rejected and that is
+recorded here. If no mode is feasible, nothing is adopted and the gate stays
+failing with the evidence attached.

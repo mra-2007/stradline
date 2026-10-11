@@ -2,7 +2,9 @@
 
 Layout (240 x 240 px, 20 m): a river runs down the middle of a flat valley
 floor, steep walls rise on both sides. Injected:
-  - a flood on the valley floor beside the river (truth mask),
+  - a flood on the valley floor beside the river (truth mask), which DARKENS
+    by default and can be made to BRIGHTEN instead (flood_delta_db > 0), as a
+    turbulent sediment-laden gorge flood does,
   - a debris fan that brightens radar (truth mask),
   - bait: a dark patch high on a mountain wall (radar shadow / wet snow),
     which must NOT be called flood,
@@ -35,12 +37,20 @@ def _geometry():
                 debris=debris, bait=bait, speck=speck, streams=streams)
 
 
-def _base_db(g, post: bool, with_event: bool):
+def _base_db(g, post: bool, with_event: bool, flood_delta_db: float = -10.0):
+    """flood_delta_db: dB change of the flooded area in the post image.
+
+    Negative is the classic specular case (open water goes dark). Positive is
+    the gorge case measured on EMSR770, where turbulent sediment-laden water
+    scatters MORE than the dry valley floor it replaced. Both polarisations
+    move together, as a real surface change does.
+    """
     vv = np.full((H, W), -9.0)
     vh = np.full((H, W), -16.0)
     vv[g["river"]], vh[g["river"]] = -21.0, -28.0
     if post and with_event:
-        vv[g["flood"]], vh[g["flood"]] = -19.0, -26.0
+        vv[g["flood"]] = -9.0 + flood_delta_db
+        vh[g["flood"]] = -16.0 + flood_delta_db
         vv[g["debris"]], vh[g["debris"]] = -4.0, -11.0
         vv[g["bait"]], vh[g["bait"]] = -20.0, -27.0
         vv[g["speck"]], vh[g["speck"]] = -20.0, -27.0
@@ -49,11 +59,12 @@ def _base_db(g, post: bool, with_event: bool):
 
 @pytest.fixture
 def scene():
-    """Returns a builder: scene(event=True, speckle=False, n_pre=5, seed=0)."""
+    """Returns a builder: scene(event=True, speckle=False, n_pre=5, seed=0,
+    flood_delta_db=-10.0). A positive flood_delta_db makes the flood brighten."""
     g = _geometry()
     slope = slope_degrees(g["dem"], RES)
 
-    def build(event=True, speckle=False, n_pre=5, seed=0):
+    def build(event=True, speckle=False, n_pre=5, seed=0, flood_delta_db=-10.0):
         rng = np.random.default_rng(seed)
 
         def observe(vv_db, vh_db):
@@ -63,7 +74,9 @@ def scene():
             return vv_db + rng.normal(0, 1.0, vv_db.shape), vh_db + rng.normal(0, 1.0, vh_db.shape)
 
         pre = [observe(*_base_db(g, post=False, with_event=False)) for _ in range(n_pre)]
-        post = observe(*_base_db(g, post=True, with_event=event))
-        return dict(geometry=g, slope=slope, pre=pre, post=post, speckle=speckle)
+        post = observe(*_base_db(g, post=True, with_event=event,
+                                 flood_delta_db=flood_delta_db))
+        return dict(geometry=g, slope=slope, pre=pre, post=post, speckle=speckle,
+                    flood_delta_db=flood_delta_db)
 
     return build

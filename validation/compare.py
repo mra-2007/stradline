@@ -29,7 +29,12 @@ import rasterio
 from rasterio.features import rasterize
 from scipy import ndimage
 
-from strandline.config import CLASS_DEBRIS, CLASS_NODATA, FLOOD_CLASSES
+from strandline.config import (
+    CLASS_DEBRIS,
+    CLASS_NODATA,
+    FLOOD_AFFECTED_CLASSES,
+    FLOOD_CLASSES,
+)
 
 EIGHT = np.ones((3, 3), dtype=bool)
 REFERENCE_CREDIT = "European Union, Copernicus Emergency Management Service data"
@@ -54,6 +59,32 @@ def flood_mask(classes: np.ndarray, include_debris: bool = False) -> np.ndarray:
     """Our flood prediction: the flood classes, optionally plus debris."""
     codes = list(FLOOD_CLASSES) + ([CLASS_DEBRIS] if include_debris else [])
     return np.isin(classes, codes)
+
+
+def flood_affected_mask(classes: np.ndarray) -> np.ndarray:
+    """THE PRIMARY SCORED QUANTITY: flood-affected area.
+
+    Water (either confidence) OR debris, because Track B asks for flooded and
+    debris-covered areas. Scored against the union of each reference's flooded
+    and debris/mass-movement classes. Decided and recorded in
+    docs/tuning_log.md on 2026-10-11, before the new detection mode was scored.
+    """
+    return np.isin(classes, list(FLOOD_AFFECTED_CLASSES))
+
+
+def reference_class_values(reference_classes: dict, *keys: str) -> list[str]:
+    """The declared attribute values for one or more reference classes.
+
+    `reference_classes` comes straight from the event's entry in events.yaml;
+    passing ("water", "debris") gives the union used by the primary metric.
+    Order is preserved and duplicates dropped, so the result is deterministic.
+    """
+    out: list[str] = []
+    for key in keys:
+        for value in (reference_classes or {}).get(key) or []:
+            if str(value) not in out:
+                out.append(str(value))
+    return out
 
 
 def scoring_domain(classes: np.ndarray, aoi: np.ndarray | None = None) -> np.ndarray:

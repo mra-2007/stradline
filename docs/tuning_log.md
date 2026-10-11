@@ -455,3 +455,107 @@ over-predicting without starting to be right. Whether the grid can close that
 is exactly what the tuner is for, and if it cannot, the gate fails and the
 report says so with these rows attached. No parameter will be hand-moved toward
 these numbers.
+
+---
+
+## 2026-10-11 — DECISION: rough_water adopted. Flood gate FAILS, honestly.
+
+**Status:** the leave-one-event-out run declared above has been executed on all
+6 independent flood events and 4 controls, 301 scores over 30 grid points.
+Run id in `eval/chosen_params.json`; rows in `eval/results/flood.csv`
+(`split=loeo` for floods, `split=full` for controls).
+
+### Mode decision, by the rule fixed before scoring
+
+**`rough_water` is adopted.** It met both conditions:
+
+1. **It wins on held-out events.** Tolerant F1, leave-one-event-out, against
+   `darkening` at the config.py defaults: Punakha 0.118 vs 0.025, Konjic 0.069
+   vs 0.067, Poza Honda 0.555 vs 0.125, Ringebu 0.915 vs 0.780, Selsverket
+   0.588 vs 0.295. It loses on one, Larkana 0.834 vs 0.843 - the flat irrigated
+   plain, the one event where specular dark water is the correct physics.
+2. **Every control is under the ceiling**, max 0.0048.
+
+**`darkening` could not be used at all: 0 of its 18 grid points were feasible.**
+Every one was rejected by a control, and the binding one is
+`norway_ringebu_control_2023` at **0.0490 false flood** - 4.9% of a dry
+Norwegian valley called flood-affected, against a 1% ceiling, and its best
+configuration still gives 0.045. `rough_water` brings that control to 0.0014.
+So the old mode fails the no-flood gate outright, which the earlier
+single-event look had not revealed.
+
+Chosen parameters (`mode=rough_water`, `z_seed=3.0`, `hand_max_water_m=20.0`,
+`min_abs_change_db=3.0`, `sigma0-ellipsoid`); 2 points tied, grid order decided.
+`hand_max_water_m` **stayed at 20.0**: the terrain widening to 35 m, searched in
+both modes, was not chosen. So the gain came from the rough-water channel and
+the debris tightening, not from widening the zone. Diff to apply by hand:
+`detect.mode darkening -> rough_water` (and `run.n_pre 5 -> 3`, which is the
+dev-scoring cost setting, not a tuning result - do not apply that one).
+
+### The gate: measured against target
+
+| Gate | Measured | Target | Status |
+|---|---|---|---|
+| mean precision (tolerant) | **0.5177** | >= 0.90 | FAIL |
+| mean recall (tolerant) | **0.5105** | >= 0.90 | FAIL |
+| mean F1 (tolerant) | **0.5134** | >= 0.90 | FAIL |
+| worst-event F1 (tolerant) | **0.0694** | >= 0.80 | FAIL |
+| mean F1 (strict) | 0.4071 | report | - |
+| mean IoU (strict) | 0.2937 | report | - |
+| max control false flood | **0.0048** | <= 0.01 | **PASS** |
+
+Per-event held-out tolerant F1: Konjic 0.069, Punakha 0.118, Poza Honda 0.555,
+Selsverket 0.588, Larkana 0.834, Ringebu 0.915.
+
+### Root cause, with evidence
+
+F1 tracks **how much of the AOI the reference actually calls flood**, not the
+terrain directly. Rank correlation between held-out tolerant F1 and the
+reference's positive fraction is **0.886**:
+
+| Event | F1 tol | ref ha | positives | predicted ha | mean slope |
+|---|---|---|---|---|---|
+| bosnia_konjic_2024 | 0.069 | 42.6 | 0.134% | 33.5 | 21.8 deg |
+| bhutan_punakha_2024 | 0.118 | 31.3 | 0.023% | 35.3 | 24.4 deg |
+| ecuador_poza_honda_2025 | 0.555 | 197.6 | 0.306% | 178.6 | 13.1 deg |
+| norway_selsverket_2023 | 0.588 | 125.1 | 1.015% | 120.3 | 16.3 deg |
+| pakistan_larkana_2022 | 0.834 | 50187.7 | 50.795% | 38836.6 | 0.3 deg |
+| norway_ringebu_2023 | 0.915 | 863.4 | 2.015% | 785.2 | 9.9 deg |
+
+The decisive observation: **the predicted AREA is now close to right on every
+event** (33.5 vs 42.6 ha, 35.3 vs 31.3, 178.6 vs 197.6, 120.3 vs 125.1, 785 vs
+863). The quantity of flooding is approximately correct; on the two steep
+events it is in the **wrong place**. That is a localisation failure at 20 m in a
+gorge, not a thresholding failure - and it is why no parameter in this grid
+fixes it. Positive fraction and slope are confounded in this dev set (the
+steepest events also have the smallest references), so this evidence cannot
+separate "steep terrain" from "tiny target"; both point at the same two events.
+
+### Options, costs stated
+
+1. **Accept and report honestly.** 0.51 mean tolerant F1 over six independent
+   mountain references, 0.92 on the best, with a measured false-flood rate of
+   0.5%. The 90% gate is not met and the report says so. Cost: no gate passes.
+   This is the current state and is what the README now says.
+2. **Attack localisation, not thresholds.** The predicted area is right and
+   misplaced, so the candidates are geometric: terrain-corrected geocoding of
+   the GRD (the backend's sigma0-ellipsoid is not RTC and gamma0-terrain is
+   unavailable - see 2026-10-11 above), finer resolution than 20 m in narrow
+   valleys, or a flow-path constraint that pushes detections onto the channel
+   the DEM says water must follow. Real work, and the only option aimed at the
+   measured cause.
+3. **Re-scope the claim to where it is measured.** The method reaches 0.83-0.92
+   tolerant F1 where the flood covers >= 2% of the AOI and mean slope is
+   <= 10 deg, and 0.07-0.12 where the flood covers < 0.2% at >= 20 deg. Stating
+   that split is more useful to a rescuer than one averaged number. Does not
+   change the gate, and must not be presented as passing it.
+4. **Widen the dev set** so positive fraction and slope stop being confounded:
+   the five flood_dependent events are already downloadable and would add
+   references at intermediate positive fractions. Scores on them cannot move a
+   gate (Sentinel-1-derived references), but they can tell us which of the two
+   explanations is doing the work.
+
+**Not done, and not to be done:** no threshold was moved toward these numbers
+after seeing them, no event was dropped, and the scoring domain was not
+narrowed. `hand_max_water_m` was offered 35 m by the grid and the data declined
+it.

@@ -159,32 +159,41 @@ permanent river; near-zero false flood on no-event scenes; track selection; HAND
 offline end-to-end run with mocked downloads; the gate checker. Synthetic results prove the logic,
 not real-world accuracy.
 
-**Verified against real data:** the live Copernicus catalogue and openEO download path; the
-evaluation chain end to end on one independent dev event (Konjic, EMSR770) from cached Sentinel-1.
+**Measured on real data (6 independent mountain/valley flood references, leave-one-event-out,
+20 m boundary tolerance).** Primary quantity is flood-affected area = our flood classes ∪ debris,
+against each reference's flooded + debris/mass-movement classes. Rows: `eval/results/flood.csv`
+(`split=loeo`); method and caveats: `eval/chosen_params.json`, `docs/tuning_log.md`.
 
-**Not yet verified:** every real-world gate. All gates read NO DATA — the dev-set download is
-incomplete, so no `split=loeo` row has been written.
+| Gate | Measured | Target | Status |
+|---|---|---|---|
+| mean precision / recall / F1, tolerant | 0.518 / 0.511 / **0.513** | ≥ 0.90 | **FAIL** |
+| worst single event, F1 tolerant | **0.069** | ≥ 0.80 | **FAIL** |
+| mean F1 / IoU, strict | 0.407 / 0.294 | report | — |
+| no-flood controls, max false flood | **0.0048** | ≤ 0.01 | **PASS** |
 
-Two backend limits found on the first full download attempt (38 of 90 files succeeded), both now
-handled and both recorded in `docs/tuning_log.md` (2026-10-11):
+Per-event held-out tolerant F1: Konjic 0.069, Punakha 0.118, Poza Honda 0.555, Selsverket 0.588,
+Larkana 0.834, Ringebu 0.915. Coverage: 6/6 gate-eligible floods, 4 of 8 declared controls.
 
-- **SRTM stops at 60°N.** openEO's `sar_backscatter` defaults to SRTM for orthorectification, so
-  every Norwegian event died on missing tile N61E009 — including `sigma0-ellipsoid` jobs, since
-  geocoding needs a DEM whatever the radiometric reference. `elevation_model` is now passed
-  explicitly as `COPERNICUS_30`, the same DEM the terrain stage uses, and it is part of every cache
-  filename and of `params_hash`, so SRTM- and COP30-geocoded dates can never share a stack.
-- **`gamma0-terrain` is unavailable here.** The backend advertises `coefficient` as
-  `enum: ["sigma0-ellipsoid"]` and refuses anything else before a job exists. It has been removed
-  from `BACKSCATTER_COEFFICIENTS`; the tuning grid drops from 18 points to 9. This means the
-  terrain-flattening question raised by the steep-terrain failure mode **cannot be answered on this
-  backend** — not that it was tested and lost.
+The detector now runs in `rough_water` mode, chosen over the original `darkening` mode by
+leave-one-event-out: it wins on 5 of 6 held-out events, and `darkening` is in fact **infeasible** —
+all 18 of its grid points breach the control ceiling, worst case 4.9% false flood on a dry
+Norwegian valley. The terrain widening offered by the grid was **not** chosen, so the gain comes
+from the rough-water channel and the debris tightening.
 
-The first real event scored **F1 0.00** with default parameters, for a measured reason: the
-reference flood brightened rather than darkened (combined z median **+3.30**, 0.0% of reference
-pixels below the −15 dB open-water gate), so the darkening channel cannot fire there. That number
-is from `runs/eval/bosnia_konjic_2024/scores/3674bd8ba80a.json` — one event, not a gate, and
-measured on SRTM-geocoded input, so it must be re-measured once the stack is refetched under
-`COPERNICUS_30`.
+**Why the flood gate fails, measured.** Held-out F1 tracks the reference's positive fraction (rank
+correlation 0.886), and the predicted *area* is close to correct on every event (e.g. 33.5 ha
+against a 42.6 ha reference at Konjic, 785 vs 863 ha at Ringebu). The quantity of flooding is
+approximately right; on the two steepest events with the smallest references it is in the **wrong
+place**. That is a localisation failure at 20 m in a gorge, not a threshold that needs retuning —
+no parameter in the declared grid fixes it. Options and their costs are in `docs/tuning_log.md`.
+
+**Honest summary for the report:** this maps flood-affected area well where the flood covers ≥ 2%
+of the area and the ground is moderate (0.83–0.92 tolerant F1), and poorly where the flood covers
+< 0.2% of a steep gorge (0.07–0.12). It does not meet the 90% gate. Positive fraction and slope are
+confounded in this dev set, so those two explanations cannot yet be separated.
+
+**Not yet verified:** damage overlay, cut-off settlements, copilot, live drills and reproducibility
+all read NO DATA — not started.
 
 ## Known limitations (for the report)
 

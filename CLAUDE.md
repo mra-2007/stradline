@@ -141,3 +141,4 @@ Results CSVs: see the comment block at the end of `eval/gates.yaml`. Every row h
 - A verifier checks every number in the final text, including Devanagari digits, against the
   evidence. Any unmatched number means the answer is rejected and regenerated or refused.
 - English and Nepali. Works offline with the keyword fallback. Every answer carries its trace.
+- Never stop processes with taskkill /IM; stop only by PID. Never start, stop or restart eval.fetch_dev_data; the human runs it, and --estimate is its only no-network mode.

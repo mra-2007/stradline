@@ -34,6 +34,7 @@ from strandline.config import (
     CLASS_NODATA,
     FLOOD_AFFECTED_CLASSES,
     FLOOD_CLASSES,
+    FLOOD_EXTENT_WITHOUT_DEBRIS,
 )
 
 EIGHT = np.ones((3, 3), dtype=bool)
@@ -61,15 +62,22 @@ def flood_mask(classes: np.ndarray, include_debris: bool = False) -> np.ndarray:
     return np.isin(classes, codes)
 
 
-def flood_affected_mask(classes: np.ndarray) -> np.ndarray:
+def flood_affected_mask(classes: np.ndarray, include_debris: bool = True) -> np.ndarray:
     """THE PRIMARY SCORED QUANTITY: flood-affected area.
 
     Water (either confidence) OR debris, because Track B asks for flooded and
     debris-covered areas. Scored against the union of each reference's flooded
     and debris/mass-movement classes. Decided and recorded in
     docs/tuning_log.md on 2026-10-11, before the new detection mode was scored.
+
+    `include_debris=False` is ExtentParams.debris_in_flood_extent = False: the
+    debris class stays in the class map but is not flood EXTENT, so it is not
+    scored. The REFERENCE side does not follow this flag - references are still
+    the union of flooded and debris/mass-movement - which makes it the harder
+    option, by design (docs/tuning_log.md, 2026-10-12).
     """
-    return np.isin(classes, list(FLOOD_AFFECTED_CLASSES))
+    codes = FLOOD_AFFECTED_CLASSES if include_debris else FLOOD_EXTENT_WITHOUT_DEBRIS
+    return np.isin(classes, list(codes))
 
 
 def reference_class_values(reference_classes: dict, *keys: str) -> list[str]:

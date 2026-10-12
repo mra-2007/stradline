@@ -41,16 +41,28 @@ GATES = yaml.safe_load((ROOT / "eval" / "gates.yaml").read_text(encoding="utf-8"
 N_PRE = 3
 
 
-def entry(event, kind, phash, *, f1_tol=None, f1=None, ffr=None):
+def entry(event, kind, phash, *, f1_tol=None, f1=None, ffr=None, ffr_analysed=None):
+    """One fabricated score. SYNTHETIC - no number here is a measurement.
+
+    A control carries BOTH false-flood figures, because since 2026-10-12 a
+    candidate is feasible only if both are under their ceilings. `ffr_analysed`
+    defaults to `ffr`, which is the value that leaves every test below testing
+    exactly what it was written to test; the real relationship is
+    analysed >= gated, and the tests that care about the difference set it.
+    """
     metrics = {}
     if f1_tol is not None:
         metrics.update({"f1_tolerant": f1_tol, "precision_tolerant": f1_tol,
                         "recall_tolerant": f1_tol})
     if f1 is not None:
         metrics.update({"f1": f1, "precision": f1, "recall": f1, "iou": f1})
+    provenance = {}
     if ffr is not None:
         metrics["false_flood_fraction"] = ffr
-    return EventScore(event=event, kind=kind, params_hash=phash, metrics=metrics)
+        provenance["false_flood_fraction_analysed_area"] = (
+            ffr if ffr_analysed is None else ffr_analysed)
+    return EventScore(event=event, kind=kind, params_hash=phash, metrics=metrics,
+                      provenance=provenance)
 
 
 def matrix_from(spec: dict, points: list[dict]) -> tune.Matrix:

@@ -32,17 +32,35 @@ DETECT_MODES = (MODE_DARKENING, MODE_ROUGH_WATER)
 
 # How Sentinel-2 optical evidence is allowed to act on the class map.
 #
-#   off    optical is still computed, written and reported, but contributes no
-#          pixel to the classes. The map is byte-identical to a SAR-only run.
-#   union  an optical water (or debris) detection that passes the SAME terrain,
-#          minimum-mapping-unit and drainage tests as a SAR detection is added
-#          to the map; where BOTH sensors agree the pixel is high confidence.
+#   off         optical is still computed, written and reported, but contributes
+#               no pixel to the classes. The map is byte-identical to a
+#               SAR-only run.
+#   union       an optical water OR deposit detection that passes the SAME
+#               terrain, minimum-mapping-unit and drainage tests as a SAR
+#               detection is added to the map; where BOTH sensors agree the
+#               pixel is high confidence.
+#   water_only  the MNDWI water evidence is fused exactly as in `union`, and
+#               the NDVI-drop / SWIR-rise DEPOSIT channel contributes nothing.
 #
-# `off` exists so the two can be compared on the dev set, and so a run can be
+# `water_only` was added on 2026-10-12 because the class-count audit localised
+# the harm precisely: the optical deposit channel produced 7,111 false pixels
+# on one dry control and scores precision 0.0 against the only expert
+# mass-movement reference in the dev set, while the optical WATER channel is
+# where the Larkana gain came from. It is the configuration that keeps the one
+# and drops the other. Declared before it was scored (docs/tuning_log.md).
+#
+# `off` exists so the modes can be compared on the dev set, and so a run can be
 # reproduced without optical even where a clear scene was available.
 FUSION_OFF = "off"
 FUSION_UNION = "union"
-OPTICAL_FUSION_MODES = (FUSION_OFF, FUSION_UNION)
+FUSION_WATER_ONLY = "water_only"
+OPTICAL_FUSION_MODES = (FUSION_OFF, FUSION_UNION, FUSION_WATER_ONLY)
+
+# The fusion modes in which optical evidence may add a WATER pixel, and those
+# in which it may add a DEPOSIT pixel. Kept here rather than spelled out in
+# `detect`, so there is one definition of what each mode means.
+FUSION_WATER_MODES = (FUSION_UNION, FUSION_WATER_ONLY)
+FUSION_DEBRIS_MODES = (FUSION_UNION,)
 
 
 @dataclass(frozen=True)
@@ -413,7 +431,8 @@ class ReliabilityParams:
 
 
 def params_dict(detect: DetectParams, run: RunParams,
-                optical: "OpticalParams | None" = None) -> dict:
+                optical: "OpticalParams | None" = None,
+                extent: "ExtentParams | None" = None) -> dict:
     """The parameters that PRODUCED the classes, i.e. what params_hash covers.
 
     The `optical` section appears ONLY when optical evidence was enabled, and
@@ -435,10 +454,21 @@ def params_dict(detect: DetectParams, run: RunParams,
     eval/results/ look like a different configuration. It is written to
     run_report.json under its own `reliability.parameters` key instead, so it
     is still fully recorded.
+
+    The `extent` section is the one case that needs a rule of its own, and it is
+    the reverse of ReliabilityParams. ExtentParams changes no pixel of the class
+    map either - debris is written as CLASS_DEBRIS whatever it says - but it DOES
+    change the scored quantity, so two configurations that score differently must
+    not share a hash. It is therefore included, but ONLY WHEN IT DIFFERS FROM THE
+    DEFAULT: default in, nothing added, every published hash reproducible; any
+    other value, its own section and its own hash. Pinned by
+    tests/test_params_hash_reproducible.py.
     """
     out = {"detect": asdict(detect), "run": asdict(run)}
     if optical is not None and optical.enabled:
         out["optical"] = asdict(optical)
+    if extent is not None and extent != ExtentParams():
+        out["extent"] = asdict(extent)
     return out
 
 
@@ -476,6 +506,53 @@ FLOOD_CLASSES = (CLASS_FLOOD_HIGH, CLASS_FLOOD_MEDIUM)
 # events: only one declares a reference debris class, so for the others the
 # reference union is unchanged while our prediction gains the debris class.
 FLOOD_AFFECTED_CLASSES = (CLASS_FLOOD_HIGH, CLASS_FLOOD_MEDIUM, CLASS_DEBRIS)
+
+# The same thing with the debris class taken out, for
+# ExtentParams.debris_in_flood_extent = False. Debris is still written to
+# flood_classes.tif either way: what this changes is whether it counts as
+# flood EXTENT.
+FLOOD_EXTENT_WITHOUT_DEBRIS = (CLASS_FLOOD_HIGH, CLASS_FLOOD_MEDIUM)
+
+# Wording required wherever a debris number is shown while it is NOT part of
+# the flood extent. One source string, so the dashboard, the copilot and the
+# sitrep cannot describe it three different ways (as NARROW_VALLEY_CAVEAT does
+# for the reliability layer).
+DEBRIS_UNVERIFIED_LABEL = "possible debris, unverified"
+
+
+@dataclass(frozen=True)
+class ExtentParams:
+    """What counts as FLOOD EXTENT, as opposed to what is merely mapped.
+
+    Its own dataclass, and not a field of DetectParams, for the reason recorded
+    in docs/tuning_log.md on 2026-10-11: a field on DetectParams re-hashes every
+    configuration ever published, and this flag changes no pixel of the class
+    map. But it DOES change the scored quantity, so it must be able to change
+    params_hash - which is why `params_dict` includes this section only when it
+    differs from the default. Default in, default out: every hash already
+    published stays reproducible.
+    """
+
+    # True (the shipped default until measured otherwise) - debris is part of
+    # the flood extent and of the primary scored quantity, as decided on
+    # 2026-10-11.
+    #
+    # False - debris stays an OUTPUT LAYER, written to flood_classes.tif and
+    # reported under DEBRIS_UNVERIFIED_LABEL, but it is not flood extent: not
+    # scored, not in flood-affected hectares, and NOT to be consumed by the
+    # damage overlay or the cut-off analysis. On the grid since 2026-10-12
+    # because the class-count audit measured the debris channel at precision
+    # 0.0 against the only expert mass-movement reference in the dev set.
+    #
+    # The REFERENCE definition does not follow this flag: references are still
+    # scored as flooded + debris/mass-movement, so False makes the task harder
+    # (reference debris becomes an unreachable miss) and is allowed to lose on
+    # that basis.
+    debris_in_flood_extent: bool = True
+
+    def flood_extent_classes(self) -> tuple[int, ...]:
+        return (FLOOD_AFFECTED_CLASSES if self.debris_in_flood_extent
+                else FLOOD_EXTENT_WITHOUT_DEBRIS)
 
 
 # --- Dev-event scoring cost ---------------------------------------------------
@@ -581,7 +658,60 @@ OPTICAL_TUNE_GRIDS: dict[str, dict[str, tuple]] = {
         "optical.mndwi_water": (0.0, 0.2),
         "optical.ndvi_drop_min": (0.10, 0.20),
     },
+    # Added 2026-10-12, DECLARED BEFORE SCORING (docs/tuning_log.md): the water
+    # half of the optical evidence without the deposit channel. `ndvi_drop_min`
+    # is deliberately absent - with no deposit channel it cannot change a pixel,
+    # so varying it would score the same map twice.
+    FUSION_WATER_ONLY: {                                 # 2 points
+        "optical.mndwi_water": (0.0, 0.2),
+    },
 }
+
+
+# --- What counts as flood extent (eval/tune.py, second pass) -----------------
+#
+# DECLARED BEFORE SCORING on 2026-10-12 (docs/tuning_log.md). Crossed with every
+# fusion point above, so the second pass is 7 x 2 = 14 points.
+#
+# On the grid rather than simply switched off because the class-count audit
+# measured the debris channel at precision 0.0 against the only expert
+# mass-movement reference in the dev set, with 96% of its dev-set pixels on a
+# dry control - strong evidence, but this project scores a decision when it can
+# instead of taking it on judgement.
+#
+# `False` is the HARDER option by construction: the reference side does not
+# follow the flag, so reference debris becomes an unreachable miss. It is
+# allowed to lose on that basis.
+EXTENT_TUNE_GRID: dict[str, tuple] = {
+    "extent.debris_in_flood_extent": (True, False),
+}
+
+
+# --- The control feasibility criterion (eval/tune.py) ------------------------
+#
+# DECLARED BEFORE SCORING on 2026-10-12. A parameter set is feasible only if
+# EVERY no-flood control passes BOTH:
+#
+#   false_flood_fraction                 whole scoring domain, from the
+#                                        human-owned gates file
+#   false_flood_fraction_analysed_area   the domain MINUS terrain-excluded
+#                                        ground, declared here
+#
+# Why the second exists: the class-count audit measured
+# bhutan_punakha_control_2024 at 0.0022 over the whole domain and 4.37% over the
+# ground the detector could actually classify, because 95% of that AOI is
+# terrain-excluded and pads the denominator. A 1% ceiling that a 4.37%
+# false-flood rate passes is not doing its job.
+#
+# The gates file is NOT touched and the gated metric, the reference definition,
+# the scoring domain and the boundary tolerance are all unchanged. This is an
+# ADDITIONAL constraint inside the tuner and can only make adoption harder -
+# which is the opposite of what Rule 3.2 forbids.
+#
+# The value is not duplicated from the gates file: the whole-domain ceiling is
+# READ from it (eval/tune.py::control_ceiling), and this is the analysed-area
+# twin, deliberately set to the same 1% so the two cannot drift apart in meaning.
+CONTROL_ANALYSED_AREA_CEILING = 0.01
 
 
 # --- When optical fusion may become the default ------------------------------

@@ -50,9 +50,11 @@ from strandline import ingest, optical, outputs, run as pipeline
 from strandline.config import (
     CLASS_DEBRIS,
     CLASS_TERRAIN_EXCLUDED,
+    DEBRIS_UNVERIFIED_LABEL,
     DEV_N_PRE,
     FUSION_OFF,
     DetectParams,
+    ExtentParams,
     OpticalParams,
     RunParams,
 )
@@ -121,6 +123,37 @@ def load_score(event_name: str, params_hash: str, runs_root: Path | None = None
         return None
     return EventScore(**{k: data.get(k) for k in
                          ("event", "kind", "params_hash", "metrics", "provenance", "error")})
+
+
+def control_analysed_fraction(score: EventScore) -> float | None:
+    """A control score's false-flood fraction over analysed ground, or None.
+
+    It lives in PROVENANCE, never in metrics, so it can never become a CSV
+    column or a gate - the gated metric is the human-owned one. None means the
+    score was written before the field existed.
+    """
+    value = (score.provenance or {}).get("false_flood_fraction_analysed_area")
+    return None if value is None else float(value)
+
+
+def reusable(score: "EventScore | None") -> bool:
+    """Can this cached score stand in for a fresh one under today's constraints?
+
+    No, if it is a CONTROL score written before
+    `false_flood_fraction_analysed_area` existed: the second control ceiling
+    declared on 2026-10-12 cannot be demonstrated from it, and assuming it
+    would have passed is exactly the convenient assumption this project does
+    not make. Such a score is recomputed. Flood scores are unaffected - the
+    field is a control diagnostic.
+
+    Defined here, beside `load_score`, so that EVERY cache-reading path gets it
+    rather than only the tuner's.
+    """
+    if score is None or not score.ok:
+        return False
+    if score.kind == sb.KIND_CONTROL and control_analysed_fraction(score) is None:
+        return False
+    return True
 
 
 def save_score(score: EventScore, runs_root: Path | None = None) -> Path:
@@ -249,7 +282,8 @@ def optical_provenance(scene: pipeline.PreparedScene) -> dict:
 
 def score_with_scene(event: dict, scene: pipeline.PreparedScene, dp: DetectParams,
                      tolerance_px: int = 1, out_dir: Path | None = None,
-                     op: OpticalParams | None = None, log=print) -> EventScore:
+                     op: OpticalParams | None = None,
+                     ep: ExtentParams | None = None, log=print) -> EventScore:
     """Classify an already-prepared scene and score it. The cheap stage.
 
     THE PRIMARY METRIC is flood-affected area: our water OR debris classes,
@@ -270,7 +304,11 @@ def score_with_scene(event: dict, scene: pipeline.PreparedScene, dp: DetectParam
     rp = scene.run_params
     kind = sb.row_kind(event)
     result = pipeline.classify(scene, dp)
-    affected = compare.flood_affected_mask(result.classes)
+    extent = ep if ep is not None else ExtentParams()
+    # The scored quantity, which ExtentParams may narrow. The class MAP is
+    # identical either way: debris is still written, it just may not be extent.
+    affected = compare.flood_affected_mask(
+        result.classes, include_debris=extent.debris_in_flood_extent)
     water_pred = compare.flood_mask(result.classes, include_debris=False)
     domain = compare.scoring_domain(result.classes)
     grid = scene.grid
@@ -289,7 +327,16 @@ def score_with_scene(event: dict, scene: pipeline.PreparedScene, dp: DetectParam
         "mode": dp.mode,
         "backscatter_coefficient": rp.backscatter_coefficient,
         "elevation_model": rp.elevation_model,
-        "scored_quantity": "flood_affected = flood classes UNION debris class",
+        "scored_quantity": ("flood_affected = flood classes UNION debris class"
+                            if extent.debris_in_flood_extent else
+                            "flood_extent = flood classes ONLY; debris is written as "
+                            f"an output layer ({DEBRIS_UNVERIFIED_LABEL}) and is NOT "
+                            "scored, NOT in flood-affected hectares, and must not be "
+                            "consumed by the damage or cut-off analysis"),
+        "extent_parameters": asdict(extent),
+        "debris_ha_outside_extent": (
+            0.0 if extent.debris_in_flood_extent else
+            round(float((result.classes == CLASS_DEBRIS).sum()) * px_ha, 2)),
         "domain_pixels": int(domain.sum()),
         "domain_fraction": round(float(domain.mean()), 4),
         "predicted_flood_affected_ha": round(float(affected.sum()) * px_ha, 2),
@@ -378,7 +425,7 @@ def score_with_scene(event: dict, scene: pipeline.PreparedScene, dp: DetectParam
 
     provenance["scored_s"] = round(time.time() - t0, 1)
     score = EventScore(event=str(event["name"]), kind=kind,
-                       params_hash=pipeline.params_hash(dp, rp, op),
+                       params_hash=pipeline.params_hash(dp, rp, op, ep),
                        metrics={k: metrics[k] for k in METRIC_COLUMNS if k in metrics},
                        provenance=provenance)
     if out_dir is not None:
@@ -393,20 +440,21 @@ def score_with_scene(event: dict, scene: pipeline.PreparedScene, dp: DetectParam
 def score_event(event: dict, dp: DetectParams, rp: RunParams, runs_root: Path | None = None,
                 *, tolerance_px: int = 1, allow_download: bool = False, reuse: bool = True,
                 max_pixels: int = MAX_SCENE_PIXELS, out_dir: Path | None = None,
-                op: OpticalParams | None = None, log=print) -> EventScore:
+                op: OpticalParams | None = None, ep: ExtentParams | None = None,
+                log=print) -> EventScore:
     """One event, one parameter set, from the cache. Errors are returned, not raised."""
     name = str(event["name"])
-    phash = pipeline.params_hash(dp, rp, op)
+    phash = pipeline.params_hash(dp, rp, op, ep)
     if reuse and out_dir is None:
         cached = load_score(name, phash, runs_root)
-        if cached is not None and cached.ok:
+        if reusable(cached):
             log(f"  {name}: score {phash} from cache")
             return cached
     try:
         scene = prepare_event(event, rp, dp, runs_root, allow_download, max_pixels, op=op,
                               log=log)
         score = score_with_scene(event, scene, dp, tolerance_px, out_dir=out_dir, op=op,
-                                 log=log)
+                                 ep=ep, log=log)
     except KeyboardInterrupt:
         raise
     # Deliberately broad: an orchestrator must survive one bad event (a missing

@@ -87,7 +87,13 @@ def harness(monkeypatch, tmp_path):
             return EventScore(event=name, kind=kind, params_hash=phash,
                               metrics={"false_flood_fraction": round(ffr, 6)},
                               provenance={"domain_pixels": 1_000_000,
-                                          "domain_fraction": 1.0})
+                                          "domain_fraction": 1.0,
+                                          "analysed_pixels": 1_000_000,
+                                          "terrain_excluded_pixels": 0,
+                                          # No terrain-excluded ground in this
+                                          # fixture, so the two figures coincide.
+                                          "false_flood_fraction_analysed_area":
+                                              round(ffr, 6)})
         f1 = round(min(FLOOD_F1[name] + bonus - penalty, 0.999), 4)
         return EventScore(event=name, kind=kind, params_hash=phash,
                           metrics={"precision": f1 - 0.02, "recall": f1 - 0.01, "f1": f1 - 0.015,
@@ -236,7 +242,8 @@ def test_a_failed_event_blocks_the_flood_gate(monkeypatch, tmp_path):
                                      else {"f1_tolerant": 0.99, "precision_tolerant": 0.99,
                                            "recall_tolerant": 0.99, "f1": 0.98,
                                            "precision": 0.98, "recall": 0.98, "iou": 0.97}),
-                            provenance={"domain_pixels": 1, "domain_fraction": 1.0}))
+                            provenance={"domain_pixels": 1, "domain_fraction": 1.0,
+                                        "false_flood_fraction_analysed_area": 0.0}))
 
     results = tmp_path / "eval" / "results"
     results.mkdir(parents=True)
@@ -267,7 +274,8 @@ def test_a_low_scoring_event_fails_the_gate_rather_than_being_dropped(monkeypatc
                                    else {"f1_tolerant": f1, "precision_tolerant": f1,
                                          "recall_tolerant": f1, "f1": f1, "precision": f1,
                                          "recall": f1, "iou": f1}),
-                          provenance={"domain_pixels": 1, "domain_fraction": 1.0})
+                          provenance={"domain_pixels": 1, "domain_fraction": 1.0,
+                                      "false_flood_fraction_analysed_area": 0.0})
 
     monkeypatch.setattr(tune, "score_with_scene", fake_score)
     results = tmp_path / "eval" / "results"

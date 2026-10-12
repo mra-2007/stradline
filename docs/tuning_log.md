@@ -1568,3 +1568,265 @@ under the two ceilings is adopted, even if the mean is worse than today's
 better system, and this project would rather report a lower number it believes.
 
 After this pass, flood mapping is frozen for good.
+
+---
+
+## 2026-10-12 — RESULT: nothing in the declared grid is feasible. STOP, and report.
+
+The pass declared above has been run once, as declared
+(`eval.tune --plan gates --optical`, 14 second-pass points, the stricter
+control criterion in force). **The outcome is a refusal: no parameter set in
+the declared grid satisfies both control ceilings, so nothing is adopted.**
+
+- `strandline/config.py` is **unchanged**. No parameter was adopted.
+- **No row was written** to `eval/results/flood.csv` (still 20 rows + header).
+  The tuner refused to write a partial set, as it must.
+- `eval/check_gates.py` reads exactly as before: `flood_mapping` FAIL 0.5231,
+  `no_flood_controls` PASS 0.0048. Those numbers still describe the
+  configuration adopted on 2026-10-12 and published under run_id
+  `20261012T114247Z`. (`0.5231` here and `0.5232` in the tables below are the
+  same unrounded **0.523150**, rounded by two different printers; neither is a
+  second measurement.)
+- The refusal is recorded in its own artefact,
+  **`eval/chosen_params_strict_control.json`**, deliberately NOT overwriting
+  `eval/chosen_params.json`: that file is the record of the configuration the
+  published rows actually describe, and a pass that adopted nothing must not
+  erase it.
+- That artefact records `"git_commit": "47feb0c-dirty"`, and the suffix is the
+  point. The pass ran while the code enforcing the new ceiling was still
+  uncommitted, on top of the declaration-only commit `47feb0c`, so the artefact
+  must not claim to be reproducible from `47feb0c` alone - it is not.
+  `eval/scoreboard.py::git_commit` now uses `git describe --always --dirty`
+  precisely so this cannot be hidden; an earlier version recorded a clean hash
+  for a dirty tree, which `/audit` caught. The code is committed in the commit
+  that carries this entry, and every one of the 420 scores is deterministic and
+  cached, so the run reproduces from that tree.
+
+### The binding constraint, and why no option on the grid can reach it
+
+| control | affected px | gated ffr | analysed px | **ffr over analysed ground** | feasible? |
+|---|---|---|---|---|---|
+| `ecuador_poza_honda_control_2024` | 7,780 | 0.0048 | 475,632 | **0.0164** | **NO** |
+| `norway_ringebu_control_2023` | 1,547 | 0.0014 | 227,553 | 0.0068 | yes |
+| `bhutan_punakha_control_2024` | 89 – 9,707 | 0.0000 – 0.0028 | 173,875 | 0.0005 – 0.0558 | depends |
+| `bosnia_konjic_control_2024` | 26 – 1,189 | 0.0000 – 0.0015 | 87,505 | 0.0003 – 0.0136 | depends |
+
+`ecuador_poza_honda_control_2024` reads **0.0164 at every one of the 42
+configurations — all 14 points crossed with all three SAR points —
+identically**: one distinct `(gated, analysed)` pair, `(0.0048, 0.0164)`, over
+42 of 42 scored configurations, same 7,780 pixels every time. That is not a
+coincidence and it is the whole result:
+
+- **optical was REFUSED on that event** (clear pair 12.7%, below the 20%
+  minimum), so all three fusion modes — `off`, `union`, `water_only` — produce
+  the same map there. The fusion axis cannot move it.
+- **its debris count is zero**, so `debris_in_flood_extent` removes nothing.
+  The extent axis cannot move it either.
+
+Its 7,780 false pixels are 2,927 high-confidence plus 4,853 medium-confidence
+**flood water**, from the radar channel alone. And note that this control is only
+**70.6%** terrain-excluded, not 95% like Bhutan's — so the dilution is milder
+here and the gated figure (0.48%) is still less than a third of the analysed one
+(1.64%). The binding constraint is not an artefact of an extreme denominator.
+
+So the stricter criterion is failed by the Sentinel-1 water detector itself, at
+every radar grid point, and neither option declared above was ever capable of
+rescuing it. **No event or option was excluded to reach this conclusion.** The
+30 radar candidates are in `eval/chosen_params_strict_control.json` under
+`final` and `loeo`; the 42 second-pass configurations are under `optical_pass`
+with every candidate's rejection reason, and each has a score file under
+`runs/eval/<event>/scores/`.
+
+A hypothesis for those 7,780 pixels, stated as a hypothesis and NOT measured:
+`events.yaml` selected this control because it has a **permanent reservoir
+inside the bbox** (2,202 permanent-water pixels), and a reservoir whose level
+rose between the pre-event stack and the post-event image produces exactly this
+signature — new water, adjacent to permanent water, on flat ground, connected to
+drainage. Confirming it needs work that would reopen detection, and detection is
+frozen.
+
+The exact breakdown of the 30 radar candidates, from
+`eval/chosen_params_strict_control.json`, because "nothing was feasible" should
+be auditable rather than asserted:
+
+| rejected by | count | which |
+|---|---|---|
+| the **gated** ceiling (`false_flood_fraction` > 0.01) | **24** | all 18 `darkening` points, plus the 6 `rough_water` points with `hand_max_water_m` 35 m — `norway_ringebu_control_2023` at 1.1%–5.2% |
+| the **new analysed-area** ceiling | **6** | the 6 `rough_water` points with `hand_max_water_m` 20 m — `ecuador_poza_honda_control_2024` at 1.64% |
+| feasible | **0** | — |
+
+So most of the grid was already infeasible on the OLD ceiling: the `darkening`
+mode has been known infeasible since 2026-10-11, and widening the terrain zone
+to 35 m floods the Norwegian control. The new criterion is what removed the last
+6 — the six points that include the shipped configuration.
+
+### What the two new options measured, reported because it was asked for
+
+All of this is reproducible with one command, which is the tuner itself — an
+earlier draft used a throwaway script that was not in the repo, and a number no
+command can reproduce is not a result:
+
+```
+venv\Scripts\python.exe -m eval.tune --plan gates --optical \
+    --chosen-out eval/chosen_params_strict_control.json
+```
+
+These are **diagnostic numbers, not an adoption**; every one is a
+`runs/eval/<event>/scores/<hash>.json`, and each fold is scored at its own
+recorded SAR point so both halves stay out of sample.
+
+Per-event strict and boundary-tolerant F1:
+
+| event | incumbent `union` 0.20 debris-**IN** | `union` 0.10 debris-**OUT** | `water_only` debris-**OUT** | `off` debris-IN (radar-only) |
+|---|---|---|---|---|
+| | strict / tolerant | strict / tolerant | strict / tolerant | strict / tolerant |
+| `bhutan_punakha_2024` | 0.0732 / 0.1160 | 0.0853 / 0.1356 | 0.0853 / 0.1356 | 0.0757 / 0.1183 |
+| `bosnia_konjic_2024` | 0.0377 / 0.0789 | 0.0380 / 0.0798 | 0.0380 / 0.0798 | 0.0315 / 0.0694 |
+| `ecuador_poza_honda_2025` | 0.4102 / 0.5553 | 0.4102 / 0.5553 | 0.4102 / 0.5553 | 0.4102 / 0.5553 |
+| `norway_ringebu_2023` | 0.7320 / 0.9151 | 0.7320 / 0.9151 | 0.7320 / 0.9151 | 0.7320 / 0.9151 |
+| `norway_selsverket_2023` | 0.4739 / 0.5845 | 0.4739 / 0.5845 | 0.4739 / 0.5845 | 0.4765 / 0.5878 |
+| `pakistan_larkana_2022` | 0.8154 / 0.8891 | 0.8154 / 0.8891 | 0.8154 / 0.8891 | 0.7168 / 0.8343 |
+| **mean** | **0.4237 / 0.5232** | **0.4258 / 0.5266** | **0.4258 / 0.5266** | **0.4071 / 0.5134** |
+
+Both control fractions, at the configurations that matter:
+
+| control | incumbent gated / analysed | `union` 0.10 debris-OUT | `water_only` debris-OUT | `off` |
+|---|---|---|---|---|
+| `bhutan_punakha_control_2024` | 0.0022 / **0.0437** | 0.0001 / 0.0028 | 0.0001 / 0.0028 | 0.0000 / 0.0005 |
+| `bosnia_konjic_control_2024` | 0.0011 / **0.0102** | 0.0011 / 0.0100 | 0.0011 / 0.0100 | 0.0000 / 0.0003 |
+| `ecuador_poza_honda_control_2024` | 0.0048 / **0.0164** | 0.0048 / **0.0164** | 0.0048 / **0.0164** | 0.0048 / **0.0164** |
+| `norway_ringebu_control_2023` | 0.0014 / 0.0068 | 0.0014 / 0.0068 | 0.0014 / 0.0068 | 0.0014 / 0.0068 |
+
+Three findings worth keeping, none of them an adoption:
+
+1. **Taking debris out of the flood extent improves BOTH the objective and the
+   controls.** Mean tolerant F1 0.5232 -> 0.5266, and Bhutan's analysed-area
+   control rate 0.0437 -> 0.0028, a factor of 16. It makes the task harder in
+   principle (reference debris becomes an unreachable miss) and it still wins.
+   That is the strongest evidence yet that the debris class does not belong in
+   the scored quantity.
+2. **`water_only` ties the best `union` point exactly, at 0.5266.** Not
+   approximately — identically, on every event. With debris out of the extent
+   the deposit channel cannot reach the scored quantity at all, so the two
+   configurations are the same measurement; `water_only` simply says so in the
+   parameters instead of relying on the extent flag to neutralise it.
+3. **The declared per-fold selection was computed, both ways.** With both
+   ceilings enforced — the declared rule — **every one of the six folds has NO
+   FEASIBLE POINT**, which is the refusal above, now established by the method
+   rather than inferred from it. With the control constraint lifted, which is a
+   COUNTERFACTUAL and is labelled as one, **all six folds independently select
+   `union` / `mndwi_water` 0.0 / `ndvi_drop_min` 0.10 /
+   `debris_in_flood_extent` False**, unanimously, on their own training events.
+   Each fold has 3–4 points tied at the top, resolved by grid order; at the
+   Punakha fold the tied set is
+
+   | tied point | hash |
+   |---|---|
+   | `union` mndwi 0.0 ndvi 0.10 debris-OUT | `0550873e7ea6` |
+   | `union` mndwi 0.0 ndvi 0.20 debris-OUT | `4669714cb7ee` |
+   | `water_only` mndwi 0.0 debris-**IN** | `b73a7a728df4` |
+   | `water_only` mndwi 0.0 debris-OUT | `a9a8fba3ae98` |
+
+   every one of which either removes debris from the extent or removes the
+   optical deposit channel, or both. So the direction is robust to the tie-break
+   even though the single winner is not.
+
+### A correction: how that number was first obtained, and why it was wrong
+
+The first draft of this entry asserted the same winner, but had reached it by
+**comparing the held-out scores** of the 14 points — the diagonal, each event at
+its own fold — and reading the best mean off that. `/audit` caught it. Choosing
+between candidates by their held-out scores is selection on held-out data,
+which is precisely what Rule 3.4 and the whole leave-one-event-out structure
+exist to prevent; the declared rule selects on each fold's TRAINING events and
+only then looks at the held-out one. The required scores did not even exist at
+the time: the debris-OUT and `water_only` points had been scored only on the
+event each fold held out, so the declared computation could not have been run.
+
+The fix was not to soften the sentence but to do the computation. `eval/tune.py`
+now runs the second pass even when the radar pass is infeasible, against the
+FROZEN SAR point each fold chose in the published run (`frozen_sar_points`,
+reported in the output and recorded as `optical_pass.sar_point_source`), so all
+42 configurations x 10 events = **420 scores** exist and the per-fold selection
+above is the declared one. The conclusion survived; the method that produced it
+did not, and the version that stands is the second one.
+
+Worth stating plainly because it is the second time the same shape of mistake
+has appeared in this work: a number that is easy to compute is not the number
+the rule asks for, and the only defence is to run the rule.
+
+### Why nothing was adopted anyway
+
+The declared rule is feasible-or-nothing: a point is adopted only if every
+control passes both ceilings. None does. Adopting the best INFEASIBLE point
+because it happens to dominate the incumbent would be a rule invented after
+seeing the result, which is precisely what Rule 3.4 forbids and what the
+previous entry's process fix was written to prevent. So the measurement stands
+and the decision does not get made here.
+
+**The shipped configuration therefore still fails the criterion declared
+above**, on three of four controls (Ecuador 1.64%, Bhutan 4.37%, Bosnia 1.02%
+over analysed ground). That is now stated in the README rather than left
+implicit. It is an uncomfortable state and it is the true one.
+
+### Options, with costs
+
+1. **Accept the refusal and ship the incumbent.** No code change. Cost: the
+   project ships a configuration it has declared, and measured, to fail its own
+   stricter control criterion on three of four controls. Everything is
+   reported, nothing is hidden. This is the state as committed.
+2. **Declare a dominance rule and re-run.** "When no point is feasible, adopt
+   the point that is no worse than the incumbent on every control and better on
+   the objective." That would adopt `union` 0.10 debris-OUT (or equivalently
+   `water_only` debris-OUT): mean tolerant F1 +0.0034, Bhutan's analysed control
+   rate down 16-fold, Ecuador unchanged. Cost: it is a new rule, so it must be
+   declared and committed by the human BEFORE the re-run, exactly as the
+   previous rule was. I have not invented it into effect.
+3. **Reopen detection for the Ecuador failure.** Add a declared axis aimed at
+   the measured cause — a reservoir-level test, or excluding a buffer around
+   permanent water from the flood channel. Cost: it contradicts the freeze,
+   needs its own declaration, a full re-score, and it risks recall on genuine
+   floods that really do abut permanent water, which is most river floods.
+
+My recommendation, for what it is worth: **option 2.** The evidence that debris
+should leave the flood extent now comes from four independent directions:
+precision 0.0 against the only expert debris reference; 96% of all dev-set
+debris on a dry control; a configuration that is better on both the objective
+and the controls with debris removed; and the declared per-fold objective
+selecting a debris-OUT point unanimously across all six folds, with every point
+in every fold's tied set removing either the debris class or the optical deposit
+channel. Option 2 is the smallest declared change that acts on that.
+
+But it IS a rule change, and rule changes here belong to the human and to a
+commit that precedes the run. Note also what option 2 would and would not fix:
+it would not make the configuration feasible. Ecuador stays at 1.64% whatever is
+adopted, so option 2 buys a better map and a 16-fold safer Bhutan control while
+leaving the project still in breach of its own stricter criterion on one
+control. Only option 3 could change that, and option 3 reopens detection.
+
+### Two things `/audit` flagged that are recorded rather than fixed
+
+- **`water_only` keeping the SAR debris channel is tested only in `darkening`
+  mode** (`tests/test_detect_optical_fusion.py`). The reason is measured and is
+  the finding itself: under the shipped `rough_water` the SAR debris channel
+  produces nothing on the synthetic fixture, so there is no debris to keep and
+  the test would be vacuous. It guards against that explicitly
+  (`assert (bare.classes == CLASS_DEBRIS).sum() > 0`) and `darkening` is a
+  declared config mode, not an event-specific branch. The property is therefore
+  untested in the shipped mode, and closing that needs a fixture whose SAR
+  debris fires under `rough_water` - which the dev set suggests is hard to build
+  honestly, since 107 pixels on one of ten real events is all it produces.
+- **The audited tree was edited mid-audit.** `/audit` ran against a moving
+  `docs/tuning_log.md` and said so. Its PASS lines are statements about the tree
+  at that moment. The lesson, adopted: commit before requesting an audit, so the
+  audit has a frozen tree - the same discipline as declaring a rule before
+  running the pass it governs.
+
+### Flood mapping is frozen
+
+No further detection change. The next modules read this map as it stands, and
+`debris_in_flood_extent` is `True` in the shipped configuration, so the damage
+overlay and the cut-off analysis will consume a flood extent that INCLUDES a
+debris class of measured precision 0.0. That constraint must be carried with
+every number they produce, and it is the single most important thing for a
+reader of those modules to know.

@@ -85,7 +85,22 @@ def new_run_id(when: datetime | None = None) -> str:
 
 
 def git_commit() -> str:
+    """The commit a result came from, with `-dirty` when the tree was modified.
+
+    The suffix matters more than it looks. Without it, a result produced by
+    uncommitted code records a clean hash and claims to be reproducible from a
+    tree that cannot produce it - which happened on 2026-10-12, when a refusal
+    artefact recorded the declaration-only commit while the code enforcing the
+    new constraint was still in the working tree. `--dirty` makes that
+    impossible to miss. The value still goes in a CSV column, so it stays a
+    short single token.
+    """
     try:
+        out = subprocess.run(["git", "describe", "--always", "--dirty", "--abbrev=7"],
+                             cwd=ROOT, capture_output=True, text=True, timeout=10)
+        described = out.stdout.strip()
+        if described:
+            return described
         out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
                              capture_output=True, text=True, timeout=10)
         return out.stdout.strip() or "unknown"

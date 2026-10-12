@@ -27,7 +27,8 @@ from scipy import ndimage
 from skimage.filters import threshold_otsu
 
 from strandline.config import (
-    FUSION_UNION,
+    FUSION_DEBRIS_MODES,
+    FUSION_WATER_MODES,
     MODE_DARKENING,
     MODE_ROUGH_WATER,
     SOURCE_BOTH,
@@ -352,15 +353,21 @@ def detect_flood(
     # Optical evidence enters HERE, before every shared test below, so it is
     # subject to the same terrain zones, minimum mapping unit and drainage
     # connection as the radar channel. There is no separate optical pathway.
-    fuse = optical is not None and optical.fusion == FUSION_UNION
+    fuse_water = optical is not None and optical.fusion in FUSION_WATER_MODES
+    fuse_debris = optical is not None and optical.fusion in FUSION_DEBRIS_MODES
+    fuse = fuse_water or fuse_debris
+    opt_water = opt_debris = np.zeros(zc.shape, dtype=bool)
     if fuse:
         opt_clear = valid & optical.clear
-        opt_water = zone_water & ~permanent & opt_clear & optical.water
-        opt_debris = (zone_debris & ~zone_water) & opt_clear & optical.debris
+        if fuse_water:
+            opt_water = zone_water & ~permanent & opt_clear & optical.water
+        # `water_only` fuses the MNDWI water evidence and leaves the deposit
+        # channel out entirely - the SAR debris channel is untouched either way.
+        if fuse_debris:
+            opt_debris = (zone_debris & ~zone_water) & opt_clear & optical.debris
         water = sar_water | opt_water
         debris = (sar_debris | opt_debris) & ~water
     else:
-        opt_water = opt_debris = np.zeros(zc.shape, dtype=bool)
         water, debris = sar_water, sar_debris
 
     water = remove_small(water, p.mmu_pixels)
@@ -392,6 +399,8 @@ def detect_flood(
         "mode": p.mode,
         "optical_fusion": (None if optical is None else optical.fusion),
         "optical_used": bool(fuse),
+        "optical_water_fused": bool(fuse_water),
+        "optical_debris_fused": bool(fuse_debris),
         "source_pixels": {int(c): int(np.sum(source == c)) for c in np.unique(source)},
         "water_threshold_db": round(t_water, 3),
         "water_threshold_otsu_raw_db": (None if thr.otsu_raw is None else round(thr.otsu_raw, 3)),

@@ -60,7 +60,9 @@ from eval.run_scoreboard import (
     EventScore,
     _rel,
     contract,
+    control_analysed_fraction,
     load_score,
+    reusable,
     prepare_event,
     print_coverage,
     print_table,
@@ -71,8 +73,10 @@ from eval.run_scoreboard import (
 )
 from strandline import optical, run as pipeline
 from strandline.config import (
+    CONTROL_ANALYSED_AREA_CEILING,
     DETECT_MODES,
     DEV_N_PRE,
+    EXTENT_TUNE_GRID,
     FUSION_OFF,
     FUSION_UNION,
     OPTICAL_ADOPTION,
@@ -80,6 +84,7 @@ from strandline.config import (
     OPTICAL_TUNE_GRIDS,
     TUNE_GRIDS,
     DetectParams,
+    ExtentParams,
     OpticalParams,
     RunParams,
 )
@@ -91,12 +96,19 @@ CHOSEN = ROOT / "eval" / "chosen_params.json"
 OBJECTIVE_METRIC = "f1_tolerant"
 CONTROL_METRIC = "false_flood_fraction"
 
+# The SECOND control constraint, declared on 2026-10-12 before scoring
+# (config.CONTROL_ANALYSED_AREA_CEILING, docs/tuning_log.md). It lives in
+# provenance rather than metrics, deliberately: it must never reach a CSV
+# column or a gate, because the gated metric is the human-owned one.
+CONTROL_METRIC_ANALYSED = "false_flood_fraction_analysed_area"
+
 SECTIONS = {"detect": DetectParams, "run": RunParams}
 
 # The optical grid is searched in its own pass, so it has its own sections.
 # `run` is deliberately absent: nothing about the Sentinel-2 channel changes a
 # Sentinel-1 download.
-OPTICAL_SECTIONS = {"detect": DetectParams, "optical": OpticalParams}
+OPTICAL_SECTIONS = {"detect": DetectParams, "optical": OpticalParams,
+                    "extent": ExtentParams}
 
 
 # --- the grid -----------------------------------------------------------------
@@ -181,6 +193,26 @@ def validate_optical_grids(grids: dict[str, dict[str, tuple]] | None = None
     return grids
 
 
+def extent_points(grid: dict[str, tuple] | None = None) -> list[dict]:
+    """Every point of the declared extent grid, in declaration order."""
+    grid = EXTENT_TUNE_GRID if grid is None else grid
+    known = {f.name for f in fields(ExtentParams)}
+    for key, values in grid.items():
+        section, _, field_name = key.partition(".")
+        if section != "extent":
+            raise ValueError(f"EXTENT_TUNE_GRID key {key!r}: section must be 'extent'")
+        if field_name not in known:
+            raise ValueError(f"EXTENT_TUNE_GRID key {key!r}: ExtentParams has no field "
+                             f"{field_name!r}")
+        if not values:
+            raise ValueError(f"EXTENT_TUNE_GRID key {key!r}: no values")
+    keys = list(grid)
+    # itertools.product() of no axes already yields one empty combination, so an
+    # empty grid gives exactly one point - no fallback needed.
+    return [dict(zip(keys, combo))
+            for combo in itertools.product(*(grid[k] for k in keys))]
+
+
 def optical_grid_points(grids: dict[str, dict[str, tuple]] | None = None) -> list[dict]:
     """Every point of every fusion mode's grid, in declaration order.
 
@@ -198,9 +230,13 @@ def optical_grid_points(grids: dict[str, dict[str, tuple]] | None = None) -> lis
     for fusion, grid in grids.items():
         keys = list(grid)
         for combo in itertools.product(*(grid[k] for k in keys)):
-            point = {"optical.fusion": fusion}
-            point.update(dict(zip(keys, combo)))
-            points.append(point)
+            fusion_point = {"optical.fusion": fusion}
+            fusion_point.update(dict(zip(keys, combo)))
+            # Crossed with the extent axis, declared 2026-10-12: what counts as
+            # flood extent is orthogonal to what optical contributes, so every
+            # fusion point is scored both ways.
+            for extent in extent_points():
+                points.append({**fusion_point, **extent})
     return points
 
 
@@ -263,21 +299,39 @@ def materialise_optical(point: dict, base_op: OpticalParams | None = None) -> Op
     return replace(op, enabled=True, **changes)
 
 
-def materialise_full(point: dict, n_pre: int = DEV_N_PRE
-                     ) -> tuple[DetectParams, RunParams, OpticalParams | None]:
-    """A combined SAR + optical point -> every parameter set a run would use.
+def materialise_extent(point: dict, base_ep: ExtentParams | None = None) -> ExtentParams:
+    """The `extent.*` keys of one point -> the ExtentParams a run would use."""
+    ep = base_ep or ExtentParams()
+    changes = {k.split(".", 1)[1]: v for k, v in point.items() if k.startswith("extent.")}
+    return replace(ep, **changes) if changes else ep
 
-    Returns `op=None` when the point carries no `optical.*` key at all, which
-    is the radar-only configuration and must keep hashing as it always has.
+
+def materialise_full(point: dict, n_pre: int = DEV_N_PRE
+                     ) -> tuple[DetectParams, RunParams, OpticalParams | None,
+                                ExtentParams | None]:
+    """A combined SAR + optical + extent point -> every parameter set a run uses.
+
+    Returns `op=None` when the point carries no `optical.*` key at all, and
+    `ep=None` when it carries no `extent.*` key, which together are the
+    radar-only configuration and must keep hashing as they always have. A
+    DEFAULT ExtentParams also hashes as before (config.params_dict), so passing
+    one explicitly is safe too; `None` is kept for exactness.
     """
     dp, rp = materialise(point, n_pre)
     has_optical = any(k.startswith("optical.") for k in point)
-    return dp, rp, (materialise_optical(point) if has_optical else None)
+    has_extent = any(k.startswith("extent.") for k in point)
+    return (dp, rp,
+            (materialise_optical(point) if has_optical else None),
+            (materialise_extent(point) if has_extent else None))
 
 
 def full_point_hash(point: dict, n_pre: int = DEV_N_PRE) -> str:
     """The identity of a combined point. Radar-only points hash as before."""
     return pipeline.params_hash(*materialise_full(point, n_pre))
+
+
+def extent_of(point: dict) -> bool:
+    return bool(point.get("extent.debris_in_flood_extent", ExtentParams().debris_in_flood_extent))
 
 
 def combine(sar_point: dict, optical_point: dict) -> dict:
@@ -365,7 +419,7 @@ def build_matrix(events: list[dict], points: list[dict], runs_root: Path | None 
                 phash = pipeline.params_hash(dp, rp)
                 if reuse:
                     cached = load_score(name, phash, runs_root)
-                    if cached is not None and cached.ok:
+                    if reusable(cached):
                         matrix[(name, phash)] = cached
                         log(f"      {coefficient} {point_label(point):<40} cached "
                             f"{cached.metrics.get(OBJECTIVE_METRIC, cached.metrics.get(CONTROL_METRIC))}")
@@ -400,6 +454,10 @@ def build_matrix(events: list[dict], points: list[dict], runs_root: Path | None 
 
 # --- selection ----------------------------------------------------------------
 
+# Both defined in eval/run_scoreboard.py, beside load_score, so that every
+# cache-reading path shares one rule rather than the tuner having its own.
+_control_analysed = control_analysed_fraction
+
 @dataclass
 class Candidate:
     point: dict
@@ -408,6 +466,10 @@ class Candidate:
     per_event: dict[str, float] = field(default_factory=dict)
     worst_control: float | None = None
     worst_control_event: str | None = None
+    # The SECOND control constraint, declared 2026-10-12: the same false pixels
+    # over the ground the detector could actually classify.
+    worst_control_analysed: float | None = None
+    worst_control_analysed_event: str | None = None
     feasible: bool = False
     rejected: str | None = None
 
@@ -439,6 +501,9 @@ class Selection:
                 "train_per_event_f1_tolerant": self.chosen.per_event,
                 "worst_control_false_flood_fraction": self.chosen.worst_control,
                 "worst_control_event": self.chosen.worst_control_event,
+                "worst_control_false_flood_fraction_analysed_area":
+                    self.chosen.worst_control_analysed,
+                "worst_control_analysed_event": self.chosen.worst_control_analysed_event,
             },
             "ties_at_best_objective": self.ties,
             "by_mode": best_per_mode(self),
@@ -447,18 +512,42 @@ class Selection:
 
 
 def select(matrix: Matrix, train: list[str], controls: list[str], points: list[dict],
-           ceiling: float, n_pre: int = DEV_N_PRE, hash_of=point_hash) -> Selection:
-    """Best feasible grid point on `train`, with every control under `ceiling`.
+           ceiling: float, n_pre: int = DEV_N_PRE, hash_of=point_hash,
+           analysed_ceiling: float = CONTROL_ANALYSED_AREA_CEILING) -> Selection:
+    """Best feasible grid point on `train`, with every control under BOTH ceilings.
 
     A point is usable only when every training event AND every control has a
     score for it: comparing points over different event subsets would make the
     objective meaningless.
 
+    TWO control constraints since 2026-10-12, declared before scoring
+    (docs/tuning_log.md):
+
+      `ceiling`           on `false_flood_fraction`, over the whole scoring
+                          domain. READ from the human-owned gates file.
+      `analysed_ceiling`  on `false_flood_fraction_analysed_area`, the same
+                          false pixels over the domain MINUS terrain-excluded
+                          ground. Declared in config, because a 1% ceiling that
+                          a 4.37% false-flood rate passes - which is what the
+                          class-count audit measured on the Bhutan control - is
+                          not doing its job.
+
+    Neither is traded off against F1 and neither is negotiable. A control score
+    written before the analysed-area field existed cannot DEMONSTRATE the second
+    constraint, so such a candidate is rejected rather than assumed to pass;
+    `build_matrix` re-scores those rather than reusing them.
+
+    Both ceilings are mandatory. There is deliberately no way to switch the
+    second one off from a call site: an earlier draft allowed
+    `analysed_ceiling=None` "for tests", which is an unenforced convention and
+    exactly the kind of escape hatch that quietly becomes production behaviour.
+    A test that needs the old behaviour raises the ceiling to 1.0 explicitly,
+    which is visible in the test and cannot be mistaken for a default.
+
     `hash_of` is how a point is keyed in the matrix - `point_hash` for the radar
     search, `full_point_hash` for the optical pass, whose points also carry
-    `optical.*` keys. The objective, the control constraint and the tie-break
-    are identical for both, deliberately: the optical question is "does this
-    help", judged by the same rule that chose the radar parameters.
+    `optical.*` and `extent.*` keys. The objective, the constraints and the
+    tie-break are identical for both, deliberately.
     """
     out = Selection(train_events=list(train), control_events=list(controls), ceiling=ceiling)
     for point in points:
@@ -493,6 +582,24 @@ def select(matrix: Matrix, train: list[str], controls: list[str], points: list[d
                              f"{cand.worst_control:.4f} > {ceiling}")
             out.candidates.append(cand)
             continue
+
+        if controls:
+            analysed = {e: _control_analysed(matrix[(e, phash)]) for e in controls}
+            if any(v is None for v in analysed.values()):
+                absent = [e for e, v in analysed.items() if v is None]
+                cand.rejected = (f"{CONTROL_METRIC_ANALYSED} missing on "
+                                 f"{', '.join(absent[:3])}: a score written before this "
+                                 f"constraint existed cannot demonstrate it")
+                out.candidates.append(cand)
+                continue
+            cand.worst_control_analysed_event = max(analysed, key=lambda e: analysed[e])
+            cand.worst_control_analysed = round(analysed[cand.worst_control_analysed_event], 6)
+            if cand.worst_control_analysed > analysed_ceiling:
+                cand.rejected = (f"control {cand.worst_control_analysed_event} false-flood "
+                                 f"over analysed ground {cand.worst_control_analysed:.4f} "
+                                 f"> {analysed_ceiling}")
+                out.candidates.append(cand)
+                continue
         cand.feasible = True
         out.candidates.append(cand)
 
@@ -548,6 +655,28 @@ def optical_sar_points(selections: dict[str, Selection],
     return out
 
 
+def frozen_sar_points() -> dict[str, dict]:
+    """The SAR point each fold chose in the run that is PUBLISHED.
+
+    Read from eval/chosen_params.json, which records the configuration the rows
+    in eval/results/flood.csv actually describe. Used only when this run's radar
+    pass is infeasible, so that a second-pass question declared in advance still
+    gets a measured answer instead of being settled by eye.
+    """
+    if not CHOSEN.exists():
+        return {}
+    try:
+        saved = json.loads(CHOSEN.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    points = ((saved.get("optical_pass") or {}).get("sar_point_per_fold")) or {}
+    # Keep only the SAR half: the optical and extent halves are what this pass
+    # is searching, and must not be inherited from a previous choice.
+    return {fold: {k: v for k, v in point.items()
+                   if k.startswith("detect.") or k.startswith("run.")}
+            for fold, point in points.items()}
+
+
 def optical_points_needed(sar_points: dict[str, dict],
                           optical_points: list[dict]) -> list[dict]:
     """Every combined point the optical pass must score, deduplicated.
@@ -589,11 +718,11 @@ def build_optical_matrix(events: list[dict], points: list[dict],
         log(f"[{i}/{len(events)}] {name}")
         scene = read = None
         for point in points:
-            dp, rp, op = materialise_full(point, n_pre)
-            phash = pipeline.params_hash(dp, rp, op)
+            dp, rp, op, ep = materialise_full(point, n_pre)
+            phash = pipeline.params_hash(dp, rp, op, ep)
             if reuse:
                 cached = load_score(name, phash, runs_root)
-                if cached is not None and cached.ok:
+                if reusable(cached):
                     matrix[(name, phash)] = cached
                     log(f"      {point_label(point):<64} cached "
                         f"{cached.metrics.get(OBJECTIVE_METRIC, cached.metrics.get(CONTROL_METRIC))}")
@@ -605,7 +734,7 @@ def build_optical_matrix(events: list[dict], points: list[dict],
                     read = optical_read_of(event, scene, op, runs_root)
                     log(f"      optical: {optical_status_line(scene)}")
                 point_scene = scene_with_optical(scene, read, op)
-                score = score_with_scene(event, point_scene, dp, tolerance_px, op=op,
+                score = score_with_scene(event, point_scene, dp, tolerance_px, op=op, ep=ep,
                                          log=lambda *a: None)
             except KeyboardInterrupt:
                 raise
@@ -867,16 +996,19 @@ def print_verdict(verdict: dict, log=print) -> None:
 # --- the config diff ----------------------------------------------------------
 
 def config_diff(dp: DetectParams, rp: RunParams,
-                op: OpticalParams | None = None) -> list[dict]:
+                op: OpticalParams | None = None,
+                ep: ExtentParams | None = None) -> list[dict]:
     """Chosen values against what strandline/config.py declares today.
 
-    `op` is included only when the optical pass endorsed a configuration, so a
-    run that did not score optical never suggests an optical edit.
+    `op` and `ep` are included only when the second pass endorsed a
+    configuration, so a run that did not score them never suggests an edit.
     """
     diff = []
     pairs = [("detect", dp, DetectParams()), ("run", rp, RunParams())]
     if op is not None:
         pairs.append(("optical", op, OpticalParams()))
+    if ep is not None:
+        pairs.append(("extent", ep, ExtentParams()))
     for section, chosen, current in pairs:
         for f in fields(current):
             a, b = getattr(current, f.name), getattr(chosen, f.name)
@@ -911,9 +1043,26 @@ def run_optical_pass(planned: list[dict], floods: list[str], controls: list[str]
     print("\n=== OPTICAL PASS (second leave-one-event-out, over OPTICAL_TUNE_GRIDS) ===")
     optical_points = optical_grid_points()
     sar_points = optical_sar_points(selections, final)
+    sar_source = "this run's radar pass"
     if not sar_points:
-        print("  the radar pass chose nothing, so there is no SAR point to cross. Skipped.")
-        return {"status": "skipped", "reason": "no SAR point chosen by the radar pass"}, [], []
+        # The radar pass found nothing feasible. That does NOT make the second
+        # pass unanswerable: the SAR half of the configuration is frozen and
+        # published, so the second pass runs against the SAR point each fold
+        # chose in the run that IS published (eval/chosen_params.json), and says
+        # so. Skipping instead would leave the declared question unmeasured and
+        # invite someone to answer it by eye from held-out numbers - which is
+        # exactly the Rule 3.4 mistake this fallback exists to prevent.
+        sar_points = frozen_sar_points()
+        sar_source = f"frozen, from {_rel(CHOSEN)} (this run's radar pass found none feasible)"
+        if not sar_points:
+            print("  the radar pass chose nothing and no frozen SAR point is recorded. Skipped.")
+            return ({"status": "skipped",
+                     "reason": "no SAR point from this run and none recorded"}, [], [])
+        print(f"  NOTE: this run's radar pass found no feasible point, so the second pass "
+              f"uses the FROZEN SAR point per fold from {_rel(CHOSEN)}.")
+        print("        Those points are the published configuration; the second pass still "
+              "applies both control ceilings to every candidate.")
+    print(f"  SAR point per fold: {sar_source}")
 
     needed = optical_points_needed(sar_points, optical_points)
     print(f"  {len(optical_points)} optical point(s) x {len(set(map(str, sar_points.values())))} "
@@ -1000,11 +1149,18 @@ def run_optical_pass(planned: list[dict], floods: list[str], controls: list[str]
                 [p for p in optical_points if fusion_of(p) == FUSION_UNION])},
             "controls": "compared at the final SAR point; IN-SAMPLE, as in the radar pass",
             "objective": f"maximise mean {OBJECTIVE_METRIC} over the training events",
-            "constraint": f"every control {CONTROL_METRIC} <= {ceiling} (from eval/gates.yaml)",
+            "constraint": (
+                f"every control {CONTROL_METRIC} <= {ceiling} (read from the "
+                f"human-owned gates file) AND every control "
+                f"{CONTROL_METRIC_ANALYSED} <= {CONTROL_ANALYSED_AREA_CEILING} "
+                f"(config.CONTROL_ANALYSED_AREA_CEILING, declared 2026-10-12 "
+                f"before scoring). BOTH are mandatory; a candidate whose control "
+                f"score predates the second field is rejected, not assumed to pass."),
         },
         "grid": {f: {k: list(v) for k, v in axes.items()}
                  for f, axes in OPTICAL_TUNE_GRIDS.items()},
         "sar_point_per_fold": sar_points,
+        "sar_point_source": sar_source,
         "configurations_scored": len(needed),
         "optical_coverage": optical_coverage(matrix, planned),
         "fusion_off_equals_radar_only": equivalence,
@@ -1258,9 +1414,9 @@ def main(argv=None) -> int:
         if (optical_report.get("status") == "scored"
                 and optical_report["adoption"]["keep_fusion"]
                 and optical_report.get("chosen_configuration") and final.ok):
-            _, _, op_final = materialise_full(optical_report["chosen_configuration"],
-                                              args.n_pre)
-            diff = config_diff(dp_final, rp_final, op_final)
+            _, _, op_final, ep_final = materialise_full(
+                optical_report["chosen_configuration"], args.n_pre)
+            diff = config_diff(dp_final, rp_final, op_final, ep_final)
 
     # --- artefacts -----------------------------------------------------------
     report = {

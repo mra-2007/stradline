@@ -38,8 +38,12 @@ import numpy as np
 from strandline import catalog, detect, ingest, optical, outputs, reliability, terrain
 from strandline.config import (
     BACKSCATTER_COEFFICIENTS,
+    CLASS_DEBRIS,
+    CLASS_NAMES,
     OPTICAL_FUSION_MODES,
+    DEBRIS_UNVERIFIED_LABEL,
     DetectParams,
+    ExtentParams,
     OpticalParams,
     ReliabilityParams,
     RunParams,
@@ -354,10 +358,12 @@ def classify(scene: PreparedScene, dp: DetectParams) -> detect.DetectionResult:
 
 def build_report(scene: PreparedScene, result: detect.DetectionResult, bbox, event_day: date,
                  rp: RunParams, dp: DetectParams, runtime_s: float, n_poly: int | None,
-                 rel: reliability.Reliability | None = None) -> dict:
+                 rel: reliability.Reliability | None = None,
+                 ep: ExtentParams | None = None) -> dict:
     choice, grid, terr = scene.choice, scene.grid, scene.terrain
     op = scene.optical_params
-    params = params_dict(dp, rp, op)
+    ep = ep if ep is not None else ExtentParams()
+    params = params_dict(dp, rp, op, ep)
     report = {
         "event_date": str(event_day),
         "bbox_wgs84": list(bbox),
@@ -368,12 +374,31 @@ def build_report(scene: PreparedScene, result: detect.DetectionResult, bbox, eve
                   "pre": [{"day": str(a.day), "scenes": a.names} for a in choice.pre],
                   "post_latency_days": choice.latency_days, "notes": choice.notes},
         "parameters": params,
-        "parameters_hash": params_hash(dp, rp, op),
+        "parameters_hash": params_hash(dp, rp, op, ep),
         "areas_ha": outputs.class_areas_ha(result.classes, grid.res),
         "detection_stats": result.stats,
         "terrain": {"stream_pixels": int(terr.streams.sum()),
                     "hand_fallback_fraction": terr.hand_fallback_fraction},
         "runtime_s": round(runtime_s, 1),
+    }
+    # What this run counts as flood EXTENT. Always present, because a reader of
+    # a hectare figure has to know whether debris is inside it, and the damage
+    # and cut-off modules must not have to guess.
+    px_ha = grid.res * grid.res / 10_000.0
+    debris_ha = round(float((result.classes == CLASS_DEBRIS).sum()) * px_ha, 2)
+    extent_ha = round(float(np.isin(result.classes,
+                                    list(ep.flood_extent_classes())).sum()) * px_ha, 2)
+    report["flood_extent"] = {
+        "debris_in_flood_extent": ep.debris_in_flood_extent,
+        "classes": [CLASS_NAMES[c] for c in ep.flood_extent_classes()],
+        "flood_extent_ha": extent_ha,
+        "debris_ha": debris_ha,
+        "debris_ha_inside_extent": debris_ha if ep.debris_in_flood_extent else 0.0,
+        "debris_label": (None if ep.debris_in_flood_extent else DEBRIS_UNVERIFIED_LABEL),
+        "note": ("debris is part of the flood extent" if ep.debris_in_flood_extent else
+                 f"debris is mapped and reported as {DEBRIS_UNVERIFIED_LABEL!r} but is NOT "
+                 f"flood extent: it is excluded from flood_extent_ha and must not be used "
+                 f"by the damage overlay or the cut-off analysis"),
     }
     # Always present, whatever happened, so no report is silent about Sentinel-2.
     report["optical"] = dict(scene.optical_report)
@@ -395,22 +420,26 @@ def build_report(scene: PreparedScene, result: detect.DetectionResult, bbox, eve
     return report
 
 
-def params_hash(dp: DetectParams, rp: RunParams, op: OpticalParams | None = None) -> str:
+def params_hash(dp: DetectParams, rp: RunParams, op: OpticalParams | None = None,
+                ep: ExtentParams | None = None) -> str:
     """The 12-hex identity of a configuration.
 
     `op=None` (or optical disabled) hashes byte-identically to the way it did
-    before Sentinel-2 existed here, so every params_hash already recorded in
-    eval/results/ still identifies the same configuration. No optical field
-    lives in DetectParams or RunParams, which is what makes that true; it is
-    pinned by tests/test_params_hash_reproducible.py. See config.params_dict.
+    before Sentinel-2 existed here, and `ep=None` or a DEFAULT ExtentParams
+    hashes byte-identically to the way it did before the extent option existed,
+    so every params_hash already recorded in eval/results/ still identifies the
+    same configuration. No optical or extent field lives in DetectParams or
+    RunParams, which is what makes that true; it is pinned by
+    tests/test_params_hash_reproducible.py. See config.params_dict.
     """
     return hashlib.sha256(
-        json.dumps(params_dict(dp, rp, op), sort_keys=True).encode()).hexdigest()[:12]
+        json.dumps(params_dict(dp, rp, op, ep), sort_keys=True).encode()).hexdigest()[:12]
 
 
 def write(out: Path, scene: PreparedScene, result: detect.DetectionResult, bbox,
           event_day: date, rp: RunParams, dp: DetectParams, runtime_s: float,
-          relp: ReliabilityParams | None = None, log=print) -> dict:
+          relp: ReliabilityParams | None = None, ep: ExtentParams | None = None,
+          log=print) -> dict:
     grid, choice = scene.grid, scene.choice
     relp = relp if relp is not None else ReliabilityParams()
     rel = reliability.compute_reliability(
@@ -427,13 +456,14 @@ def write(out: Path, scene: PreparedScene, result: detect.DetectionResult, bbox,
     outputs.write_quicklook(out / "quicklook.png", result,
                             f"Event {event_day} | track {choice.track[1]} {choice.track[2]} | "
                             f"post {choice.post.day}")
-    report = build_report(scene, result, bbox, event_day, rp, dp, runtime_s, n_poly, rel=rel)
+    report = build_report(scene, result, bbox, event_day, rp, dp, runtime_s, n_poly, rel=rel,
+                          ep=ep)
     outputs.write_report(out / "run_report.json", report)
     return report
 
 
 def run(bbox, event_day: date, out: Path, rp: RunParams, dp: DetectParams, dry_run: bool,
-        op: OpticalParams | None = None) -> int:
+        op: OpticalParams | None = None, ep: ExtentParams | None = None) -> int:
     t_start = time.time()
     out.mkdir(parents=True, exist_ok=True)
     op = OpticalParams() if op is None else op
@@ -456,7 +486,7 @@ def run(bbox, event_day: date, out: Path, rp: RunParams, dp: DetectParams, dry_r
     except PipelineError as err:
         raise SystemExit(str(err)) from err
 
-    report = write(out, scene, result, bbox, event_day, rp, dp, time.time() - t_start)
+    report = write(out, scene, result, bbox, event_day, rp, dp, time.time() - t_start, ep=ep)
     print(json.dumps(report["areas_ha"], indent=2))
     optical_status = report["optical"]["status"]
     print(f"Sentinel-2 optical evidence: {optical_status}"

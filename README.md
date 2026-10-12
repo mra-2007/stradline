@@ -94,6 +94,16 @@ No-go if downloads keep failing or no usable same-track pair exists.
 | 5 | permanent water |
 | 6 | not analysed (steep or high terrain) |
 
+**Flood extent vs what is merely mapped.** `ExtentParams.debris_in_flood_extent` (default `True`)
+decides whether class 4 counts as flood *extent*. Debris is written to `flood_classes.tif` either
+way — the flag changes no pixel of the class map — but with `False` it is reported as
+*"possible debris, unverified"*, excluded from `flood_extent_ha`, excluded from the scored
+quantity, and **must not be consumed by the damage overlay or the cut-off analysis**. Every run
+writes a `flood_extent` block to `run_report.json` saying which classes are inside it, so a
+downstream module never has to guess. The flag has its own dataclass rather than sitting on
+`DetectParams`, which is what keeps every published `params_hash` reproducible: the section enters
+the hash only when it differs from the default.
+
 ## Method (flood mapping)
 
 1. **Track selection.** Pick the relative orbit with the earliest post-event image and at least 3 pre-event images. If none qualifies, refuse rather than guess.
@@ -173,7 +183,12 @@ still produces the radar-only map exactly, and is the control the comparison res
      shadow, which are high or ambiguous on both dates.
    - *deposit*: NDVI must drop **and** B11 reflectance must rise — vegetation or soil buried
      under sediment loses near-infrared vigour and gains short-wave infrared brightness.
-5. **Fusion (`--optical-fusion union`), before the shared tests, not after them.** Optical
+5. **Fusion (`--optical-fusion`), before the shared tests, not after them.** Three modes:
+   `off` (gathered and reported, changes no pixel), `union` (the shipped default: optical water
+   *and* deposit candidates are added), and `water_only` (added 2026-10-12: the MNDWI water
+   evidence is fused and the NDVI-drop deposit channel contributes nothing — scored, and measured
+   to tie `union` exactly once debris is out of the flood extent, but not adopted, see Status).
+   Optical
    candidates are added to the radar masks *inside* `detect.detect_flood`, so the same HAND, slope,
    minimum-mapping-unit and drainage-connection tests apply to them. There is no second definition
    of "valley floor" and optical cannot place water where radar would not have been allowed to.
@@ -311,16 +326,34 @@ optical and the row is radar-only.
 No-flood controls, false flood fraction: Punakha 0.0022, Konjic 0.0011, Ringebu 0.0014,
 Poza Honda 0.0048. Coverage: 6/6 gate-eligible floods, 4 of 8 declared controls.
 
-> **Read the control numbers with their denominator.** The gated metric divides by the whole
-> scoring domain, which deliberately includes terrain-excluded ground (a reference flood there
-> would be a miss we must be charged for, so narrowing it would be Rule 3.2). On a control there
-> is no reference to miss, so on a Himalayan AOI that is 95% terrain-excluded the same false
-> pixels are divided by twenty. Over the ground the detector could actually classify the four
-> controls read **4.37%, 1.02%, 0.68% and 1.64%** — recorded as
-> `false_flood_fraction_analysed_area` in each control's score file, reported, never gated. The
-> Punakha figure is 0.05% with fusion `off`: optical deposit fusion raised it by a factor of 85
-> while the gated number moved 0.0000 → 0.0022. See `docs/tuning_log.md`, 2026-10-12,
-> "Class-count audit".
+> **The shipped configuration FAILS the project's own stricter control criterion.** Say this
+> first, because it is the most important caveat on the flood map. The gated metric divides by the
+> whole scoring domain, which deliberately includes terrain-excluded ground (a reference flood
+> there would be a miss we must be charged for, so narrowing it would be Rule 3.2). On a control
+> there is no reference to miss, so on a Himalayan AOI that is 95% terrain-excluded the same false
+> pixels are divided by twenty. Over the ground the detector could actually classify, the four
+> controls read **4.37%, 1.02%, 0.68% and 1.64%** against a declared 1% ceiling — so **three of
+> four fail it**. Recorded as `false_flood_fraction_analysed_area` in each control's score file:
+> reported, never gated, because the gates file is human-owned and keeps its declared metric.
+>
+> On 2026-10-12 that criterion was declared as an additional, stricter feasibility constraint and a
+> leave-one-event-out pass was run over a 14-point grid (fusion `off`/`union`/`water_only` crossed
+> with debris in or out of the flood extent). **Nothing in the grid was feasible, so nothing was
+> adopted** and no row was written. The binding control is `ecuador_poza_honda_control_2024` at
+> 1.64%, identical at all 14 points: optical was refused there (12.7% clear) and its debris count
+> is zero, so neither axis can touch it — its 7,780 false pixels are Sentinel-1 flood *water*. The
+> refusal, every candidate's rejection reason (30 radar points under `final`, 42 second-pass
+> configurations under `optical_pass`) and three options with costs are in
+> `eval/chosen_params_strict_control.json` and `docs/tuning_log.md`, 2026-10-12. Reproduce with
+> `python -m eval.tune --plan gates --optical --chosen-out eval/chosen_params_strict_control.json`.
+>
+> Measured along the way, and not adopted: taking debris **out** of the flood extent improves both
+> the objective (mean tolerant F1 0.5232 → 0.5266) and the controls (Bhutan 0.0437 → 0.0028, a
+> factor of 16), and `water_only` fusion ties it exactly. With the control constraint lifted as a
+> counterfactual, the declared per-fold objective selects a debris-OUT point **unanimously across
+> all six folds**. Acting on that needs a declared rule change, which belongs to a commit that
+> precedes the run — and it would still not make the configuration feasible, because Ecuador's
+> 1.64% is unchanged by every option on the grid.
 
 ### Gate status
 
@@ -338,10 +371,12 @@ Poza Honda 0.0048. Coverage: 6/6 gate-eligible floods, 4 of 8 declared controls.
 CLAUDE.md, flood mapping is **not done**. It is finalised, not passing: the method, the parameters
 and the evidence are fixed and committed, and the gate it misses is reported as missed.
 
-**Flood mapping is FROZEN** as of 2026-10-12, after the optical fusion pass. No further detection
-change. Everything built on top of it — the damage overlay, the cut-off analysis, the copilot, the
-dashboard and the sitrep — reads this map as it stands and must carry its measured accuracy and the
-narrow-valley caveat with every number it quotes.
+**Flood mapping is FROZEN** as of 2026-10-12. No further detection change. Everything built on top
+of it — the damage overlay, the cut-off analysis, the copilot, the dashboard and the sitrep — reads
+this map as it stands and must carry three things with every number it quotes: the measured
+accuracy above, the narrow-valley caveat, and the fact that `debris_in_flood_extent` is `True` in
+the shipped configuration, so the flood extent **includes a debris class whose measured precision
+against the only expert debris reference in the dev set is 0.0**.
 
 The detector runs in `rough_water` mode, chosen over the original `darkening` mode by
 leave-one-event-out: it wins on 5 of 6 held-out events, and `darkening` is in fact **infeasible** —

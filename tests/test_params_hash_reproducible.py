@@ -181,3 +181,41 @@ def test_an_optical_row_implies_a_recorded_keep_verdict():
         f"rows {optical_rows} were written by a configuration that consulted Sentinel-2, "
         f"but eval/chosen_params.json does not record an adoption verdict of KEEP. "
         f"Either the rows or the verdict is wrong.")
+
+
+# --- ExtentParams: changes the scored quantity, not the class map -------------
+
+def test_a_default_extent_hashes_exactly_as_no_extent_at_all():
+    """Default in, nothing added. Every published params_hash survives."""
+    from strandline.config import ExtentParams
+
+    dp, rp = DetectParams(), RunParams()
+    bare = params_hash(dp, rp)
+    assert params_hash(dp, rp, None, None) == bare
+    assert params_hash(dp, rp, None, ExtentParams()) == bare
+    assert "extent" not in params_dict(dp, rp, None, ExtentParams())
+    # And with optical enabled, the same property holds on top of it.
+    op = OpticalParams()
+    assert params_hash(dp, rp, op, ExtentParams()) == params_hash(dp, rp, op)
+
+
+def test_taking_debris_out_of_the_extent_is_a_different_configuration():
+    """It changes the scored quantity, so it MUST change the hash."""
+    from strandline.config import ExtentParams
+
+    dp, rp = DetectParams(), RunParams()
+    out = ExtentParams(debris_in_flood_extent=False)
+    assert params_hash(dp, rp, None, out) != params_hash(dp, rp)
+    assert params_dict(dp, rp, None, out)["extent"] == {"debris_in_flood_extent": False}
+
+
+def test_no_extent_field_leaked_into_the_radar_dataclasses():
+    """The structural reason the hash above is stable. Same rule as optical."""
+    from strandline.config import ExtentParams
+
+    radar_fields = ({f for f in DetectParams().__dataclass_fields__}
+                    | {f for f in RunParams().__dataclass_fields__})
+    leaked = radar_fields & {f for f in ExtentParams().__dataclass_fields__}
+    assert not leaked, (
+        f"{sorted(leaked)} belongs in ExtentParams: a field on DetectParams or "
+        f"RunParams re-hashes every configuration already recorded in eval/results/")

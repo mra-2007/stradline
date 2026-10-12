@@ -25,11 +25,15 @@ from eval import tune
 from eval.run_scoreboard import EventScore
 from strandline import optical, run as pipeline
 from strandline.config import (
+    CONTROL_ANALYSED_AREA_CEILING,
+    EXTENT_TUNE_GRID,
     FUSION_OFF,
     FUSION_UNION,
+    FUSION_WATER_ONLY,
     OPTICAL_ADOPTION,
     OPTICAL_TUNE_GRIDS,
     DetectParams,
+    ExtentParams,
     OpticalParams,
     RunParams,
 )
@@ -49,15 +53,19 @@ def union(mndwi=0.0, ndvi=0.10) -> dict:
             "optical.ndvi_drop_min": ndvi}
 
 
-def entry(event, kind, phash, *, f1_tol=None, ffr=None, clear=None) -> EventScore:
+def entry(event, kind, phash, *, f1_tol=None, ffr=None, clear=None,
+          ffr_analysed=None) -> EventScore:
+    """SYNTHETIC. A control carries both false-flood figures (see test_eval_tune)."""
     metrics = {}
     if f1_tol is not None:
         metrics["f1_tolerant"] = f1_tol
         metrics["f1"] = round(f1_tol - 0.05, 4)
-    if ffr is not None:
-        metrics["false_flood_fraction"] = ffr
     provenance = {} if clear is None else {"optical": {"status": "used",
                                                        "clear_fraction_pair": clear}}
+    if ffr is not None:
+        metrics["false_flood_fraction"] = ffr
+        provenance["false_flood_fraction_analysed_area"] = (
+            ffr if ffr_analysed is None else ffr_analysed)
     return EventScore(event=event, kind=kind, params_hash=phash, metrics=metrics,
                       provenance=provenance)
 
@@ -84,8 +92,8 @@ def key(*dicts) -> tuple:
 
 def test_a_point_with_no_optical_key_is_still_the_radar_only_configuration():
     """The property every already-published params_hash depends on."""
-    dp, rp, op = tune.materialise_full(SAR, N_PRE)
-    assert op is None
+    dp, rp, op, ep = tune.materialise_full(SAR, N_PRE)
+    assert op is None and ep is None
     assert tune.full_point_hash(SAR, N_PRE) == tune.point_hash(SAR, N_PRE)
 
 
@@ -94,19 +102,23 @@ def test_fusion_off_is_a_different_configuration_from_radar_only():
     radar = tune.full_point_hash(SAR, N_PRE)
     off = tune.full_point_hash(tune.combine(SAR, OFF), N_PRE)
     assert off != radar
-    _, _, op = tune.materialise_full(tune.combine(SAR, OFF), N_PRE)
+    _, _, op, _ = tune.materialise_full(tune.combine(SAR, OFF), N_PRE)
     assert op.enabled is True and op.fusion == FUSION_OFF
 
 
-def test_every_optical_point_gets_its_own_hash():
-    """Scores are cached by hash, so two points must never collide."""
+def test_every_second_pass_point_gets_its_own_hash():
+    """Scores are cached by hash, so two points must never collide.
+
+    14 since 2026-10-12: 7 fusion points (off 1, union 4, water_only 2) crossed
+    with the two extent values.
+    """
     points = [tune.combine(SAR, p) for p in tune.optical_grid_points()]
     hashes = [tune.full_point_hash(p, N_PRE) for p in points]
-    assert len(set(hashes)) == len(hashes) == 5
+    assert len(set(hashes)) == len(hashes) == 14
 
 
 def test_the_optical_point_reaches_the_materialised_params():
-    dp, rp, op = tune.materialise_full(tune.combine(SAR, union(0.2, 0.20)), N_PRE)
+    dp, rp, op, _ = tune.materialise_full(tune.combine(SAR, union(0.2, 0.20)), N_PRE)
     assert (op.fusion, op.mndwi_water, op.ndvi_drop_min) == (FUSION_UNION, 0.2, 0.20)
     assert dp.z_seed == 3.0 and rp.n_pre == N_PRE
     assert op.mndwi_rise_min == OpticalParams().mndwi_rise_min, "an untouched field changed"
@@ -158,8 +170,8 @@ def test_rebuilding_evidence_with_a_read_time_change_is_refused():
 def test_each_fold_crosses_the_optical_grid_with_its_own_sar_point():
     sar_points = {"a": SAR, "b": SAR_ALT, "": SAR}
     needed = tune.optical_points_needed(sar_points, tune.optical_grid_points())
-    # Two distinct SAR points x 5 optical points; the final one duplicates a's.
-    assert len(needed) == 10
+    # Two distinct SAR points x 14 second-pass points; the final one duplicates a's.
+    assert len(needed) == 28
     assert {tune.full_point_hash(p, N_PRE) for p in needed} == {
         tune.full_point_hash(tune.combine(s, o), N_PRE)
         for s in (SAR, SAR_ALT) for o in tune.optical_grid_points()}
@@ -169,7 +181,7 @@ def test_identical_sar_points_across_folds_are_scored_once():
     """Most folds choose the same SAR point; the matrix must not pay for that."""
     needed = tune.optical_points_needed({"a": SAR, "b": SAR, "c": SAR},
                                         tune.optical_grid_points())
-    assert len(needed) == 5
+    assert len(needed) == 14
 
 
 # --- leave-one-event-out over the optical grid --------------------------------
@@ -231,8 +243,9 @@ def test_each_fusion_mode_is_selected_within_its_own_candidates():
     for held in ("a", "b", "c"):
         assert off[held].chosen.point["optical.fusion"] == FUSION_OFF
         assert on[held].chosen.point["optical.fusion"] == FUSION_UNION
-        assert len(off[held].candidates) == 1
-        assert len(on[held].candidates) == 4
+        # One per extent value for `off`, four thresholds x two for `union`.
+        assert len(off[held].candidates) == 2
+        assert len(on[held].candidates) == 8
 
 
 def test_a_union_point_that_floods_a_control_is_rejected_however_good_its_f1():
@@ -480,3 +493,161 @@ def test_no_optical_params_leaves_the_scene_untouched():
 
     scene = Scene()
     assert tune.scene_with_optical(scene, None, None) is scene
+
+
+# --- the SECOND control ceiling (declared 2026-10-12, before scoring) --------
+
+def test_both_control_ceilings_must_be_satisfied():
+    """A control inside the gated ceiling but over the analysed-area one is rejected.
+
+    This is the case the class-count audit found in real data: Bhutan's control
+    reads 0.0022 over the whole scoring domain and 4.37% over the ground the
+    detector could classify, because 95% of that AOI is terrain-excluded and
+    pads the gated denominator.
+    """
+    spec = {}
+    for event in ("a", "b"):
+        spec[event] = (sb.KIND_FLOOD, {
+            key(SAR, OFF): {"f1_tol": 0.50},
+            key(SAR, union()): {"f1_tol": 0.99},          # much better on floods
+        })
+    spec["ctrl"] = (sb.KIND_CONTROL, {
+        key(SAR, OFF): {"ffr": 0.0002, "ffr_analysed": 0.0005},
+        # Gated 0.0022 PASSES the 1% ceiling; analysed 0.0437 does not.
+        key(SAR, union()): {"ffr": 0.0022, "ffr_analysed": 0.0437},
+    })
+    m = matrix_of(spec)
+    sel = tune.select(m, ["a", "b"], ["ctrl"],
+                      [tune.combine(SAR, OFF), tune.combine(SAR, union())],
+                      CEILING, N_PRE, tune.full_point_hash)
+    assert sel.ok
+    assert sel.chosen.point["optical.fusion"] == FUSION_OFF, (
+        "the tuner bought F1 with a control that floods 4.4% of classifiable ground")
+    rejected = [c for c in sel.candidates if c.rejected]
+    assert any("over analysed ground" in (c.rejected or "") for c in rejected)
+
+
+def test_the_analysed_ceiling_is_the_declared_one():
+    assert CONTROL_ANALYSED_AREA_CEILING == 0.01
+    # Declared in config, not duplicated from the human-owned gates file - the
+    # whole-domain ceiling is READ from there (test_eval_tune.py asserts that).
+    assert "false_flood_fraction_analysed_area" not in (
+        (ROOT / "eval" / "gates.yaml").read_text(encoding="utf-8"))
+
+
+def test_the_chosen_candidate_records_both_worst_controls():
+    spec = {"a": (sb.KIND_FLOOD, {key(SAR, OFF): {"f1_tol": 0.50}}),
+            "c1": (sb.KIND_CONTROL, {key(SAR, OFF): {"ffr": 0.001, "ffr_analysed": 0.004}}),
+            "c2": (sb.KIND_CONTROL, {key(SAR, OFF): {"ffr": 0.003, "ffr_analysed": 0.002}})}
+    sel = tune.select(matrix_of(spec), ["a"], ["c1", "c2"], [tune.combine(SAR, OFF)],
+                      CEILING, N_PRE, tune.full_point_hash)
+    assert sel.ok
+    # The two worst controls need not be the same event, and both are reported.
+    assert sel.chosen.worst_control_event == "c2"
+    assert sel.chosen.worst_control_analysed_event == "c1"
+    assert sel.chosen.worst_control_analysed == 0.004
+    report = sel.report()["chosen"]
+    assert report["worst_control_false_flood_fraction_analysed_area"] == 0.004
+
+
+def test_a_control_score_predating_the_constraint_cannot_satisfy_it():
+    """Rule 6: a number that was never measured is not evidence that it passed."""
+    phash = tune.full_point_hash(tune.combine(SAR, OFF), N_PRE)
+    stale = EventScore(event="ctrl", kind=sb.KIND_CONTROL, params_hash=phash,
+                       metrics={"false_flood_fraction": 0.0},  # no provenance field
+                       provenance={})
+    m = {("a", phash): entry("a", sb.KIND_FLOOD, phash, f1_tol=0.9),
+         ("ctrl", phash): stale}
+    sel = tune.select(m, ["a"], ["ctrl"], [tune.combine(SAR, OFF)], CEILING, N_PRE,
+                      tune.full_point_hash)
+    assert not sel.ok
+    assert any("cannot demonstrate it" in (c.rejected or "") for c in sel.candidates)
+    assert not tune.reusable(stale), "a stale control score must be recomputed"
+
+
+def test_a_stale_flood_score_is_still_reusable():
+    """The analysed-area field is a control diagnostic; floods never carried it."""
+    phash = tune.full_point_hash(tune.combine(SAR, OFF), N_PRE)
+    flood = entry("a", sb.KIND_FLOOD, phash, f1_tol=0.9)
+    assert flood.provenance.get("false_flood_fraction_analysed_area") is None
+    assert tune.reusable(flood)
+
+
+# --- the extent axis ----------------------------------------------------------
+
+def test_the_extent_flag_reaches_the_materialised_params_and_the_hash():
+    point = tune.combine(SAR, {"optical.fusion": FUSION_OFF,
+                               "extent.debris_in_flood_extent": False})
+    _, _, _, ep = tune.materialise_full(point, N_PRE)
+    assert ep is not None and ep.debris_in_flood_extent is False
+    assert ep.flood_extent_classes() == (2, 3), "debris must be out of the extent"
+
+
+def test_the_default_extent_value_does_not_move_a_published_hash():
+    """Default in, nothing added to params_dict: every published hash survives."""
+    with_default = tune.combine(SAR, {"optical.fusion": FUSION_OFF,
+                                      "extent.debris_in_flood_extent": True})
+    without_key = tune.combine(SAR, {"optical.fusion": FUSION_OFF})
+    assert tune.full_point_hash(with_default, N_PRE) == tune.full_point_hash(
+        without_key, N_PRE)
+    assert tune.extent_of(without_key) is True
+
+
+def test_turning_debris_out_of_the_extent_is_its_own_configuration():
+    a = tune.combine(SAR, {"optical.fusion": FUSION_OFF,
+                           "extent.debris_in_flood_extent": True})
+    b = tune.combine(SAR, {"optical.fusion": FUSION_OFF,
+                           "extent.debris_in_flood_extent": False})
+    assert tune.full_point_hash(a, N_PRE) != tune.full_point_hash(b, N_PRE)
+    assert tune.extent_of(b) is False
+
+
+# --- the second ceiling has no escape hatch ----------------------------------
+
+def test_the_analysed_ceiling_cannot_be_switched_off_from_a_call_site():
+    """It is a mandatory constraint, not an option with a default.
+
+    An earlier draft accepted `analysed_ceiling=None` "for tests", which is an
+    unenforced convention and the kind of hatch that becomes production
+    behaviour. A test that wants the old behaviour must RAISE the ceiling
+    explicitly, which is visible in the test.
+    """
+    import inspect
+
+    sig = inspect.signature(tune.select)
+    param = sig.parameters["analysed_ceiling"]
+    assert param.default == CONTROL_ANALYSED_AREA_CEILING
+    assert param.annotation == "float", "an optional type invites None again"
+
+    phash = tune.full_point_hash(tune.combine(SAR, OFF), N_PRE)
+    m = {("a", phash): entry("a", sb.KIND_FLOOD, phash, f1_tol=0.9),
+         ("ctrl", phash): entry("ctrl", sb.KIND_CONTROL, phash, ffr=0.001,
+                                ffr_analysed=0.05)}
+    points = [tune.combine(SAR, OFF)]
+    # Default: rejected on the analysed-area ceiling.
+    assert not tune.select(m, ["a"], ["ctrl"], points, CEILING, N_PRE,
+                           tune.full_point_hash).ok
+    # Explicitly raised: accepted, and the raising is impossible to overlook.
+    assert tune.select(m, ["a"], ["ctrl"], points, CEILING, N_PRE,
+                       tune.full_point_hash, analysed_ceiling=1.0).ok
+
+
+def test_one_reuse_rule_is_shared_by_every_cache_path():
+    """A stale control score must be refused on the scoreboard path too."""
+    from eval import run_scoreboard as rs
+
+    assert tune.reusable is rs.reusable, (
+        "two definitions of 'is this cached score usable' will drift apart")
+
+
+# --- the frozen SAR fallback --------------------------------------------------
+
+def test_the_frozen_sar_points_carry_only_the_sar_half():
+    """The second pass searches the optical and extent halves; it must not
+    inherit them from a previous choice."""
+    frozen = tune.frozen_sar_points()
+    if not frozen:
+        pytest.skip("no recorded chosen_params.json in this tree")
+    for fold, point in frozen.items():
+        assert point, fold
+        assert all(k.startswith(("detect.", "run.")) for k in point), (fold, point)

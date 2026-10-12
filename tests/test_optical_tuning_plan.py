@@ -34,18 +34,54 @@ def test_every_fusion_mode_is_in_the_grid_including_off():
     assert modes == set(OPTICAL_FUSION_MODES)
 
 
-def test_fusion_off_is_a_single_point():
-    """With fusion off an index threshold cannot change a pixel, so one point."""
+def test_fusion_off_varies_nothing_but_the_extent_axis():
+    """With fusion off an index threshold cannot change a pixel, so none is varied.
+
+    Two points rather than one since 2026-10-12: what counts as flood EXTENT is
+    orthogonal to what optical contributes, so every fusion point - `off`
+    included - is scored both ways.
+    """
     points = tune.optical_grid_points()
     off = [p for p in points if p["optical.fusion"] == FUSION_OFF]
-    assert len(off) == 1
-    assert off[0] == {"optical.fusion": FUSION_OFF}
+    assert len(off) == 2
+    assert {p["extent.debris_in_flood_extent"] for p in off} == {True, False}
+    assert all(set(p) == {"optical.fusion", "extent.debris_in_flood_extent"} for p in off)
 
 
 def test_the_grid_is_small_and_deterministic():
+    """7 fusion points x 2 extent values. Both halves declared before scoring."""
     first = tune.optical_grid_points()
-    assert len(first) == 5, "a declared grid must not grow without a written reason"
+    assert len(first) == 14, "a declared grid must not grow without a written reason"
     assert first == tune.optical_grid_points()
+
+
+def test_water_only_does_not_vary_the_deposit_threshold():
+    """With no deposit channel, ndvi_drop_min cannot change a pixel."""
+    from strandline.config import FUSION_WATER_ONLY
+    water = [p for p in tune.optical_grid_points()
+             if p["optical.fusion"] == FUSION_WATER_ONLY]
+    assert len(water) == 4                      # 2 mndwi x 2 extent
+    assert not any("optical.ndvi_drop_min" in p for p in water)
+    assert {p["optical.mndwi_water"] for p in water} == {0.0, 0.2}
+
+
+def test_the_extent_axis_is_crossed_with_every_fusion_mode():
+    """It is orthogonal: nothing about optical decides what counts as extent."""
+    from strandline.config import OPTICAL_FUSION_MODES
+    points = tune.optical_grid_points()
+    for mode in OPTICAL_FUSION_MODES:
+        per_mode = [p for p in points if p["optical.fusion"] == mode]
+        assert {p["extent.debris_in_flood_extent"] for p in per_mode} == {True, False}, mode
+
+
+def test_an_extent_axis_naming_an_unknown_field_is_rejected():
+    with pytest.raises(ValueError, match="has no field"):
+        tune.extent_points({"extent.not_a_field": (True,)})
+
+
+def test_an_extent_axis_in_the_wrong_section_is_rejected():
+    with pytest.raises(ValueError, match="section must be 'extent'"):
+        tune.extent_points({"detect.z_seed": (3.0,)})
 
 
 def test_a_grid_axis_naming_an_unknown_field_is_rejected():

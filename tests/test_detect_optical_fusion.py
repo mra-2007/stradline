@@ -25,6 +25,10 @@ from strandline.config import (
     CLASS_FLOOD_HIGH,
     CLASS_FLOOD_MEDIUM,
     FUSION_OFF,
+    FUSION_WATER_MODES,
+    MODE_DARKENING,
+    FUSION_WATER_ONLY,
+    OPTICAL_FUSION_MODES,
     FUSION_UNION,
     SOURCE_BOTH,
     SOURCE_NONE,
@@ -309,3 +313,82 @@ def test_source_pixel_counts_are_reported(scene):
     assert counts[SOURCE_NONE] > 0
     assert sum(counts.values()) == result.classes.size
     assert result.stats["optical_fusion"] == FUSION_UNION
+
+
+# --- water_only: the water half without the deposit channel ------------------
+#
+# Declared and added on 2026-10-12 because the class-count audit localised the
+# harm to the deposit channel (7,111 false pixels on one dry control, precision
+# 0.0 against the only expert mass-movement reference) while the optical WATER
+# channel is where the Larkana gain came from.
+
+def test_water_only_fuses_water_exactly_as_union_does(scene):
+    data = scene()
+    shape = data["geometry"]["dem"].shape
+    g = data["geometry"]
+    reach = _patch(shape, g, slice(30, 55), 4, 16)      # valley floor, upstream
+    dp = DetectParams()
+    union = _run(data, dp, optical=_evidence(shape, water=reach, fusion=FUSION_UNION))
+    water_only = _run(data, dp, optical=_evidence(shape, water=reach,
+                                                  fusion=FUSION_WATER_ONLY))
+    assert np.array_equal(union.classes, water_only.classes), (
+        "with no optical DEPOSIT evidence the two modes must agree exactly")
+    assert water_only.stats["optical_water_fused"] is True
+    assert water_only.stats["optical_debris_fused"] is False
+
+
+def test_water_only_ignores_the_optical_deposit_channel(scene):
+    """The whole point of the mode: an optical deposit detection adds nothing.
+
+    Same fixture as test_optical_deposits_are_mapped_in_the_debris_zone_only -
+    a fan in the HAND 7-35 m annulus with the drainage test relaxed, which is
+    the configuration under which `union` demonstrably DOES accept it.
+    """
+    data = scene(event=False)
+    g = data["geometry"]
+    shape = g["dem"].shape
+    dp = replace(DetectParams(), require_drainage_connection=False)
+    fan = _patch(shape, g, slice(100, 160), 21, 25)
+
+    bare = _run(data, dp)
+    union = _run(data, dp, optical=_evidence(shape, debris=fan, fusion=FUSION_UNION))
+    water_only = _run(data, dp, optical=_evidence(shape, debris=fan,
+                                                  fusion=FUSION_WATER_ONLY))
+    assert (union.classes[fan] == CLASS_DEBRIS).sum() > 100, (
+        "the fixture must give `union` something to add, or this proves nothing")
+    assert np.array_equal(water_only.classes, bare.classes), (
+        "water_only let an optical deposit candidate through")
+    assert water_only.stats["optical_debris_fused"] is False
+
+
+def test_water_only_still_keeps_the_sar_debris_channel(scene):
+    """It drops the OPTICAL deposit channel, not the radar one.
+
+    Scored in `darkening` mode, because that is the mode whose SAR debris
+    channel fires on this fixture - under the shipped `rough_water` it is very
+    nearly silent, which is itself a measured finding (docs/tuning_log.md,
+    2026-10-12: 107 px across the whole dev set). The point here is that
+    `water_only` leaves whatever the radar channel found alone.
+    """
+    data = scene(event=True)
+    shape = data["geometry"]["dem"].shape
+    dp = DetectParams(mode=MODE_DARKENING)
+    bare = _run(data, dp)
+    water_only = _run(data, dp, optical=_evidence(shape, fusion=FUSION_WATER_ONLY))
+    assert (bare.classes == CLASS_DEBRIS).sum() > 0, "fixture has no SAR debris to keep"
+    assert ((water_only.classes == CLASS_DEBRIS).sum()
+            == (bare.classes == CLASS_DEBRIS).sum())
+
+
+def test_every_declared_fusion_mode_is_handled(scene):
+    """No mode may silently fall through to 'off'."""
+    data = scene()
+    shape = data["geometry"]["dem"].shape
+    g = data["geometry"]
+    reach = _patch(shape, g, slice(30, 55), 4, 16)
+    for mode in OPTICAL_FUSION_MODES:
+        result = _run(data, DetectParams(),
+                      optical=_evidence(shape, water=reach, fusion=mode))
+        expected = mode in FUSION_WATER_MODES
+        assert result.stats["optical_water_fused"] is expected, mode
+        assert result.stats["optical_used"] is (mode != FUSION_OFF), mode

@@ -147,12 +147,75 @@ def baseline_offset(scene_names: list[str], op: OpticalParams) -> tuple[float, i
 
     Returns (offset, baseline). The baseline is None when no name declares one,
     in which case the configured fallback is used and recorded as such.
+
+    This says the offset EXISTS for these products, not that it still needs
+    applying - a backend may already have applied it. `dn_offset` decides that
+    from the pixels.
     """
     found = [int(m.group(1)) for n in scene_names for m in [_BASELINE_RE.search(n)] if m]
     if not found:
         return op.boa_add_offset, None
     baseline = min(found)       # the oldest product in the mosaic decides
     return (op.boa_add_offset if baseline >= BASELINE_WITH_OFFSET else 0.0), baseline
+
+
+def dn_offset(values: np.ndarray, valid: np.ndarray, op: OpticalParams,
+              scene_names: list[str] | None) -> tuple[float, int | None, str, dict]:
+    """Does this product still NEED the baseline offset, or has it been applied?
+
+    The processing baseline in the product name says whether BOA_ADD_OFFSET
+    EXISTS for these products. It cannot say whether the backend has already
+    applied it, and that question is not cosmetic: the offset is a tenth of the
+    whole reflectance range, MNDWI and NDVI are normalised ratios, and applying
+    it twice corrupts both outright while leaving values that still look like
+    reflectance. Measured on 2026-10-11, the Copernicus Data Space openEO
+    backend returns L2A ALREADY offset-corrected, so the question has a
+    different answer for a product read through openEO than for the same
+    product downloaded from the archive.
+
+    So it is decided from the pixels, by the one thing that separates the two
+    hypotheses physically: REFLECTANCE IS NOT NEGATIVE. Atmospheric correction
+    over-corrects a small share of dark pixels below zero - a few percent at
+    worst - whereas subtracting an offset that is not there pushes the whole
+    scene down by 0.1 and takes the dark half of the green and red bands with
+    it. The two cases are two orders of magnitude apart (measured: 0.0-2.0% of
+    valid pixels against 9.1-62.8% over the 20 dev-set files), so:
+
+        apply the specification offset UNLESS doing so would make more than
+        `op.max_negative_fraction` of valid pixels negative.
+
+    The test is symmetric, which is what makes it safe to leave in the path: a
+    genuine archive product, offset not yet applied, has a small true negative
+    fraction and keeps its offset; if this backend ever stops pre-applying the
+    offset, the same line of code starts applying it again, with no edit here.
+
+    Returns (offset, processing_baseline, method, evidence). Every number the
+    decision rested on is in `evidence`, so a reader of run_report.json can
+    check the conclusion instead of trusting it.
+    """
+    spec_offset, baseline = baseline_offset(scene_names or [], op)
+    v = values[valid]
+    with np.errstate(invalid="ignore"):
+        as_is = float(np.mean(v / op.reflectance_scale < 0.0))
+        shifted = (as_is if spec_offset == 0.0
+                   else float(np.mean((v + spec_offset) / op.reflectance_scale < 0.0)))
+    evidence = {
+        "specification_offset": spec_offset,
+        "negative_fraction_with_offset": round(shifted, 4),
+        "negative_fraction_without_offset": round(as_is, 4),
+        "max_negative_fraction": op.max_negative_fraction,
+        "raw_min": round(float(np.min(v)), 1),
+        "raw_median": round(float(np.median(v)), 1),
+    }
+    if spec_offset == 0.0:
+        # This baseline never carried an offset; there is nothing to decide.
+        evidence["decided_by"] = "processing_baseline"
+        return 0.0, baseline, "dn_baseline", evidence
+    if shifted > op.max_negative_fraction:
+        evidence["decided_by"] = "negative_fraction"
+        return 0.0, baseline, "dn_offset_already_applied", evidence
+    evidence["decided_by"] = "negative_fraction"
+    return spec_offset, baseline, "dn_baseline", evidence
 
 
 def to_reflectance(values: np.ndarray, op: OpticalParams, *,
@@ -165,7 +228,9 @@ def to_reflectance(values: np.ndarray, op: OpticalParams, *,
 
       file_metadata       the GeoTIFF itself declares scale and offset. Believe it.
       dn_baseline         values are too large to be reflectance, so they are
-                          digital numbers: apply the baseline offset and scale.
+                          digital numbers: scale them, and apply the baseline
+                          offset if `dn_offset` finds it has not been applied
+                          already (`dn_offset_already_applied` if it has).
       already_reflectance values are already small. Leave them alone.
 
     Then refuse outright if the result is not plausible reflectance: a wrong
@@ -184,15 +249,16 @@ def to_reflectance(values: np.ndarray, op: OpticalParams, *,
         offset = float(file_offsets[0])
         out = values * scale + offset
         method, baseline = "file_metadata", None
+        decision = None
     elif median_before > op.assume_dn_above:
-        offset, baseline = baseline_offset(scene_names or [], op)
+        offset, baseline, method, decision = dn_offset(values, valid, op, scene_names)
         scale = op.reflectance_scale
         out = (values + offset) / scale
-        method = "dn_baseline"
     else:
         scale, offset, baseline = 1.0, 0.0, None
         out = values.astype(np.float64, copy=True)
         method = "already_reflectance"
+        decision = None
 
     lo, hi = op.plausible_reflectance_range
     with np.errstate(invalid="ignore"):
@@ -207,10 +273,13 @@ def to_reflectance(values: np.ndarray, op: OpticalParams, *,
         "median_after": round(float(np.median(out[valid])), 4),
         # Recorded so the scale/offset convention can be CHECKED against a real
         # scene rather than assumed. A large negative fraction is the signature
-        # of an offset applied twice.
+        # of an offset applied twice - which is what `offset_decision` below
+        # now tests for and rules out, per file, before this point.
         "negative_fraction": round(negative, 4),
         "implausible_fraction": round(implausible, 4),
     }
+    if decision is not None:
+        info["offset_decision"] = decision
     if implausible > op.max_implausible_fraction:
         raise OpticalError(
             f"Sentinel-2 reflectance is not plausible after conversion: "
@@ -359,22 +428,73 @@ def read_date(paths: dict[str, Path], grid: ingest.Grid, op: OpticalParams,
     return refl, scl, info
 
 
-def evidence_from_cache(cache: Path, grid: ingest.Grid, pair: S2Pair,
-                        op: OpticalParams) -> OpticalEvidence:
-    """Build the evidence for a chosen pair from already-downloaded files."""
+# OpticalParams fields consumed BEFORE build_evidence, i.e. baked into a read
+# pair: they choose the scenes and convert the digital numbers. A caller that
+# varies one of these must read the pair again, so eval/tune.py asserts its
+# optical grid touches none of them - the same contract as
+# run.PREPROCESS_FIELDS for a prepared radar scene.
+READ_FIELDS = (
+    "enabled", "search_days_before", "max_post_latency_days", "post_same_day_ok",
+    "min_aoi_coverage", "max_scene_cloud_cover", "reflectance_scale", "boa_add_offset",
+    "assume_dn_above", "plausible_reflectance_range", "max_implausible_fraction",
+    "max_negative_fraction",
+)
+
+
+@dataclass
+class ReadPair:
+    """Two cached Sentinel-2 dates, read and converted to reflectance.
+
+    Separated from the evidence so that a parameter search can try many index
+    thresholds against ONE read of the files: reading and converting four
+    GeoTIFFs costs seconds, computing two normalised indices costs
+    milliseconds. The fields baked in here are `READ_FIELDS`.
+    """
+
+    pair: S2Pair
+    pre_refl: np.ndarray
+    pre_scl: np.ndarray
+    post_refl: np.ndarray
+    post_scl: np.ndarray
+    conversion: dict
+    read_params: dict          # the READ_FIELDS values already applied
+
+
+def read_pair(cache: Path, grid: ingest.Grid, pair: S2Pair, op: OpticalParams) -> ReadPair:
+    """Read and convert both dates of a chosen pair from the cache. No network."""
     pre_refl, pre_scl, pre_info = read_date(
         s2_cache_paths(cache, pair.pre.day, grid.res), grid, op, pair.pre.names)
     post_refl, post_scl, post_info = read_date(
         s2_cache_paths(cache, pair.post.day, grid.res), grid, op, pair.post.names)
-    evidence = build_evidence(pre_refl, pre_scl, post_refl, post_scl, op,
-                              pre_day=pair.pre.day, post_day=pair.post.day)
-    evidence.stats["reflectance_conversion"] = {"pre": pre_info, "post": post_info}
+    return ReadPair(pair=pair, pre_refl=pre_refl, pre_scl=pre_scl, post_refl=post_refl,
+                    post_scl=post_scl,
+                    conversion={"pre": pre_info, "post": post_info},
+                    read_params={f: getattr(op, f) for f in READ_FIELDS})
+
+
+def evidence_from_pair(read: ReadPair, op: OpticalParams) -> OpticalEvidence:
+    """An already-read pair -> evidence, for one set of index thresholds."""
+    applied = {f: getattr(op, f) for f in READ_FIELDS}
+    if applied != read.read_params:
+        raise OpticalError(
+            f"these OpticalParams are baked into the read pair and cannot be changed "
+            f"without reading it again: pair has {read.read_params}, asked for {applied}")
+    pair = read.pair
+    evidence = build_evidence(read.pre_refl, read.pre_scl, read.post_refl, read.post_scl,
+                             op, pre_day=pair.pre.day, post_day=pair.post.day)
+    evidence.stats["reflectance_conversion"] = dict(read.conversion)
     evidence.stats["scenes"] = {"pre": list(pair.pre.names), "post": list(pair.post.names)}
     evidence.stats["catalogue_cloud_cover_percent"] = {
         "pre": round(pair.pre.cloud_cover, 1), "post": round(pair.post.cloud_cover, 1)}
     evidence.stats["post_latency_days"] = pair.post_latency_days
     evidence.stats["notes"] = list(pair.notes)
     return evidence
+
+
+def evidence_from_cache(cache: Path, grid: ingest.Grid, pair: S2Pair,
+                        op: OpticalParams) -> OpticalEvidence:
+    """Build the evidence for a chosen pair from already-downloaded files."""
+    return evidence_from_pair(read_pair(cache, grid, pair, op), op)
 
 
 def day_label(day: S2Day) -> str:

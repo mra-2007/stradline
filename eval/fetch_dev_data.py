@@ -66,21 +66,34 @@ GATE_PLAN_CONTROLS = (
 BYTES_PER_PIXEL_S1 = 9.8
 BYTES_PER_PIXEL_DEM = 4.5
 
-# Sentinel-2: DERIVED, NOT MEASURED. Half of BYTES_PER_PIXEL_S1 per band (that
-# figure covers two bands), plus a little for the single-byte class layer, which
-# compresses well. No Sentinel-2 file has been downloaded yet, so this is the
-# one part of the estimate not grounded in a real file. Recalibrate both numbers
-# from the first real download, and say which they are when quoting a size.
-BYTES_PER_PIXEL_S2_BAND = 4.9
-BYTES_PER_PIXEL_S2_SCL = 1.3
+# Sentinel-2: MEASURED, 2026-10-11, from the real gate-plan download - 40 files,
+# 454 MB, 87.4 Mpx-bands of reflectance and 16.6 Mpx of class layer. Pooled
+# bytes per pixel per band: 2.714 for reflectance (per-file range 2.00-2.94) and
+# 0.098 for SCL (0.03-0.17).
+#
+# These replace the DERIVED figures of 4.9 and 1.3 used before any Sentinel-2
+# file existed, which overestimated the download by 89% (857 MB predicted
+# against 454 MB actual). The derivation was wrong in an instructive way: it
+# scaled from Sentinel-1, whose two float bands of speckle are near-incompressible,
+# whereas optical reflectance over land is smooth and the LZW-compressed
+# GeoTIFF gets most of a 4-byte float back. The class layer compresses harder
+# still - it is one byte, mostly in large single-class runs.
+#
+# The spread is terrain and cloud: the densest files are the two cloudy Ecuador
+# dates (2.94), the lightest the small, uniform Norwegian valley (2.00). The
+# POOLED figure is used rather than the mean, so the estimate is right in total
+# even where it is wrong per event.
+BYTES_PER_PIXEL_S2_BAND = 2.7
+BYTES_PER_PIXEL_S2_SCL = 0.1
 S2_DATES_PER_EVENT = 2          # one clear pre-event date, one clear post-event
 
 ESTIMATE_CAVEAT = (
     "\nEstimate only. The Sentinel-1 and DEM bytes per pixel are MEASURED from the"
-    "\nruns/case_smoke cache; the Sentinel-2 figures are DERIVED from them and not yet"
-    "\nconfirmed against a real file. The acquisition count assumes every event finds a"
-    "\nfull stack, and the S2 column assumes a clear pair exists - pre-flight confirms"
-    "\nboth, and an event with no clear pair downloads no Sentinel-2 at all."
+    "\nruns/case_smoke cache, the Sentinel-2 figures from the 454 MB gate-plan download"
+    "\nof 2026-10-11 (pooled over 40 files; per-file density varies 2.0-2.9 B/px/band"
+    "\nwith cloud and terrain). The acquisition count assumes every event finds a full"
+    "\nstack, and the S2 column assumes a clear pair exists - pre-flight confirms both,"
+    "\nand an event with no clear pair downloads no Sentinel-2 at all."
 )
 
 def dev_run_params(coefficient: str = RunParams.backscatter_coefficient,

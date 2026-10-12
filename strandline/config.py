@@ -276,6 +276,20 @@ class OpticalParams:
     # actually applied is recorded in run_report.json.
     reflectance_scale: float = 10000.0
     boa_add_offset: float = -1000.0
+    # Whether the specification offset above still NEEDS applying is decided
+    # per file from the pixels, not assumed - see optical.dn_offset. A product
+    # that has already been offset-corrected (which is what the Copernicus Data
+    # Space openEO backend returns, measured 2026-10-11) would be shifted a
+    # second time, by a tenth of the whole reflectance range, and a normalised
+    # index cannot survive that. The test is that reflectance is a non-negative
+    # physical quantity: L2A over-correction pushes a SMALL share of dark
+    # pixels below zero, so an offset applied twice announces itself as a large
+    # one. Measured on the 20 dev-set files: 0.0-2.0% of valid pixels under the
+    # correct convention, 9.1-62.8% under the doubled one - two orders of
+    # magnitude apart, so this ceiling is not a close call. Set at the same
+    # 5% as max_implausible_fraction and from the same argument; not from any
+    # dev-event score (docs/tuning_log.md, 2026-10-11).
+    max_negative_fraction: float = 0.05
     # Values above this are digital numbers, not reflectance. Physical
     # reflectance cannot exceed ~1.6 even over snow and specular glint.
     assume_dn_above: float = 1.5

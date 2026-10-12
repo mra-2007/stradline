@@ -221,14 +221,77 @@ def test_an_implausible_conversion_is_refused():
                                file_scales=(1.0,), file_offsets=(0.0,))
 
 
-def test_conversion_records_the_negative_fraction_for_later_verification():
-    """A double-applied offset shows up as negative reflectance, so it is recorded."""
+def test_an_already_offset_product_does_not_get_the_offset_a_second_time():
+    """THE BUG THIS TEST EXISTS FOR (found on the first real download, 2026-10-11).
+
+    The Copernicus Data Space openEO backend returns L2A with BOA_ADD_OFFSET
+    already applied. Applying it again shifted every band down by 0.1 - a tenth
+    of the reflectance range - and drove 40-63% of valid pixels negative on all
+    20 dev-set files, while staying inside the plausible range, so nothing
+    refused it and both normalised indices were silently wrong.
+    """
     op = OpticalParams()
-    dn = np.full((1, 4, 4), 400.0)   # below the offset -> negative after conversion
-    out, info = optical.to_reflectance(
+    name = "S2A_MSIL2A_20240710T102021_N0510_R022_T32TPS_x.SAFE"
+    # A dark-ish real scene, already offset-corrected: green 0.05, SWIR 0.02.
+    dn = np.stack([np.full((8, 8), 500.0), np.full((8, 8), 200.0)])
+    out, info = optical.to_reflectance(dn, op, scene_names=[name])
+
+    assert info["method"] == "dn_offset_already_applied"
+    assert info["offset"] == 0.0
+    assert info["negative_fraction"] == 0.0
+    assert out[0, 0, 0] == pytest.approx(0.05)
+    # The processing baseline is still reported: the offset exists for this
+    # product, it just does not need applying again.
+    assert info["processing_baseline"] == 510
+    d = info["offset_decision"]
+    assert d["decided_by"] == "negative_fraction"
+    assert d["specification_offset"] == -1000.0
+    assert d["negative_fraction_with_offset"] == 1.0
+    assert d["negative_fraction_without_offset"] == 0.0
+
+
+def test_a_genuine_archive_product_still_gets_its_offset():
+    """The test is symmetric: it must not break the convention it was added for.
+
+    An archive L2A product that has NOT been offset-corrected has only the
+    small true negative fraction of atmospheric over-correction, so the
+    specification offset is applied exactly as before.
+    """
+    op = OpticalParams()
+    name = "S2A_MSIL2A_20240710T102021_N0510_R022_T32TPS_x.SAFE"
+    rng = np.random.default_rng(0)
+    # Reflectance 0.00-0.40 stored as DN + 1000, i.e. 1000..5000.
+    refl = rng.uniform(0.0, 0.40, size=(2, 64, 64))
+    out, info = optical.to_reflectance(refl * 10_000.0 + 1_000.0, op, scene_names=[name])
+
+    assert info["method"] == "dn_baseline"
+    assert info["offset"] == -1000.0
+    assert np.allclose(out, refl)
+    assert info["offset_decision"]["negative_fraction_with_offset"] == 0.0
+
+
+def test_the_offset_decision_records_every_number_it_rested_on():
+    """Rule 6: a reader of run_report.json checks the conclusion, not trusts it."""
+    op = OpticalParams()
+    dn = np.stack([np.full((4, 4), 500.0)])
+    _, info = optical.to_reflectance(
         dn, op, scene_names=["S2A_MSIL2A_20240710T102021_N0510_R022_T32TPS_x.SAFE"])
-    assert info["negative_fraction"] == 1.0
-    assert out.max() < 0
+    assert set(info["offset_decision"]) == {
+        "specification_offset", "negative_fraction_with_offset",
+        "negative_fraction_without_offset", "max_negative_fraction",
+        "raw_min", "raw_median", "decided_by"}
+    assert info["offset_decision"]["max_negative_fraction"] == op.max_negative_fraction
+
+
+def test_an_older_baseline_decides_on_the_baseline_alone():
+    """Before baseline 04.00 there is no offset to apply or to double-apply."""
+    op = OpticalParams()
+    dn = np.full((1, 4, 4), 500.0)
+    _, info = optical.to_reflectance(
+        dn, op, scene_names=["S2A_MSIL2A_20200710T102021_N0214_R022_T32TPS_x.SAFE"])
+    assert info["offset"] == 0.0
+    assert info["offset_decision"]["decided_by"] == "processing_baseline"
+    assert info["method"] == "dn_baseline"
 
 
 def test_all_absent_reflectance_is_refused():

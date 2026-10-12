@@ -46,8 +46,15 @@ import yaml
 
 from eval import scoreboard as sb
 from eval.fetch_dev_data import EVAL_RUNS, cache_dir, coverage, dev_run_params, select_events
-from strandline import ingest, outputs, run as pipeline
-from strandline.config import CLASS_DEBRIS, DEV_N_PRE, DetectParams, RunParams
+from strandline import ingest, optical, outputs, run as pipeline
+from strandline.config import (
+    CLASS_DEBRIS,
+    DEV_N_PRE,
+    FUSION_OFF,
+    DetectParams,
+    OpticalParams,
+    RunParams,
+)
 from validation import compare
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -141,25 +148,48 @@ def event_day(event: dict) -> date:
 
 
 def missing_cache(event: dict, rp: RunParams, runs_root: Path | None = None,
-                  choice=None) -> list[Path]:
-    """Which rasters this event's run needs and does not have."""
+                  choice=None, op: OpticalParams | None = None,
+                  pair=None) -> list[Path]:
+    """Which rasters this event's run needs and does not have.
+
+    With `op`, the chosen Sentinel-2 pair counts too, so an optical scoring run
+    refuses with the fetch command rather than opening an interactive login
+    mid-way through a grid search. `pair=None` and `op` given means the pair is
+    pre-flighted here; pass it in when the caller already has it.
+    """
     bbox = event_bbox(event)
     if choice is None:
         choice = pipeline.preflight(bbox, event_day(event), rp, log=lambda *_: None)
     if choice is None:
         raise pipeline.PipelineError(
             f"{event['name']}: no usable same-track pair; the event cannot be scored.")
+    cache = cache_dir(str(event["name"]), runs_root)
     grid = ingest.make_grid(bbox, rp.resolution_m)
-    paths = pipeline.scene_cache_paths(choice, cache_dir(str(event["name"]), runs_root),
-                                       grid.res, rp.backscatter_coefficient,
+    paths = pipeline.scene_cache_paths(choice, cache, grid.res, rp.backscatter_coefficient,
                                        rp.elevation_model)
-    return [p for p in list(paths["s1"].values()) + [paths["dem"]] if not p.exists()]
+    gaps = [p for p in list(paths["s1"].values()) + [paths["dem"]] if not p.exists()]
+    if op is not None and op.enabled:
+        if pair is None:
+            pair = pipeline.optical_preflight(bbox, event_day(event), op,
+                                              log=lambda *_: None)
+        # No clear pair is not a gap: the event is scored radar-only, which is
+        # the honest outcome under cloud, not a missing download.
+        for day in ([pair.pre.day, pair.post.day] if pair is not None else []):
+            gaps += [p for p in optical.s2_cache_paths(cache, day, grid.res).values()
+                     if not p.exists()]
+    return gaps
 
 
 def prepare_event(event: dict, rp: RunParams, dp: DetectParams,
                   runs_root: Path | None = None, allow_download: bool = False,
-                  max_pixels: int = MAX_SCENE_PIXELS, log=print) -> pipeline.PreparedScene:
-    """Pre-flight, read the cache and build the prepared scene. No downloads."""
+                  max_pixels: int = MAX_SCENE_PIXELS, op: OpticalParams | None = None,
+                  log=print) -> pipeline.PreparedScene:
+    """Pre-flight, read the cache and build the prepared scene. No downloads.
+
+    `op=None` (the default) is a radar-only preparation: the Sentinel-2 stage is
+    not entered at all, which is what every already-recorded dev score was
+    produced with, so their params_hash stays reproducible.
+    """
     bbox = event_bbox(event)
     grid = ingest.make_grid(bbox, rp.resolution_m)
     n_px = grid.width * grid.height
@@ -174,19 +204,51 @@ def prepare_event(event: dict, rp: RunParams, dp: DetectParams,
         raise pipeline.PipelineError(
             f"{event['name']}: no usable same-track pair with n_pre={rp.n_pre}.")
     if not allow_download:
-        gaps = missing_cache(event, rp, runs_root, choice)
+        gaps = missing_cache(event, rp, runs_root, choice, op)
         if gaps:
             raise pipeline.PipelineError(
                 f"{event['name']}: {len(gaps)} cached raster(s) missing, first "
                 f"{gaps[0].name}. Fetch them first:\n"
-                f"  venv/Scripts/python.exe -m eval.fetch_dev_data --events {event['name']}")
+                f"  venv/Scripts/python.exe -m eval.fetch_dev_data --events {event['name']}"
+                + (" --optical" if op is not None and op.enabled else ""))
     return pipeline.prepare(bbox, event_day(event), cache_dir(str(event["name"]), runs_root),
-                            rp, dp, choice=choice, log=log)
+                            rp, dp, choice=choice, op=op, log=log)
+
+
+def optical_provenance(scene: pipeline.PreparedScene) -> dict:
+    """What Sentinel-2 contributed to this score, whether or not it contributed.
+
+    Always written, so no score file can be silent about optical: `status` says
+    what the stage did, and for a refusal the clear fraction says how much of the
+    area optical could actually see. A radar-only preparation records
+    `status: disabled`, which is exactly what it was.
+    """
+    report = dict(scene.optical_report)
+    op = scene.optical_params
+    out = {
+        "status": report.get("status"),
+        "enabled": bool(op is not None and op.enabled),
+        "fusion": (None if op is None else op.fusion),
+        "fused_into_map": scene.optical_evidence is not None
+                          and scene.optical_evidence.fusion != FUSION_OFF,
+        "message": report.get("message"),
+    }
+    evidence = report.get("evidence") or {}
+    for key in ("clear_fraction_pre", "clear_fraction_post", "clear_fraction_pair",
+                "pre_day", "post_day", "post_latency_days",
+                "optical_water_candidate_pixels", "optical_debris_candidate_pixels"):
+        if key in evidence:
+            out[key] = evidence[key]
+    if "reflectance_conversion" in evidence:
+        out["reflectance_conversion"] = evidence["reflectance_conversion"]
+    if op is not None:
+        out["parameters"] = asdict(op)
+    return out
 
 
 def score_with_scene(event: dict, scene: pipeline.PreparedScene, dp: DetectParams,
                      tolerance_px: int = 1, out_dir: Path | None = None,
-                     log=print) -> EventScore:
+                     op: OpticalParams | None = None, log=print) -> EventScore:
     """Classify an already-prepared scene and score it. The cheap stage.
 
     THE PRIMARY METRIC is flood-affected area: our water OR debris classes,
@@ -236,6 +298,7 @@ def score_with_scene(event: dict, scene: pipeline.PreparedScene, dp: DetectParam
                             if k.startswith("water_threshold")},
         "areas_ha": outputs.class_areas_ha(result.classes, grid.res),
         "parameters": {"detect": asdict(dp), "run": asdict(rp)},
+        "optical": optical_provenance(scene),
         "scored_s": None,
     }
 
@@ -292,7 +355,7 @@ def score_with_scene(event: dict, scene: pipeline.PreparedScene, dp: DetectParam
 
     provenance["scored_s"] = round(time.time() - t0, 1)
     score = EventScore(event=str(event["name"]), kind=kind,
-                       params_hash=pipeline.params_hash(dp, rp),
+                       params_hash=pipeline.params_hash(dp, rp, op),
                        metrics={k: metrics[k] for k in METRIC_COLUMNS if k in metrics},
                        provenance=provenance)
     if out_dir is not None:
@@ -307,18 +370,20 @@ def score_with_scene(event: dict, scene: pipeline.PreparedScene, dp: DetectParam
 def score_event(event: dict, dp: DetectParams, rp: RunParams, runs_root: Path | None = None,
                 *, tolerance_px: int = 1, allow_download: bool = False, reuse: bool = True,
                 max_pixels: int = MAX_SCENE_PIXELS, out_dir: Path | None = None,
-                log=print) -> EventScore:
+                op: OpticalParams | None = None, log=print) -> EventScore:
     """One event, one parameter set, from the cache. Errors are returned, not raised."""
     name = str(event["name"])
-    phash = pipeline.params_hash(dp, rp)
+    phash = pipeline.params_hash(dp, rp, op)
     if reuse and out_dir is None:
         cached = load_score(name, phash, runs_root)
         if cached is not None and cached.ok:
             log(f"  {name}: score {phash} from cache")
             return cached
     try:
-        scene = prepare_event(event, rp, dp, runs_root, allow_download, max_pixels, log=log)
-        score = score_with_scene(event, scene, dp, tolerance_px, out_dir=out_dir, log=log)
+        scene = prepare_event(event, rp, dp, runs_root, allow_download, max_pixels, op=op,
+                              log=log)
+        score = score_with_scene(event, scene, dp, tolerance_px, out_dir=out_dir, op=op,
+                                 log=log)
     except KeyboardInterrupt:
         raise
     # Deliberately broad: an orchestrator must survive one bad event (a missing

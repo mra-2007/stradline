@@ -311,6 +311,17 @@ optical and the row is radar-only.
 No-flood controls, false flood fraction: Punakha 0.0022, Konjic 0.0011, Ringebu 0.0014,
 Poza Honda 0.0048. Coverage: 6/6 gate-eligible floods, 4 of 8 declared controls.
 
+> **Read the control numbers with their denominator.** The gated metric divides by the whole
+> scoring domain, which deliberately includes terrain-excluded ground (a reference flood there
+> would be a miss we must be charged for, so narrowing it would be Rule 3.2). On a control there
+> is no reference to miss, so on a Himalayan AOI that is 95% terrain-excluded the same false
+> pixels are divided by twenty. Over the ground the detector could actually classify the four
+> controls read **4.37%, 1.02%, 0.68% and 1.64%** — recorded as
+> `false_flood_fraction_analysed_area` in each control's score file, reported, never gated. The
+> Punakha figure is 0.05% with fusion `off`: optical deposit fusion raised it by a factor of 85
+> while the gated number moved 0.0000 → 0.0022. See `docs/tuning_log.md`, 2026-10-12,
+> "Class-count audit".
+
 ### Gate status
 
 | Gate | Measured | Target | Status |
@@ -398,7 +409,7 @@ all read NO DATA — not started.
   smallest references (0.023–0.134% of the AOI), so the evidence cannot say whether the detector
   fails on steep ground or on tiny targets. Both readings are stated, neither is claimed.
 - **Radar geometry.** Layover and shadow on steep slopes; the SAR mask band stays off until its encoding is verified.
-- **Debris ambiguity.** Brightening can also come from vegetation or structural change, hence "possible debris". Measured on EMSR770: the current debris channel covers 3.8% of that AOI at precision 0.0062 against the expert mass-movement class — far too permissive, see `docs/tuning_log.md`.
+- **Debris is the weakest channel in the pipeline, and its measured precision is 0.0.** Brightening can also come from vegetation or structural change, hence "possible debris". The channel was tightened on 2026-10-11 after the old one covered 3.8% of an AOI at precision 0.0062. The class-count audit of 2026-10-12 then measured what survives: **296.8 ha across the whole dev set, 96% of it on a dry no-flood control** (7,111 of 7,420 pixels, from the optical deposit channel on a winter→spring pair, i.e. phenology and snowmelt). On `bosnia_konjic_2024`, the only dev event with an expert mass-movement reference (23.28 ha), the shipped configuration predicts 18 debris pixels of which **0 are correct** — precision 0.0, recall 0.0. The radar debris channel alone produces 107 pixels on one of ten events. Debris is inside the scored quantity (`FLOOD_AFFECTED_CLASSES`), so treat any debris hectare figure as unvalidated and say so; the flood-water channel carries the map.
 - **Rough water — addressed, not solved.** The original `darkening` method assumed open water is dark; in a steep gorge a turbulent, sediment-laden flood is a rough scatterer and brightens instead, and measured on EMSR770 **0.0% of the expert flood extent passed the darkness gate**. The default is now `rough_water`, which accepts a coherent change of either sign on the valley floor and takes darkness only as the high-confidence test. That changed the numbers decisively (Punakha 0.025 → 0.118, Poza Honda 0.125 → 0.555 tolerant F1, and the binding Norwegian control from 4.9% to 0.14% false flood) and it is still far from the gate: the sign of the change was not the only problem.
 - **Optical evidence is measured now, and it helps where help was least needed.** Fusing
   Sentinel-2 gains **+0.0098** mean tolerant F1 held out, but **+0.0548 of the +0.0587 summed

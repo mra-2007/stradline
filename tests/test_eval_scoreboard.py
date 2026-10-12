@@ -286,16 +286,54 @@ def test_the_union_reference_is_at_least_as_large_as_water_alone(synthetic):
             >= score.provenance["water_only"]["reference_ha"])
 
 
-def test_a_control_false_flood_fraction_uses_the_same_union(synthetic):
-    """So the 1% ceiling constrains the debris channel too."""
+def _control_of(synthetic) -> dict:
     control = {**synthetic["event"], "name": "syn_control", "kind": "control",
                "independent_reference": None}
     control.pop("reference")
-    score = rs.score_with_scene(control, synthetic["scene"], DetectParams(),
+    return control
+
+
+def test_a_control_false_flood_fraction_uses_the_same_union(synthetic):
+    """So the 1% ceiling constrains the debris channel too."""
+    score = rs.score_with_scene(_control_of(synthetic), synthetic["scene"], DetectParams(),
                                 log=lambda *a: None)
     union = float(score.metrics["false_flood_fraction"])
     water = float(score.provenance["false_flood_fraction_water_only"])
     assert union >= water, "the gated control metric must not be the narrower one"
+
+
+def test_a_control_also_records_its_false_flood_rate_over_analysed_ground(synthetic):
+    """The gated denominator includes terrain-excluded ground; this one does not.
+
+    Both numbers are true and answer different questions, and the difference is
+    not academic: measured on 2026-10-12 the Bhutan control reads 0.0022 gated
+    and 4.37% over the ground the detector could actually classify, because
+    ~95% of that AOI is terrain-excluded and sits in the gated denominator. The
+    gate keeps its declared metric (narrowing it would be Rule 3.2); this is
+    recorded beside it so a diluted rate cannot be read as a low one.
+    """
+    score = rs.score_with_scene(_control_of(synthetic), synthetic["scene"], DetectParams(),
+                                log=lambda *a: None)
+    p = score.provenance
+    assert "false_flood_fraction_analysed_area" in p
+    assert p["analysed_pixels"] + p["terrain_excluded_pixels"] == p["domain_pixels"]
+    assert 0.0 <= p["terrain_excluded_fraction_of_domain"] <= 1.0
+
+    gated = float(score.metrics["false_flood_fraction"])
+    analysed = p["false_flood_fraction_analysed_area"]
+    if p["terrain_excluded_pixels"] > 0 and gated > 0:
+        assert analysed is not None and analysed >= gated, (
+            "removing terrain-excluded ground from the denominator can only raise the rate")
+    # It is REPORTED, never gated: the gate must keep reading the declared metric.
+    assert "false_flood_fraction_analysed_area" not in score.metrics
+    assert "false_flood_fraction_analysed_area" not in rs.METRIC_COLUMNS
+
+
+def test_the_analysed_area_rate_is_not_computed_for_flood_events(synthetic):
+    """It is a control diagnostic. A flood event's recall needs the wide domain."""
+    score = rs.score_with_scene(synthetic["event"], synthetic["scene"], DetectParams(),
+                                log=lambda *a: None)
+    assert "false_flood_fraction_analysed_area" not in score.provenance
 
 
 # --- rows and the column contract --------------------------------------------

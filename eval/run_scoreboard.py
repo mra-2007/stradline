@@ -49,6 +49,7 @@ from eval.fetch_dev_data import EVAL_RUNS, cache_dir, coverage, dev_run_params, 
 from strandline import ingest, optical, outputs, run as pipeline
 from strandline.config import (
     CLASS_DEBRIS,
+    CLASS_TERRAIN_EXCLUDED,
     DEV_N_PRE,
     FUSION_OFF,
     DetectParams,
@@ -307,6 +308,28 @@ def score_with_scene(event: dict, scene: pipeline.PreparedScene, dp: DetectParam
         metrics["false_flood_fraction"] = compare.false_flood_fraction(affected, domain)
         provenance["false_flood_fraction_water_only"] = compare.false_flood_fraction(
             water_pred, domain)
+        # REPORTED ONLY, never gated: the same false pixels over the ground the
+        # detector could actually classify.
+        #
+        # The gated metric's denominator is the whole scoring domain, which
+        # deliberately includes terrain-excluded pixels (validation/compare.py:
+        # scoring_domain) because on a FLOOD event a reference flood there is a
+        # miss we must be charged for, and narrowing it would be Rule 3.2. On a
+        # CONTROL the same choice cuts the other way: a Himalayan AOI is ~95%
+        # terrain-excluded, so false positives on the remaining 5% are divided
+        # by twenty before they meet the 1% ceiling. Measured on 2026-10-12,
+        # the Bhutan control reads 0.0022 gated and 4.37% over analysed ground.
+        #
+        # Both numbers are true and they answer different questions. The gate
+        # keeps its declared metric; this one is recorded beside it so a reader
+        # of a control row cannot mistake a diluted rate for a low one.
+        analysed = domain & (result.classes != CLASS_TERRAIN_EXCLUDED)
+        provenance["analysed_pixels"] = int(analysed.sum())
+        provenance["terrain_excluded_pixels"] = int(domain.sum()) - int(analysed.sum())
+        provenance["terrain_excluded_fraction_of_domain"] = round(
+            (int(domain.sum()) - int(analysed.sum())) / max(int(domain.sum()), 1), 6)
+        provenance["false_flood_fraction_analysed_area"] = compare.false_flood_fraction(
+            affected, analysed)
     else:
         ref_path = ROOT / str(event["reference"])
         if not ref_path.exists():

@@ -1298,3 +1298,149 @@ they quote.
   `tests/test_params_hash_reproducible.py` now accepts a hash reachable from the
   radar grid **crossed with** the optical grid, and separately asserts that a
   published optical row implies a recorded verdict of KEEP.
+
+---
+
+## 2026-10-12 — Class-count audit before the freeze: debris is reachable, and almost all of it is wrong
+
+A pre-freeze sanity check on the dev events only: the pixel count of every
+output class, for every event and control in the latest scoreboard run
+(`run_id 20261012T114247Z`). Counts are `areas_ha / 0.04` from each published
+score file under `runs/eval/<event>/scores/<hash>.json`; a class absent from
+`areas_ha` has zero pixels.
+
+| event | kind | nodata | no change | flood high | flood med | **debris** | perm water | terrain excl | total |
+|---|---|---|---|---|---|---|---|---|---|
+| `bhutan_punakha_control_2024` | control | 0 | 163,910 | 4 | 484 | **7,111** | 2,366 | 3,262,316 | 3,436,191 |
+| `bosnia_konjic_control_2024` | control | 13 | 56,951 | 3 | 874 | **16** | 29,661 | 708,068 | 795,586 |
+| `ecuador_poza_honda_control_2024` | control | 3 | 465,650 | 2,927 | 4,853 | **0** | 2,202 | 1,140,375 | 1,616,010 |
+| `norway_ringebu_control_2023` | control | 66 | 194,527 | 194 | 1,353 | **0** | 31,479 | 843,381 | 1,071,000 |
+| `bhutan_punakha_2024` | flood | 1 | 168,172 | 460 | 422 | **275** | 4,546 | 3,262,315 | 3,436,191 |
+| `bosnia_konjic_2024` | flood | 19 | 62,390 | 7 | 1,032 | **18** | 24,069 | 708,051 | 795,586 |
+| `ecuador_poza_honda_2025` | flood | 2 | 468,291 | 1,535 | 2,929 | **0** | 2,876 | 1,140,377 | 1,616,010 |
+| `norway_ringebu_2023` | flood | 21 | 174,329 | 16,332 | 3,297 | **0** | 33,640 | 843,381 | 1,071,000 |
+| `norway_selsverket_2023` | flood | 0 | 46,190 | 1,499 | 1,547 | **0** | 3,435 | 255,529 | 308,200 |
+| `pakistan_larkana_2022` | flood | 38 | 911,054 | 915,198 | 423,179 | **0** | 220,696 | 0 | 2,470,165 |
+| **total** | | 163 | 2,711,464 | 938,159 | 439,970 | **7,420** | 354,970 | 12,163,793 | 16,615,939 |
+
+### Is debris zero everywhere? No — and the question it was asked to settle has a worse answer
+
+Debris is non-zero on **4 of 10** (7,420 px = 296.8 ha) and zero on 6, so the
+conditional does not arise and there is no dead-code question to answer. The
+channel is reachable, and the suite already proves it mechanically:
+`tests/test_detect.py::test_debris_detected` requires recall >= 0.9 on the
+synthetic debris fan under the shipped parameters, and
+`tests/test_detect_modes.py::test_the_debris_fan_is_still_found_somewhere_in_the_union`
+guards the same thing against further tightening.
+
+**Working as intended, then.** But splitting the 7,420 pixels by the sensor that
+produced them is the finding, and it is not comfortable. The same SAR point
+scored three ways:
+
+| event | radar-only | fusion `off` | fusion `union` | optical |
+|---|---|---|---|---|
+| `bhutan_punakha_2024` | 107 | 107 | 275 | used |
+| `bosnia_konjic_2024` | 0 | 0 | 18 | used |
+| `norway_selsverket_2023` | 0 | 0 | 0 | used |
+| `pakistan_larkana_2022` | 0 | 0 | 0 | used |
+| `ecuador_poza_honda_2025` | 0 | 0 | 0 | refused |
+| `norway_ringebu_2023` | 0 | 0 | 0 | refused |
+| `bhutan_punakha_control_2024` | 0 | 0 | **7,111** | used |
+| `bosnia_konjic_control_2024` | 0 | 0 | 16 | used |
+| `ecuador_poza_honda_control_2024` | 0 | 0 | 0 | refused |
+| `norway_ringebu_control_2023` | 0 | 0 | 0 | refused |
+| **total** | **107** | **107** | **7,420** | |
+
+Three things follow.
+
+**1. The SAR debris channel is very nearly vacuous.** 107 pixels (4.28 ha) on
+one of ten events, out of 16.6 million analysed. It is not dead — the terrain
+annulus it needs (`zone_debris & ~zone_water`, i.e. HAND 20-35 m, or HAND <= 20 m
+with slope 15-30 deg) is reachable within 3 px of a drainage line, and Punakha
+proves it — but it is one deliberate tightening away from never firing. That
+tightening was the right call and is recorded above (2026-10-11: the old channel
+covered 3.8% of an AOI at precision 0.0062); the point here is that what
+survives it is 107 pixels, and no gate would notice if it became zero.
+
+**2. 96% of all dev-set debris is on a no-flood CONTROL.** 7,111 of 7,420
+pixels are `bhutan_punakha_control_2024`, produced entirely by the optical
+deposit channel on a 2024-01-14 -> 2024-03-19 pair. Winter to spring, nine
+weeks apart: NDVI falls and SWIR rises across a Himalayan AOI because of
+phenology and snowmelt, which is precisely what `ndvi_drop_min` exists to
+exclude. The tuner chose the stricter of its two candidate values (0.20 over
+0.10) on all six folds, and 7,111 false pixels survive it.
+
+**3. On the only event with an expert debris reference, the debris class has
+never been right about a single pixel.** `bosnia_konjic_2024` is the one dev
+event whose `reference_classes` declares a debris class ("6-Mass Movement",
+23.28 ha, 582 reference pixels). From `provenance.debris_only` in its score
+files:
+
+| configuration | predicted | tp | fp | fn | precision | recall |
+|---|---|---|---|---|---|---|
+| radar-only `d4f9b1791c82` | 0 | 0 | 0 | 582 | — (undefined) | 0.0 |
+| fusion `off` `4f9c8aa0f92f` | 0 | 0 | 0 | 582 | — (undefined) | 0.0 |
+| fusion `union` `63a6d284bc4e` | 18 | **0** | **18** | 582 | **0.0** | **0.0** |
+
+Fusion took the debris class from "predicts nothing" to "predicts 18 pixels,
+all of them wrong". The debris class is inside the **scored quantity**
+(`FLOOD_AFFECTED_CLASSES`), so this is not a cosmetic layer.
+
+### A related measurement problem the audit exposed, reported not fixed
+
+The control ceiling is diluted by terrain-excluded ground, and on steep AOIs
+the dilution is large. `validation.compare.scoring_domain` deliberately
+includes terrain-excluded pixels, and its docstring justifies that for a FLOOD
+event: a reference flood there is a miss we must be charged for, and narrowing
+the domain is the "shrinking the scoring area" Rule 3.2 forbids. On a CONTROL
+the same choice cuts the other way — there is no reference to miss, so the
+excluded mass only pads the denominator:
+
+| control | affected px | gated ffr (whole domain) | analysed px | **ffr over analysed ground** |
+|---|---|---|---|---|
+| `bhutan_punakha_control_2024` | 7,599 | 0.0022 | 173,875 | **4.37%** |
+| `bosnia_konjic_control_2024` | 893 | 0.0011 | 87,505 | **1.02%** |
+| `ecuador_poza_honda_control_2024` | 7,780 | 0.0048 | 475,632 | 1.64% |
+| `norway_ringebu_control_2023` | 1,547 | 0.0014 | 227,553 | 0.68% |
+
+With fusion `off` the first two read **0.05%** and **0.03%** over analysed
+ground (89 and 26 px). So fusion raised the Bhutan control's false-flood rate
+over classifiable ground by a factor of **85** (89 -> 7,599 px), while the gated
+metric moved 0.0000 -> 0.0022 and passed the 1% ceiling with room to spare,
+because 95% of that AOI is terrain-excluded and sits in the denominator.
+
+**Both numbers are true and they answer different questions.** Nothing here is
+a reason to change the gate: `eval/gates.yaml` is human-owned, the metric and
+the domain were declared in advance, and redefining either after seeing a
+result is exactly Rule 3.2. What was wrong was that only the flattering number
+was recorded. So `eval/run_scoreboard.py` now writes, for every control and
+**reported only, never gated**: `analysed_pixels`,
+`terrain_excluded_pixels`, `terrain_excluded_fraction_of_domain` and
+`false_flood_fraction_analysed_area`. The ten published score files were
+re-scored to carry it and **every gated metric came out byte-identical**, which
+also re-confirms the optical path is reproducible.
+
+### Verdict: no bug, no parameter changed, and one judgement call left to the human
+
+- The debris logic matches its declared design. Reachable, tested, extremely
+  conservative on radar.
+- The control metric is as declared and documented. Not touched.
+- No parameter was changed. The only code change is the reported-only control
+  diagnostic above, plus its tests
+  (`tests/test_eval_scoreboard.py::test_a_control_also_records_its_false_flood_
+  rate_over_analysed_ground`, and a companion asserting a flood event does not
+  get it, because a flood event's recall needs the wide domain).
+
+**What a human should decide, with this evidence in front of them:** whether the
+debris class belongs inside the scored quantity at all while its only
+measured precision against an expert debris reference is 0.0, and whether
+optical *deposit* fusion should have been adopted on a rule whose control
+criterion is diluted twentyfold on the steepest AOI in the set. The adoption
+followed the declared rule exactly and the rule was the right shape; the
+evidence now says the deposit channel is the weakest thing in the pipeline. I
+am not reopening it unilaterally — flood mapping is frozen and this is a
+parameter-and-metric question, not a bug.
+
+The honest one-line summary for Q&A: **the flood-water channel carries the
+map; the debris channel contributes 296.8 ha across the dev set, 96% of it on
+a dry control, and 0.0 precision where ground truth exists.**

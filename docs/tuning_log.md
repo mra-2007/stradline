@@ -1830,3 +1830,86 @@ overlay and the cut-off analysis will consume a flood extent that INCLUDES a
 debris class of measured precision 0.0. That constraint must be carried with
 every number they produce, and it is the single most important thing for a
 reader of those modules to know.
+
+---
+
+## 2026-10-12 — DECLARED (after the refusal, and labelled as such): the Pareto-dominance rule
+
+**This rule was written AFTER the stricter criterion found no feasible point.**
+That is stated first because it is the thing a reader must weigh. Every other
+rule in this log was fixed before the numbers it judges existed; this one was
+not, and no amount of careful wording changes that. What can be said in its
+favour is below, and so can what cannot.
+
+The human declared it, in these words, and this entry is committed **before the
+rule is implemented or run**:
+
+> When no grid point passes both control ceilings, adopt the point that in every
+> leave-one-event-out fold is at least as good as the incumbent on mean tolerant
+> F1 and on every control's false-flood fraction (both the gated and the
+> analysed-area one), and strictly better on at least one; ties go to fewer
+> false alarms.
+
+### What it says, precisely enough to implement
+
+The rule fires **only** when the ordinary feasible-or-nothing selection has
+already failed. If any point passes both ceilings, that selection stands and
+this rule is never consulted.
+
+A candidate point `P` is adopted in place of the incumbent `I` only if, **in
+every one of the six leave-one-event-out folds**, with both points crossed with
+that fold's own SAR point:
+
+| quantity | requirement |
+|---|---|
+| mean boundary-tolerant F1 over that fold's **training** events | `P >= I` |
+| `false_flood_fraction` on **every** control | `P <= I` |
+| `false_flood_fraction_analysed_area` on **every** control | `P <= I` |
+
+and `P` is strictly better than `I` on at least one of those quantities in at
+least one fold. No quantity may be traded against another: a candidate that
+gains F1 anywhere while worsening any control anywhere is rejected, in that
+fold, and therefore altogether.
+
+The F1 comparison is on each fold's **training** events, not its held-out one.
+That is deliberate and it is the correction forced by `/audit` earlier today:
+comparing held-out scores to choose between candidates is selection on held-out
+data. The held-out numbers are reported afterwards, as the result.
+
+Ties, in order: **fewer false alarms first** — the lowest worst-case
+analysed-area false-flood fraction across the controls, then the lowest
+worst-case gated fraction, then the smallest total flood-affected pixel count on
+the controls. Only if candidates are identical on all three does grid order
+decide, as everywhere else in this project.
+
+### Why this is weaker evidence than the rules above it, stated plainly
+
+- **It was written after the result.** A rule chosen with the candidate table in
+  view can be shaped, consciously or not, to admit a particular candidate. The
+  honest mitigation is not a claim of good faith but the rule's SHAPE: Pareto
+  dominance has no free parameters. There is no threshold to tune, no weighting
+  between F1 and false alarms, and no event that can be traded away. It either
+  dominates everywhere or it is rejected.
+- **It compares against the incumbent, not against an absolute standard.** So it
+  can only ever move the project to a configuration that is better on every
+  measured axis. It cannot license a trade-off, and it cannot license a
+  regression.
+- **It does not make anything feasible.** This must not be mistaken for passing
+  the stricter criterion. Whatever is adopted, `ecuador_poza_honda_control_2024`
+  stays at **1.64%** false flood over analysed ground against a declared 1%
+  ceiling, because that control's false pixels are Sentinel-1 flood water and no
+  point on the grid changes them. **The stricter criterion remains FAILED and
+  that remains an open issue**, to be reported in the README, in the report and
+  in Q&A for as long as it is true.
+
+### How it is applied
+
+Through `eval/tune.py`, not by hand: `dominance_candidates` and
+`select_by_dominance`, run as part of `eval.tune --plan gates --optical`, which
+first confirms that the feasible-or-nothing selection found nothing and only
+then consults this rule. The incumbent is read from the shipped `config.py`
+defaults rather than written down here, so the comparison is always against what
+the project actually ships; the code asserts the incumbent is a point of the
+declared grid. The per-fold comparison table for every candidate is written to
+`eval/chosen_params.json` under `optical_pass.dominance`, so the verdict can be
+checked rather than taken.

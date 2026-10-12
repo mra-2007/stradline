@@ -67,7 +67,7 @@ BYTES_PER_PIXEL_S1 = 9.8
 BYTES_PER_PIXEL_DEM = 4.5
 
 # Sentinel-2: MEASURED, 2026-10-11, from the real gate-plan download - 40 files,
-# 454 MB, 87.4 Mpx-bands of reflectance and 16.6 Mpx of class layer. Pooled
+# 454 MB, 166.2 Mpx-bands of reflectance and 33.2 Mpx of class layer. Pooled
 # bytes per pixel per band: 2.714 for reflectance (per-file range 2.00-2.94) and
 # 0.098 for SCL (0.03-0.17).
 #

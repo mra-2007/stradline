@@ -49,7 +49,13 @@ from pathlib import Path
 import yaml
 
 from eval import scoreboard as sb
-from eval.fetch_dev_data import EVAL_RUNS, coverage, dev_run_params, select_events
+from eval.fetch_dev_data import (
+    EVAL_RUNS,
+    cache_dir,
+    coverage,
+    dev_run_params,
+    select_events,
+)
 from eval.run_scoreboard import (
     EventScore,
     _rel,
@@ -63,10 +69,13 @@ from eval.run_scoreboard import (
     write_rows,
     MAX_SCENE_PIXELS,
 )
-from strandline import run as pipeline
+from strandline import optical, run as pipeline
 from strandline.config import (
     DETECT_MODES,
     DEV_N_PRE,
+    FUSION_OFF,
+    FUSION_UNION,
+    OPTICAL_ADOPTION,
     OPTICAL_FUSION_MODES,
     OPTICAL_TUNE_GRIDS,
     TUNE_GRIDS,
@@ -160,6 +169,13 @@ def validate_optical_grids(grids: dict[str, dict[str, tuple]] | None = None
             if section == "detect" and field_name in pipeline.PREPROCESS_FIELDS:
                 raise ValueError(f"OPTICAL_TUNE_GRIDS[{fusion!r}] key {key!r} is applied "
                                  f"before a scene is prepared and cannot be tuned here.")
+            if section == "optical" and field_name in optical.READ_FIELDS:
+                raise ValueError(
+                    f"OPTICAL_TUNE_GRIDS[{fusion!r}] key {key!r} is applied before the pair "
+                    f"is read - it chooses the scenes or converts the digital numbers - so "
+                    f"varying it would need both dates read again per point, and the search "
+                    f"reads them once. Read-time fields "
+                    f"({', '.join(optical.READ_FIELDS)}) cannot be tuned by this search.")
             if not values:
                 raise ValueError(f"OPTICAL_TUNE_GRIDS[{fusion!r}] key {key!r}: no values")
     return grids
@@ -174,10 +190,8 @@ def optical_grid_points(grids: dict[str, dict[str, tuple]] | None = None) -> lis
     optical score existed; each fold's SAR point is still chosen without the
     held-out event, so the result stays out of sample.
 
-    NOT YET WIRED INTO A SCORING PASS: that needs the dev-set Sentinel-2
-    download to exist (eval.fetch_dev_data --optical). What ships now is the
-    declared grid and its validation, so the grid cannot silently drift from
-    the fields it claims to set.
+    Scored by `build_optical_matrix` / `leave_one_out_optical` below, which
+    cross these points with each fold's own SAR point.
     """
     grids = validate_optical_grids(grids)
     points: list[dict] = []
@@ -233,6 +247,46 @@ def materialise(point: dict, n_pre: int = DEV_N_PRE, base_dp: DetectParams | Non
 def point_hash(point: dict, n_pre: int = DEV_N_PRE) -> str:
     dp, rp = materialise(point, n_pre)
     return pipeline.params_hash(dp, rp)
+
+
+def materialise_optical(point: dict, base_op: OpticalParams | None = None) -> OpticalParams:
+    """The `optical.*` keys of one point -> the OpticalParams a run would use.
+
+    `enabled=True` always: a point of this grid is by definition a run that
+    consulted Sentinel-2. Fusion `off` is still such a run - it gathers,
+    converts and reports optical evidence and then changes no pixel - which is
+    exactly what makes `off` an honest control in the comparison rather than a
+    synonym for the radar-only configuration.
+    """
+    op = base_op or OpticalParams()
+    changes = {k.split(".", 1)[1]: v for k, v in point.items() if k.startswith("optical.")}
+    return replace(op, enabled=True, **changes)
+
+
+def materialise_full(point: dict, n_pre: int = DEV_N_PRE
+                     ) -> tuple[DetectParams, RunParams, OpticalParams | None]:
+    """A combined SAR + optical point -> every parameter set a run would use.
+
+    Returns `op=None` when the point carries no `optical.*` key at all, which
+    is the radar-only configuration and must keep hashing as it always has.
+    """
+    dp, rp = materialise(point, n_pre)
+    has_optical = any(k.startswith("optical.") for k in point)
+    return dp, rp, (materialise_optical(point) if has_optical else None)
+
+
+def full_point_hash(point: dict, n_pre: int = DEV_N_PRE) -> str:
+    """The identity of a combined point. Radar-only points hash as before."""
+    return pipeline.params_hash(*materialise_full(point, n_pre))
+
+
+def combine(sar_point: dict, optical_point: dict) -> dict:
+    """One SAR point crossed with one optical point, SAR keys first."""
+    return {**sar_point, **optical_point}
+
+
+def fusion_of(point: dict) -> str:
+    return str(point.get("optical.fusion", FUSION_OFF))
 
 
 def point_label(point: dict) -> str:
@@ -393,16 +447,22 @@ class Selection:
 
 
 def select(matrix: Matrix, train: list[str], controls: list[str], points: list[dict],
-           ceiling: float, n_pre: int = DEV_N_PRE) -> Selection:
+           ceiling: float, n_pre: int = DEV_N_PRE, hash_of=point_hash) -> Selection:
     """Best feasible grid point on `train`, with every control under `ceiling`.
 
     A point is usable only when every training event AND every control has a
     score for it: comparing points over different event subsets would make the
     objective meaningless.
+
+    `hash_of` is how a point is keyed in the matrix - `point_hash` for the radar
+    search, `full_point_hash` for the optical pass, whose points also carry
+    `optical.*` keys. The objective, the control constraint and the tie-break
+    are identical for both, deliberately: the optical question is "does this
+    help", judged by the same rule that chose the radar parameters.
     """
     out = Selection(train_events=list(train), control_events=list(controls), ceiling=ceiling)
     for point in points:
-        phash = point_hash(point, n_pre)
+        phash = hash_of(point, n_pre)
         cand = Candidate(point=dict(point), params_hash=phash)
 
         missing = [e for e in list(train) + list(controls)
@@ -447,22 +507,377 @@ def select(matrix: Matrix, train: list[str], controls: list[str], points: list[d
 
 
 def leave_one_out(matrix: Matrix, flood_events: list[str], controls: list[str],
-                  points: list[dict], ceiling: float, n_pre: int = DEV_N_PRE
-                  ) -> dict[str, Selection]:
-    """For each flood event: choose on the others, keep the choice."""
+                  points: list[dict], ceiling: float, n_pre: int = DEV_N_PRE,
+                  hash_of=point_hash, points_for=None) -> dict[str, Selection]:
+    """For each flood event: choose on the others, keep the choice.
+
+    `points_for(held)` lets each fold search a DIFFERENT candidate list, which
+    is what the optical pass needs: fold `held` crosses the optical grid with
+    the SAR point the radar pass chose without `held`, so the SAR half of the
+    configuration is still out of sample for that event.
+    """
     out: dict[str, Selection] = {}
     for held in flood_events:
         train = [e for e in flood_events if e != held]
-        out[held] = select(matrix, train, controls, points, ceiling, n_pre)
+        candidates = points if points_for is None else points_for(held)
+        out[held] = select(matrix, train, controls, candidates, ceiling, n_pre, hash_of)
     return out
+
+
+# --- the optical pass ---------------------------------------------------------
+#
+# A SECOND leave-one-event-out pass, crossing the optical grid with the SAR
+# point already chosen for each fold. Declared as a cost decision in
+# docs/tuning_log.md before any optical score existed: a joint search would be
+# 12 x 5 = 60 detections per event per fold instead of 5.
+
+
+def optical_sar_points(selections: dict[str, Selection],
+                       final: "Selection | None" = None) -> dict[str, dict]:
+    """Which SAR point each fold uses in the optical pass: its own radar choice.
+
+    The `""` key carries the final (whole-pool) SAR point, so the final optical
+    choice is crossed with the final SAR choice.
+    """
+    out: dict[str, dict] = {}
+    for held, sel in selections.items():
+        if sel.ok:
+            out[held] = dict(sel.chosen.point)
+    if final is not None and final.ok:
+        out[""] = dict(final.chosen.point)
+    return out
+
+
+def optical_points_needed(sar_points: dict[str, dict],
+                          optical_points: list[dict]) -> list[dict]:
+    """Every combined point the optical pass must score, deduplicated.
+
+    Several folds usually choose the same SAR point, so the matrix is far
+    smaller than folds x optical points.
+    """
+    seen: dict[str, dict] = {}
+    for sar in sar_points.values():
+        for opt in optical_points:
+            point = combine(sar, opt)
+            seen.setdefault(full_point_hash(point), point)
+    return list(seen.values())
+
+
+def build_optical_matrix(events: list[dict], points: list[dict],
+                         runs_root: Path | None = None, *, n_pre: int = DEV_N_PRE,
+                         tolerance_px: int = 1, reuse: bool = True,
+                         allow_download: bool = False, max_pixels: int = MAX_SCENE_PIXELS,
+                         log=print) -> Matrix:
+    """Score every event at every combined (SAR x optical) point.
+
+    Two things are read once per event and reused across every point, because
+    both cost far more than a classification does:
+
+      the radar scene   downloaded, speckle-filtered, terrain-derived;
+      the optical pair  four GeoTIFFs read and converted to reflectance.
+
+    Only `build_evidence` (two normalised indices over arrays already in
+    memory) and `classify` run per point. An event whose optical stage REFUSED
+    - too much cloud on the pair, or no clear pair at all - is still scored at
+    every point: the configuration asked for Sentinel-2 and got none, so the
+    map is radar-only and the score says so. That is the honest reading and it
+    is why those events are not dropped (Rule 3.2).
+    """
+    matrix: Matrix = {}
+    for i, event in enumerate(events, start=1):
+        name = str(event["name"])
+        log(f"[{i}/{len(events)}] {name}")
+        scene = read = None
+        for point in points:
+            dp, rp, op = materialise_full(point, n_pre)
+            phash = pipeline.params_hash(dp, rp, op)
+            if reuse:
+                cached = load_score(name, phash, runs_root)
+                if cached is not None and cached.ok:
+                    matrix[(name, phash)] = cached
+                    log(f"      {point_label(point):<64} cached "
+                        f"{cached.metrics.get(OBJECTIVE_METRIC, cached.metrics.get(CONTROL_METRIC))}")
+                    continue
+            try:
+                if scene is None:
+                    scene = prepare_event(event, rp, dp, runs_root, allow_download,
+                                          max_pixels, op=op, log=lambda *a: None)
+                    read = optical_read_of(event, scene, op, runs_root)
+                    log(f"      optical: {optical_status_line(scene)}")
+                point_scene = scene_with_optical(scene, read, op)
+                score = score_with_scene(event, point_scene, dp, tolerance_px, op=op,
+                                         log=lambda *a: None)
+            except KeyboardInterrupt:
+                raise
+            # Broad on purpose, as in build_matrix: one unusable event must not
+            # lose the whole matrix. It is recorded as failed, which blocks any
+            # gate that needs it rather than quietly shrinking the set.
+            except Exception as err:
+                score = EventScore(event=name, kind=sb.row_kind(event), params_hash=phash,
+                                   error=f"{type(err).__name__}: {err}")
+                log(f"      {point_label(point):<64} FAILED {score.error[:70]}")
+                save_score(score, runs_root)
+                matrix[(name, phash)] = score
+                if scene is None:   # the event itself is unusable
+                    break
+                continue
+            save_score(score, runs_root)
+            matrix[(name, phash)] = score
+            key = OBJECTIVE_METRIC if score.kind != sb.KIND_CONTROL else CONTROL_METRIC
+            log(f"      {point_label(point):<64} {key}={score.metrics.get(key)}")
+        del scene, read
+    return matrix
+
+
+def optical_status_line(scene) -> str:
+    """One line saying what Sentinel-2 gave this event. Printed per event."""
+    report = scene.optical_report
+    status = report.get("status")
+    evidence = report.get("evidence") or {}
+    if "clear_fraction_pair" in evidence:
+        return (f"{status}, {evidence['clear_fraction_pair']:.1%} of the area clear on both "
+                f"dates ({evidence.get('pre_day')} -> {evidence.get('post_day')})")
+    return f"{status}: {str(report.get('message', ''))[:140]}"
+
+
+def optical_read_of(event: dict, scene, op: OpticalParams | None,
+                    runs_root: Path | None = None):
+    """The read optical pair for this event, or None if the stage produced none.
+
+    Read from the same cache and for exactly the pair the prepared scene chose
+    (`scene.optical_pair`) - asking the catalogue again could pick a different
+    one - and only when that scene's own optical stage succeeded, so a refusal
+    (too cloudy, no clear pair) stays a refusal here and is never worked around.
+    """
+    if op is None or scene.optical_pair is None or scene.optical_evidence is None:
+        return None
+    cache = cache_dir(str(event["name"]), runs_root)
+    return optical.read_pair(cache, scene.grid, scene.optical_pair, op)
+
+
+def scene_with_optical(scene, read, op: OpticalParams | None):
+    """The prepared scene with evidence rebuilt for ONE optical point.
+
+    `replace` rather than mutation: the arrays are shared by reference (no copy),
+    but the scene handed to each point is its own object, so a point can never
+    see evidence built for another.
+    """
+    if op is None:
+        return scene
+    if read is None:
+        # The stage refused or found nothing. The configuration still asked for
+        # optical, and the map is radar-only: that is what gets scored.
+        return replace(scene, optical_evidence=None, optical_params=op)
+    evidence = optical.evidence_from_pair(read, op)
+    return replace(scene, optical_evidence=evidence, optical_params=op)
+
+
+# --- the adoption decision ----------------------------------------------------
+
+def adoption_verdict(off: dict[str, float], on: dict[str, float],
+                     controls_off: dict[str, float], controls_on: dict[str, float],
+                     ceiling: float, rule: dict | None = None) -> dict:
+    """Does optical fusion earn the default? The declared rule, applied.
+
+    `off` / `on` are held-out tolerant F1 per flood event, `controls_*` are
+    false-flood fractions per control, each measured with the SAME SAR point -
+    so the only difference between the two columns is Sentinel-2.
+
+    Every criterion is reported with the number it was decided on, pass or
+    fail, so the verdict is checkable rather than announced
+    (config.OPTICAL_ADOPTION, declared before this ran).
+    """
+    rule = rule or OPTICAL_ADOPTION
+    shared = [e for e in off if e in on]
+    mean_off = (sum(off[e] for e in shared) / len(shared)) if shared else None
+    mean_on = (sum(on[e] for e in shared) / len(shared)) if shared else None
+    gain = None if mean_off is None else round(mean_on - mean_off, 6)
+
+    regressions = {e: round(on[e] - off[e], 6) for e in shared
+                   if on[e] - off[e] < -rule["max_event_regression"]}
+    shared_controls = [c for c in controls_off if c in controls_on]
+    control_regressions = {c: round(controls_on[c] - controls_off[c], 6)
+                           for c in shared_controls
+                           if controls_on[c] - controls_off[c] > rule["max_event_regression"]}
+    over_ceiling = {c: controls_on[c] for c in shared_controls if controls_on[c] > ceiling}
+
+    criteria = {
+        "mean_tolerant_f1_improves": {
+            "measured_off": None if mean_off is None else round(mean_off, 6),
+            "measured_on": None if mean_on is None else round(mean_on, 6),
+            "gain": gain,
+            "required": f"> {rule['min_mean_gain']}",
+            "pass": bool(gain is not None and gain > rule["min_mean_gain"]),
+        },
+        "no_event_regresses_more_than_allowed": {
+            "limit": rule["max_event_regression"],
+            "events_worse": regressions,
+            "pass": not regressions and bool(shared),
+        },
+        "no_control_regresses_more_than_allowed": {
+            "limit": rule["max_event_regression"],
+            "controls_worse": control_regressions,
+            "pass": not control_regressions,
+        },
+        "every_control_under_the_gate_ceiling": {
+            "ceiling": ceiling,
+            "controls_over": over_ceiling,
+            "pass": not over_ceiling,
+        },
+    }
+    # A mean can be carried by one event. That is not a reason to reject the
+    # change - the declared rule decides that - but it IS something a reader
+    # must be told, so it is computed here rather than left to be noticed.
+    gains = {e: on[e] - off[e] for e in shared}
+    positive = {e: g for e, g in gains.items() if g > 0}
+    total_gain = sum(gains.values())
+    largest = max(positive, key=lambda e: positive[e]) if positive else None
+    concentration = {
+        "summed_gain": round(total_gain, 6),
+        "largest_single_gain_event": largest,
+        "largest_single_gain": None if largest is None else round(gains[largest], 6),
+        "share_of_summed_gain": (None if largest is None or total_gain <= 0
+                                 else round(gains[largest] / total_gain, 4)),
+        "events_improved": sorted(positive),
+        "events_unchanged": sorted(e for e, g in gains.items() if g == 0),
+        "events_worse": sorted(e for e, g in gains.items() if g < 0),
+    }
+    if concentration["share_of_summed_gain"] is not None and \
+            concentration["share_of_summed_gain"] >= 0.5:
+        concentration["warning"] = (
+            f"{concentration['share_of_summed_gain']:.0%} of the summed gain is one event "
+            f"({largest}). The mean improvement is real but is NOT evidence that the change "
+            f"helps broadly; quote the per-event column, not the mean, when describing it.")
+
+    return {
+        "rule": dict(rule),
+        "control_ceiling": ceiling,
+        "concentration": concentration,
+        "events_compared": shared,
+        "controls_compared": shared_controls,
+        "per_event": {e: {"off": off[e], "on": on[e], "delta": round(on[e] - off[e], 6)}
+                      for e in shared},
+        "per_control": {c: {"off": controls_off[c], "on": controls_on[c],
+                            "delta": round(controls_on[c] - controls_off[c], 6)}
+                        for c in shared_controls},
+        "criteria": criteria,
+        "keep_fusion": all(c["pass"] for c in criteria.values()),
+    }
+
+
+def optical_fold_selections(matrix: Matrix, sar_points: dict[str, dict],
+                            optical_points: list[dict], floods: list[str],
+                            controls: list[str], ceiling: float,
+                            n_pre: int = DEV_N_PRE, fusion: str = FUSION_UNION
+                            ) -> dict[str, Selection]:
+    """Per fold: the best point of ONE fusion mode, chosen on the other events.
+
+    Restricting the candidates to a single fusion mode is what makes the
+    comparison a comparison: `off` and `union` are each given their own best
+    shot on the same training events and the same SAR point, and then judged on
+    the held-out event. A free search over all five points at once would answer
+    a different (and weaker) question - "did anything win" - and could pick
+    `union` on one fold and `off` on the next, which no default can express.
+    """
+    folds = [e for e in floods if e in sar_points]
+    candidates = [p for p in optical_points if fusion_of(p) == fusion]
+    return leave_one_out(
+        matrix, folds, controls, [], ceiling, n_pre, full_point_hash,
+        points_for=lambda held: [combine(sar_points[held], p) for p in candidates])
+
+
+def held_out_values(matrix: Matrix, selections: dict[str, Selection],
+                    metric: str = OBJECTIVE_METRIC) -> dict[str, float]:
+    """Each fold's held-out value under its own chosen point. Skips what failed."""
+    out: dict[str, float] = {}
+    for held, sel in selections.items():
+        if not sel.ok:
+            continue
+        score = matrix.get((held, sel.chosen.params_hash))
+        if score is not None and score.ok and score.value(metric) is not None:
+            out[held] = score.value(metric)
+    return out
+
+
+def control_values(matrix: Matrix, point: dict, controls: list[str],
+                   n_pre: int = DEV_N_PRE) -> dict[str, float]:
+    """Every control's false-flood fraction at one point. Skips what failed."""
+    phash = full_point_hash(point, n_pre)
+    out: dict[str, float] = {}
+    for c in controls:
+        score = matrix.get((c, phash))
+        if score is not None and score.ok and score.value(CONTROL_METRIC) is not None:
+            out[c] = score.value(CONTROL_METRIC)
+    return out
+
+
+def print_optical_table(matrix: Matrix, off: dict[str, Selection], on: dict[str, Selection],
+                        sar_points: dict[str, dict], events: list[str], log=print) -> None:
+    """Per event: what optical could SEE, and what it did to the score both ways.
+
+    The clear fraction is the first column for a reason: on an event where
+    Sentinel-2 saw nothing, the two columns are identical BY CONSTRUCTION, and a
+    reader must be able to tell that apart from a genuine dead heat.
+    """
+    head = (f"  {'event':<32} {'clear pair':>10} {'F1 off':>7} {'F1 on':>7} {'delta':>7}  "
+            f"{'strict off':>10} {'strict on':>9}  {'chosen union point':<34}")
+    log(head)
+    log("  " + "-" * (len(head) - 2))
+    for event in events:
+        rows = []
+        for sel in (off.get(event), on.get(event)):
+            score = (None if sel is None or not sel.ok
+                     else matrix.get((event, sel.chosen.params_hash)))
+            rows.append(score)
+        clear = None
+        for score in rows:
+            if score is not None and score.ok:
+                clear = score.provenance.get("optical", {}).get("clear_fraction_pair", clear)
+        f = lambda s, k: ("-" if s is None or not s.ok or s.value(k) is None  # noqa: E731
+                          else f"{s.value(k):.4f}")
+        delta = ("-" if any(s is None or not s.ok or s.value(OBJECTIVE_METRIC) is None
+                            for s in rows)
+                 else f"{rows[1].value(OBJECTIVE_METRIC) - rows[0].value(OBJECTIVE_METRIC):+.4f}")
+        chosen = on.get(event)
+        label = ("none feasible" if chosen is None or not chosen.ok
+                 else " ".join(f"{k.split('.', 1)[1]}={v}" for k, v in chosen.chosen.point.items()
+                               if k.startswith("optical.") and k != "optical.fusion"))
+        log(f"  {event:<32} {('-' if clear is None else f'{clear:.3f}'):>10} "
+            f"{f(rows[0], OBJECTIVE_METRIC):>7} {f(rows[1], OBJECTIVE_METRIC):>7} {delta:>7}  "
+            f"{f(rows[0], 'f1'):>10} {f(rows[1], 'f1'):>9}  {label:<34}")
+
+
+def print_verdict(verdict: dict, log=print) -> None:
+    log("\n=== ADOPTION RULE (declared in config.OPTICAL_ADOPTION before this ran) ===")
+    for name, c in verdict["criteria"].items():
+        mark = "PASS" if c["pass"] else "FAIL"
+        detail = ", ".join(f"{k}={v}" for k, v in c.items() if k != "pass")
+        log(f"  [{mark}] {name}: {detail}")
+    conc = verdict.get("concentration") or {}
+    if conc.get("warning"):
+        log(f"\n  CONCENTRATION: {conc['warning']}")
+        log(f"    improved: {', '.join(conc['events_improved']) or 'none'}")
+        log(f"    unchanged: {', '.join(conc['events_unchanged']) or 'none'}")
+        log(f"    worse: {', '.join(conc['events_worse']) or 'none'}")
+    log(f"\n  VERDICT: {'KEEP' if verdict['keep_fusion'] else 'DO NOT KEEP'} optical fusion"
+        + ("" if verdict["keep_fusion"] else
+           " - optical stays separate evidence in run outputs, fusion stays `off`"))
 
 
 # --- the config diff ----------------------------------------------------------
 
-def config_diff(dp: DetectParams, rp: RunParams) -> list[dict]:
-    """Chosen values against what strandline/config.py declares today."""
+def config_diff(dp: DetectParams, rp: RunParams,
+                op: OpticalParams | None = None) -> list[dict]:
+    """Chosen values against what strandline/config.py declares today.
+
+    `op` is included only when the optical pass endorsed a configuration, so a
+    run that did not score optical never suggests an optical edit.
+    """
     diff = []
-    for section, chosen, current in (("detect", dp, DetectParams()), ("run", rp, RunParams())):
+    pairs = [("detect", dp, DetectParams()), ("run", rp, RunParams())]
+    if op is not None:
+        pairs.append(("optical", op, OpticalParams()))
+    for section, chosen, current in pairs:
         for f in fields(current):
             a, b = getattr(current, f.name), getattr(chosen, f.name)
             if a != b:
@@ -480,6 +895,207 @@ def print_diff(diff: list[dict], log=print) -> None:
         log(f"  {d['key']:<{width}}  {d['config_py']!r}  ->  {d['chosen']!r}")
 
 
+# --- the optical pass, end to end ---------------------------------------------
+
+def run_optical_pass(planned: list[dict], floods: list[str], controls: list[str],
+                     selections: dict[str, Selection], final: Selection,
+                     ceiling: float, args, tolerance_px: int,
+                     radar_matrix: Matrix | None = None
+                     ) -> tuple[dict, list[EventScore], list[EventScore]]:
+    """Score the optical grid, compare fusion off against on, apply the rule.
+
+    Returns (report, held-out flood scores, control scores) for the configuration
+    the rule actually endorses - which is the `off` column unless the rule says
+    KEEP, so a refusal to adopt writes the numbers that were already true.
+    """
+    print("\n=== OPTICAL PASS (second leave-one-event-out, over OPTICAL_TUNE_GRIDS) ===")
+    optical_points = optical_grid_points()
+    sar_points = optical_sar_points(selections, final)
+    if not sar_points:
+        print("  the radar pass chose nothing, so there is no SAR point to cross. Skipped.")
+        return {"status": "skipped", "reason": "no SAR point chosen by the radar pass"}, [], []
+
+    needed = optical_points_needed(sar_points, optical_points)
+    print(f"  {len(optical_points)} optical point(s) x {len(set(map(str, sar_points.values())))} "
+          f"distinct SAR point(s) -> {len(needed)} configuration(s), "
+          f"{len(needed) * len(planned)} classification(s) at most")
+    for fusion, axes in OPTICAL_TUNE_GRIDS.items():
+        print(f"      {fusion}: " + (", ".join(f"{k.split('.', 1)[1]}={list(v)}"
+                                               for k, v in axes.items()) or "(one point)"))
+
+    matrix = build_optical_matrix(planned, needed, args.runs_root, n_pre=args.n_pre,
+                                 tolerance_px=tolerance_px, reuse=not args.no_reuse,
+                                 allow_download=args.allow_download,
+                                 max_pixels=args.max_pixels, log=lambda *a: print(*a))
+
+    off_sel = optical_fold_selections(matrix, sar_points, optical_points, floods, controls,
+                                      ceiling, args.n_pre, FUSION_OFF)
+    on_sel = optical_fold_selections(matrix, sar_points, optical_points, floods, controls,
+                                     ceiling, args.n_pre, FUSION_UNION)
+    off_held = held_out_values(matrix, off_sel)
+    on_held = held_out_values(matrix, on_sel)
+
+    # Controls are compared at the FINAL SAR point, one configuration each way,
+    # because a control has no held-out notion: it constrains every choice.
+    final_sar = sar_points.get("")
+    off_point = combine(final_sar, {"optical.fusion": FUSION_OFF}) if final_sar else None
+    final_on = select(matrix, floods, controls,
+                      [combine(final_sar, p) for p in optical_points
+                       if fusion_of(p) == FUSION_UNION],
+                      ceiling, args.n_pre, full_point_hash) if final_sar else None
+    off_controls = control_values(matrix, off_point, controls, args.n_pre) if off_point else {}
+    on_controls = (control_values(matrix, final_on.chosen.point, controls, args.n_pre)
+                   if final_on is not None and final_on.ok else {})
+
+    print("\n=== FUSION OFF vs UNION, per event (same SAR point, held-out) ===")
+    print("  'clear pair' is the share of the AOI Sentinel-2 could see on BOTH dates.")
+    print("  Where it is absent, optical contributed nothing and the two columns are")
+    print("  identical by construction, not by a dead heat.\n")
+    print_optical_table(matrix, off_sel, on_sel, sar_points,
+                        [e for e in floods if e in sar_points])
+    if off_controls or on_controls:
+        print(f"\n  controls (false-flood fraction, ceiling {ceiling}):")
+        for c in controls:
+            a, b = off_controls.get(c), on_controls.get(c)
+            delta = ("-" if a is None or b is None else f"{b - a:+.4f}")
+            print(f"  {c:<32} {'-' if a is None else f'{a:.4f}':>10} "
+                  f"{'-' if b is None else f'{b:.4f}':>10} {delta:>8}"
+                  + ("   OVER CEILING" if b is not None and b > ceiling else ""))
+
+    # The `off` column must BE the radar-only configuration, numerically.
+    # Checked on the real dev set before the verdict rests on it.
+    equivalence = fusion_off_matches_radar_only(
+        matrix, radar_matrix or {}, sar_points, floods + controls, args.n_pre)
+    print(f"\n  fusion `off` against radar-only at the same SAR point: "
+          f"{equivalence['identical']}/{equivalence['compared']} identical")
+    if equivalence["mismatched"]:
+        print("  WARNING: fusion `off` did NOT reproduce the radar-only numbers on "
+              f"{len(equivalence['mismatched'])} event/point pair(s). The comparison below "
+              f"is not trustworthy until that is explained:")
+        for k, v in list(equivalence["mismatched"].items())[:4]:
+            print(f"    {k}: off={v['fusion_off']} radar_only={v['radar_only']}")
+
+    verdict = adoption_verdict(off_held, on_held, off_controls, on_controls, ceiling)
+    print_verdict(verdict)
+
+    keep = verdict["keep_fusion"]
+    chosen_sel = on_sel if keep else off_sel
+    chosen_point = (final_on.chosen.point if keep and final_on is not None and final_on.ok
+                    else off_point)
+    flood_scores = [matrix[(e, s.chosen.params_hash)] for e, s in chosen_sel.items()
+                    if s.ok and (e, s.chosen.params_hash) in matrix
+                    and matrix[(e, s.chosen.params_hash)].ok]
+    control_scores = ([matrix[(c, full_point_hash(chosen_point, args.n_pre))]
+                       for c in controls
+                       if (c, full_point_hash(chosen_point, args.n_pre)) in matrix
+                       and matrix[(c, full_point_hash(chosen_point, args.n_pre))].ok]
+                      if chosen_point else [])
+
+    report = {
+        "status": "scored",
+        "method": {
+            "split": "leave-one-event-out over the flood events, SAR point fixed per fold "
+                     "to the one the radar pass chose WITHOUT that event",
+            "candidates_per_fold": {FUSION_OFF: 1, FUSION_UNION: len(
+                [p for p in optical_points if fusion_of(p) == FUSION_UNION])},
+            "controls": "compared at the final SAR point; IN-SAMPLE, as in the radar pass",
+            "objective": f"maximise mean {OBJECTIVE_METRIC} over the training events",
+            "constraint": f"every control {CONTROL_METRIC} <= {ceiling} (from eval/gates.yaml)",
+        },
+        "grid": {f: {k: list(v) for k, v in axes.items()}
+                 for f, axes in OPTICAL_TUNE_GRIDS.items()},
+        "sar_point_per_fold": sar_points,
+        "configurations_scored": len(needed),
+        "optical_coverage": optical_coverage(matrix, planned),
+        "fusion_off_equals_radar_only": equivalence,
+        "fusion_off": {held: sel.report() for held, sel in off_sel.items()},
+        "fusion_union": {held: sel.report() for held, sel in on_sel.items()},
+        "held_out_f1_tolerant": {"off": off_held, "on": on_held},
+        "controls_false_flood_fraction": {"off": off_controls, "on": on_controls},
+        "adoption": verdict,
+        "chosen_configuration": chosen_point,
+        "chosen_params_hash": (full_point_hash(chosen_point, args.n_pre)
+                               if chosen_point else None),
+        "caveats": [
+            "Every number here was measured with the reflectance conversion CORRECTED on "
+            "2026-10-12: the Copernicus openEO backend returns L2A already offset-corrected, "
+            "and the earlier code applied BOA_ADD_OFFSET a second time. Any optical number "
+            "from before that date is void.",
+            "Four of the ten gate-plan events have no usable Sentinel-2 pair (clear fraction "
+            "below min_clear_fraction), so on those the two columns are identical by "
+            "construction. They are kept in the pool, not dropped: dropping them would be "
+            "Rule 3.2.",
+            "`off` is NOT the radar-only configuration: it consulted Sentinel-2 and then "
+            "changed no pixel, so it has its own params_hash. Its metrics are identical to "
+            "the radar-only ones, which is asserted, not assumed.",
+            f"Measured with n_pre={args.n_pre}, as the radar pass was.",
+        ],
+    }
+    return report, flood_scores, control_scores
+
+
+def fusion_off_matches_radar_only(optical_matrix: Matrix, radar_matrix: Matrix,
+                                  sar_points: dict[str, dict], events: list[str],
+                                  n_pre: int = DEV_N_PRE) -> dict:
+    """Does fusion `off` reproduce the radar-only numbers, pixel for pixel?
+
+    It must. `off` gathers Sentinel-2, converts it, builds the evidence and
+    then adds no pixel, so its class map has to be byte-identical to the
+    radar-only map at the same SAR point - and therefore every metric identical
+    too. The claim is asserted in tests on synthetic scenes
+    (tests/test_detect_optical_fusion.py); this checks it on the REAL dev set,
+    where a mistake in the eval plumbing - the wrong scene handed to a point,
+    evidence leaking between points - would show up and a synthetic test would
+    not.
+
+    A mismatch is reported, never smoothed over: it would mean the `off` column
+    of the comparison is not the configuration the published numbers describe,
+    and the comparison would be meaningless.
+    """
+    compared, mismatched = 0, {}
+    for sar in {str(sorted(p.items())): p for p in sar_points.values()}.values():
+        for event in events:
+            off_hash = full_point_hash(combine(sar, {"optical.fusion": FUSION_OFF}), n_pre)
+            radar_hash = point_hash(sar, n_pre)
+            a = optical_matrix.get((event, off_hash))
+            b = radar_matrix.get((event, radar_hash))
+            if a is None or b is None or not a.ok or not b.ok:
+                continue
+            compared += 1
+            if a.metrics != b.metrics:
+                mismatched[f"{event}@{radar_hash}"] = {"fusion_off": a.metrics,
+                                                       "radar_only": b.metrics}
+    return {"compared": compared, "identical": compared - len(mismatched),
+            "mismatched": mismatched, "pass": compared > 0 and not mismatched}
+
+
+def optical_coverage(matrix: Matrix, planned: list[dict]) -> dict:
+    """Per event: what Sentinel-2 actually gave, read back off the score files.
+
+    The gate numbers mean something different on an event optical could not see,
+    so this table travels with them.
+    """
+    out: dict[str, dict] = {}
+    for event in planned:
+        name = str(event["name"])
+        for (ev, _), score in matrix.items():
+            if ev != name or not score.ok:
+                continue
+            opt = score.provenance.get("optical") or {}
+            if not opt:
+                continue
+            out[name] = {
+                "status": opt.get("status"),
+                "clear_fraction_pair": opt.get("clear_fraction_pair"),
+                "pre_day": opt.get("pre_day"),
+                "post_day": opt.get("post_day"),
+                "post_latency_days": opt.get("post_latency_days"),
+                "message": opt.get("message"),
+            }
+            break
+    return out
+
+
 # --- main ---------------------------------------------------------------------
 
 def main(argv=None) -> int:
@@ -489,6 +1105,12 @@ def main(argv=None) -> int:
     ap.add_argument("--events", nargs="*", help="explicit event names instead of a plan")
     ap.add_argument("--n-pre", type=int, default=DEV_N_PRE)
     ap.add_argument("--no-write", action="store_true", help="append no rows to flood.csv")
+    ap.add_argument("--optical", action="store_true",
+                    help="after the radar pass, run the SECOND leave-one-event-out pass over "
+                         "OPTICAL_TUNE_GRIDS, crossing each fold's own SAR point with every "
+                         "optical point, and apply the declared adoption rule. Needs the "
+                         "Sentinel-2 dev cache (eval.fetch_dev_data --optical). Rows are "
+                         "appended only if the rule says KEEP")
     ap.add_argument("--apply-check", action="store_true",
                     help="read eval/chosen_params.json and print its diff against config.py")
     ap.add_argument("--allow-download", action="store_true")
@@ -611,6 +1233,7 @@ def main(argv=None) -> int:
     if final.ok:
         dp_final, rp_final = materialise(final.chosen.point, args.n_pre)
         diff = config_diff(dp_final, rp_final)
+        # Recomputed below if the optical pass endorses a fusion configuration.
         control_scores = [matrix[(c, final.chosen.params_hash)] for c in controls
                           if (c, final.chosen.params_hash) in matrix
                           and matrix[(c, final.chosen.params_hash)].ok]
@@ -620,6 +1243,24 @@ def main(argv=None) -> int:
     print("controls:     final parameters; IN-SAMPLE, every control constrained the choice\n")
     print_table(loeo_scores + control_scores)
     print_coverage(loeo_scores + control_scores, args.plan)
+
+    # --- the optical pass ----------------------------------------------------
+    optical_report: dict | None = None
+    optical_scores: list[EventScore] = []
+    optical_controls: list[EventScore] = []
+    if args.optical:
+        optical_report, optical_scores, optical_controls = run_optical_pass(
+            planned, floods, controls, selections, final, ceiling, args, tolerance_px,
+            radar_matrix=matrix)
+        # The config edit a human has to make now includes the optical section,
+        # but ONLY if the declared rule endorsed fusion. A pass that said no
+        # must not leave a suggestion to turn it on.
+        if (optical_report.get("status") == "scored"
+                and optical_report["adoption"]["keep_fusion"]
+                and optical_report.get("chosen_configuration") and final.ok):
+            _, _, op_final = materialise_full(optical_report["chosen_configuration"],
+                                              args.n_pre)
+            diff = config_diff(dp_final, rp_final, op_final)
 
     # --- artefacts -----------------------------------------------------------
     report = {
@@ -647,6 +1288,7 @@ def main(argv=None) -> int:
                                "params_hash": final.chosen.params_hash}),
         "config_diff": diff,
         "mode_comparison": best_per_mode(final),
+        "optical_pass": optical_report,
         "caveats": [
             "The two modes have different numbers of grid candidates "
             f"({', '.join(f'{m}: {len(ps)}' for m, ps in points_by_mode(points).items())}), "
@@ -673,15 +1315,29 @@ def main(argv=None) -> int:
     if final.ok:
         print_diff(diff)
 
+    # Which configuration's rows become the gate numbers. Exactly ONE set is
+    # written per run: check_gates averages every row of the latest run_id, so
+    # writing both the radar-only and the optical rows would silently average
+    # two different configurations together.
+    adopted = "radar-only (optical not consulted)"
+    flood_rows, control_rows = loeo_scores, control_scores
+    if optical_report is not None and optical_report.get("status") == "scored":
+        if optical_report["adoption"]["keep_fusion"]:
+            adopted = "optical fusion `union` (adoption rule: KEEP)"
+            flood_rows, control_rows = optical_scores, optical_controls
+        else:
+            adopted = ("radar-only (adoption rule: DO NOT KEEP optical fusion; the optical "
+                       "pass changed no published number)")
+
     if args.no_write:
         print("\n--no-write: no rows appended to eval/results/flood.csv.")
     else:
-        print()
-        written = write_rows(loeo_scores, [e for e in planned
-                                           if sb.row_kind(e) != sb.KIND_CONTROL],
+        print(f"\n  rows describe: {adopted}")
+        written = write_rows(flood_rows, [e for e in planned
+                                          if sb.row_kind(e) != sb.KIND_CONTROL],
                              events_all, run_id, "loeo", args.results_dir)
-        if control_scores:
-            written.update(write_rows(control_scores,
+        if control_rows:
+            written.update(write_rows(control_rows,
                                       [e for e in planned
                                        if sb.row_kind(e) == sb.KIND_CONTROL],
                                       events_all, run_id, "full", args.results_dir))

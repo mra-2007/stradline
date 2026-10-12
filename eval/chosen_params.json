@@ -1,6 +1,6 @@
 {
-  "run_id": "20261011T110254Z",
-  "git_commit": "49aaeee",
+  "run_id": "20261012T114247Z",
+  "git_commit": "5af333e",
   "generated_by": "eval/tune.py",
   "method": {
     "objective": "maximise mean f1_tolerant over the training events",
@@ -5286,14 +5286,19 @@
   },
   "config_diff": [
     {
-      "key": "detect.mode",
-      "config_py": "darkening",
-      "chosen": "rough_water"
-    },
-    {
       "key": "run.n_pre",
       "config_py": 5,
       "chosen": 3
+    },
+    {
+      "key": "optical.fusion",
+      "config_py": "off",
+      "chosen": "union"
+    },
+    {
+      "key": "optical.ndvi_drop_min",
+      "config_py": 0.15,
+      "chosen": 0.2
     }
   ],
   "mode_comparison": {
@@ -5317,6 +5322,1759 @@
       },
       "rejected_by_control": 6
     }
+  },
+  "optical_pass": {
+    "status": "scored",
+    "method": {
+      "split": "leave-one-event-out over the flood events, SAR point fixed per fold to the one the radar pass chose WITHOUT that event",
+      "candidates_per_fold": {
+        "off": 1,
+        "union": 4
+      },
+      "controls": "compared at the final SAR point; IN-SAMPLE, as in the radar pass",
+      "objective": "maximise mean f1_tolerant over the training events",
+      "constraint": "every control false_flood_fraction <= 0.01 (from eval/gates.yaml)"
+    },
+    "grid": {
+      "off": {},
+      "union": {
+        "optical.mndwi_water": [
+          0.0,
+          0.2
+        ],
+        "optical.ndvi_drop_min": [
+          0.1,
+          0.2
+        ]
+      }
+    },
+    "sar_point_per_fold": {
+      "bhutan_punakha_2024": {
+        "detect.mode": "rough_water",
+        "run.backscatter_coefficient": "sigma0-ellipsoid",
+        "detect.z_seed": 3.0,
+        "detect.hand_max_water_m": 20.0,
+        "detect.min_abs_change_db": 3.0
+      },
+      "bosnia_konjic_2024": {
+        "detect.mode": "rough_water",
+        "run.backscatter_coefficient": "sigma0-ellipsoid",
+        "detect.z_seed": 3.0,
+        "detect.hand_max_water_m": 20.0,
+        "detect.min_abs_change_db": 3.0
+      },
+      "ecuador_poza_honda_2025": {
+        "detect.mode": "rough_water",
+        "run.backscatter_coefficient": "sigma0-ellipsoid",
+        "detect.z_seed": 2.5,
+        "detect.hand_max_water_m": 20.0,
+        "detect.min_abs_change_db": 3.0
+      },
+      "norway_ringebu_2023": {
+        "detect.mode": "rough_water",
+        "run.backscatter_coefficient": "sigma0-ellipsoid",
+        "detect.z_seed": 3.0,
+        "detect.hand_max_water_m": 20.0,
+        "detect.min_abs_change_db": 3.0
+      },
+      "norway_selsverket_2023": {
+        "detect.mode": "rough_water",
+        "run.backscatter_coefficient": "sigma0-ellipsoid",
+        "detect.z_seed": 3.0,
+        "detect.hand_max_water_m": 20.0,
+        "detect.min_abs_change_db": 3.0
+      },
+      "pakistan_larkana_2022": {
+        "detect.mode": "rough_water",
+        "run.backscatter_coefficient": "sigma0-ellipsoid",
+        "detect.z_seed": 3.5,
+        "detect.hand_max_water_m": 20.0,
+        "detect.min_abs_change_db": 3.0
+      },
+      "": {
+        "detect.mode": "rough_water",
+        "run.backscatter_coefficient": "sigma0-ellipsoid",
+        "detect.z_seed": 3.0,
+        "detect.hand_max_water_m": 20.0,
+        "detect.min_abs_change_db": 3.0
+      }
+    },
+    "configurations_scored": 15,
+    "optical_coverage": {
+      "bhutan_punakha_2024": {
+        "status": "used",
+        "clear_fraction_pair": 0.5371,
+        "pre_day": "2024-08-01",
+        "post_day": "2024-08-16",
+        "post_latency_days": 6,
+        "message": null
+      },
+      "bosnia_konjic_2024": {
+        "status": "used",
+        "clear_fraction_pair": 0.8806,
+        "pre_day": "2024-08-14",
+        "post_day": "2024-10-23",
+        "post_latency_days": 19,
+        "message": null
+      },
+      "ecuador_poza_honda_2025": {
+        "status": "refused",
+        "clear_fraction_pair": null,
+        "pre_day": null,
+        "post_day": null,
+        "post_latency_days": null,
+        "message": "only 17.1% of the area is clear on BOTH Sentinel-2 dates (33.2% pre, 42.9% post), below the 20% minimum. Refusing to use optical evidence from so little of the area; the run continues with radar only."
+      },
+      "norway_ringebu_2023": {
+        "status": "refused",
+        "clear_fraction_pair": null,
+        "pre_day": null,
+        "post_day": null,
+        "post_latency_days": null,
+        "message": "only 19.5% of the area is clear on BOTH Sentinel-2 dates (80.0% pre, 29.9% post), below the 20% minimum. Refusing to use optical evidence from so little of the area; the run continues with radar only."
+      },
+      "norway_selsverket_2023": {
+        "status": "used",
+        "clear_fraction_pair": 0.3263,
+        "pre_day": "2023-06-24",
+        "post_day": "2023-08-18",
+        "post_latency_days": 10,
+        "message": null
+      },
+      "pakistan_larkana_2022": {
+        "status": "used",
+        "clear_fraction_pair": 0.9996,
+        "pre_day": "2022-07-12",
+        "post_day": "2022-09-05",
+        "post_latency_days": 10,
+        "message": null
+      },
+      "bhutan_punakha_control_2024": {
+        "status": "used",
+        "clear_fraction_pair": 0.6282,
+        "pre_day": "2024-01-14",
+        "post_day": "2024-03-19",
+        "post_latency_days": 9,
+        "message": null
+      },
+      "bosnia_konjic_control_2024": {
+        "status": "used",
+        "clear_fraction_pair": 0.9977,
+        "pre_day": "2024-06-22",
+        "post_day": "2024-07-27",
+        "post_latency_days": 7,
+        "message": null
+      },
+      "ecuador_poza_honda_control_2024": {
+        "status": "refused",
+        "clear_fraction_pair": null,
+        "pre_day": null,
+        "post_day": null,
+        "post_latency_days": null,
+        "message": "only 12.7% of the area is clear on BOTH Sentinel-2 dates (100.0% pre, 12.7% post), below the 20% minimum. Refusing to use optical evidence from so little of the area; the run continues with radar only."
+      },
+      "norway_ringebu_control_2023": {
+        "status": "refused",
+        "clear_fraction_pair": null,
+        "pre_day": null,
+        "post_day": null,
+        "post_latency_days": null,
+        "message": "only 19.9% of the area is clear on BOTH Sentinel-2 dates (29.1% pre, 80.0% post), below the 20% minimum. Refusing to use optical evidence from so little of the area; the run continues with radar only."
+      }
+    },
+    "fusion_off_equals_radar_only": {
+      "compared": 30,
+      "identical": 30,
+      "mismatched": {},
+      "pass": true
+    },
+    "fusion_off": {
+      "bhutan_punakha_2024": {
+        "train_events": [
+          "bosnia_konjic_2024",
+          "ecuador_poza_honda_2025",
+          "norway_ringebu_2023",
+          "norway_selsverket_2023",
+          "pakistan_larkana_2022"
+        ],
+        "control_events": [
+          "bhutan_punakha_control_2024",
+          "bosnia_konjic_control_2024",
+          "ecuador_poza_honda_control_2024",
+          "norway_ringebu_control_2023"
+        ],
+        "control_ceiling": 0.01,
+        "chosen": {
+          "parameters": {
+            "detect.mode": "rough_water",
+            "run.backscatter_coefficient": "sigma0-ellipsoid",
+            "detect.z_seed": 3.0,
+            "detect.hand_max_water_m": 20.0,
+            "detect.min_abs_change_db": 3.0,
+            "optical.fusion": "off"
+          },
+          "params_hash": "ac472dbabf95",
+          "mean_train_f1_tolerant": 0.59328,
+          "train_per_event_f1_tolerant": {
+            "bosnia_konjic_2024": 0.0694,
+            "ecuador_poza_honda_2025": 0.5594,
+            "norway_ringebu_2023": 0.9151,
+            "norway_selsverket_2023": 0.5878,
+            "pakistan_larkana_2022": 0.8347
+          },
+          "worst_control_false_flood_fraction": 0.0048,
+          "worst_control_event": "ecuador_poza_honda_control_2024"
+        },
+        "ties_at_best_objective": 1,
+        "by_mode": {
+          "rough_water": {
+            "candidates": 1,
+            "feasible": 1,
+            "best_objective": 0.59328,
+            "best_point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "off"
+            },
+            "rejected_by_control": 0
+          }
+        },
+        "candidates": [
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "off"
+            },
+            "params_hash": "ac472dbabf95",
+            "objective": 0.59328,
+            "per_event": {
+              "bosnia_konjic_2024": 0.0694,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_ringebu_2023": 0.9151,
+              "norway_selsverket_2023": 0.5878,
+              "pakistan_larkana_2022": 0.8347
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          }
+        ]
+      },
+      "bosnia_konjic_2024": {
+        "train_events": [
+          "bhutan_punakha_2024",
+          "ecuador_poza_honda_2025",
+          "norway_ringebu_2023",
+          "norway_selsverket_2023",
+          "pakistan_larkana_2022"
+        ],
+        "control_events": [
+          "bhutan_punakha_control_2024",
+          "bosnia_konjic_control_2024",
+          "ecuador_poza_honda_control_2024",
+          "norway_ringebu_control_2023"
+        ],
+        "control_ceiling": 0.01,
+        "chosen": {
+          "parameters": {
+            "detect.mode": "rough_water",
+            "run.backscatter_coefficient": "sigma0-ellipsoid",
+            "detect.z_seed": 3.0,
+            "detect.hand_max_water_m": 20.0,
+            "detect.min_abs_change_db": 3.0,
+            "optical.fusion": "off"
+          },
+          "params_hash": "ac472dbabf95",
+          "mean_train_f1_tolerant": 0.60306,
+          "train_per_event_f1_tolerant": {
+            "bhutan_punakha_2024": 0.1183,
+            "ecuador_poza_honda_2025": 0.5594,
+            "norway_ringebu_2023": 0.9151,
+            "norway_selsverket_2023": 0.5878,
+            "pakistan_larkana_2022": 0.8347
+          },
+          "worst_control_false_flood_fraction": 0.0048,
+          "worst_control_event": "ecuador_poza_honda_control_2024"
+        },
+        "ties_at_best_objective": 1,
+        "by_mode": {
+          "rough_water": {
+            "candidates": 1,
+            "feasible": 1,
+            "best_objective": 0.60306,
+            "best_point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "off"
+            },
+            "rejected_by_control": 0
+          }
+        },
+        "candidates": [
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "off"
+            },
+            "params_hash": "ac472dbabf95",
+            "objective": 0.60306,
+            "per_event": {
+              "bhutan_punakha_2024": 0.1183,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_ringebu_2023": 0.9151,
+              "norway_selsverket_2023": 0.5878,
+              "pakistan_larkana_2022": 0.8347
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          }
+        ]
+      },
+      "ecuador_poza_honda_2025": {
+        "train_events": [
+          "bhutan_punakha_2024",
+          "bosnia_konjic_2024",
+          "norway_ringebu_2023",
+          "norway_selsverket_2023",
+          "pakistan_larkana_2022"
+        ],
+        "control_events": [
+          "bhutan_punakha_control_2024",
+          "bosnia_konjic_control_2024",
+          "ecuador_poza_honda_control_2024",
+          "norway_ringebu_control_2023"
+        ],
+        "control_ceiling": 0.01,
+        "chosen": {
+          "parameters": {
+            "detect.mode": "rough_water",
+            "run.backscatter_coefficient": "sigma0-ellipsoid",
+            "detect.z_seed": 2.5,
+            "detect.hand_max_water_m": 20.0,
+            "detect.min_abs_change_db": 3.0,
+            "optical.fusion": "off"
+          },
+          "params_hash": "2bdfabcf59df",
+          "mean_train_f1_tolerant": 0.50506,
+          "train_per_event_f1_tolerant": {
+            "bhutan_punakha_2024": 0.1183,
+            "bosnia_konjic_2024": 0.0694,
+            "norway_ringebu_2023": 0.9151,
+            "norway_selsverket_2023": 0.5878,
+            "pakistan_larkana_2022": 0.8347
+          },
+          "worst_control_false_flood_fraction": 0.0048,
+          "worst_control_event": "ecuador_poza_honda_control_2024"
+        },
+        "ties_at_best_objective": 1,
+        "by_mode": {
+          "rough_water": {
+            "candidates": 1,
+            "feasible": 1,
+            "best_objective": 0.50506,
+            "best_point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 2.5,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "off"
+            },
+            "rejected_by_control": 0
+          }
+        },
+        "candidates": [
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 2.5,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "off"
+            },
+            "params_hash": "2bdfabcf59df",
+            "objective": 0.50506,
+            "per_event": {
+              "bhutan_punakha_2024": 0.1183,
+              "bosnia_konjic_2024": 0.0694,
+              "norway_ringebu_2023": 0.9151,
+              "norway_selsverket_2023": 0.5878,
+              "pakistan_larkana_2022": 0.8347
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          }
+        ]
+      },
+      "norway_ringebu_2023": {
+        "train_events": [
+          "bhutan_punakha_2024",
+          "bosnia_konjic_2024",
+          "ecuador_poza_honda_2025",
+          "norway_selsverket_2023",
+          "pakistan_larkana_2022"
+        ],
+        "control_events": [
+          "bhutan_punakha_control_2024",
+          "bosnia_konjic_control_2024",
+          "ecuador_poza_honda_control_2024",
+          "norway_ringebu_control_2023"
+        ],
+        "control_ceiling": 0.01,
+        "chosen": {
+          "parameters": {
+            "detect.mode": "rough_water",
+            "run.backscatter_coefficient": "sigma0-ellipsoid",
+            "detect.z_seed": 3.0,
+            "detect.hand_max_water_m": 20.0,
+            "detect.min_abs_change_db": 3.0,
+            "optical.fusion": "off"
+          },
+          "params_hash": "ac472dbabf95",
+          "mean_train_f1_tolerant": 0.43392,
+          "train_per_event_f1_tolerant": {
+            "bhutan_punakha_2024": 0.1183,
+            "bosnia_konjic_2024": 0.0694,
+            "ecuador_poza_honda_2025": 0.5594,
+            "norway_selsverket_2023": 0.5878,
+            "pakistan_larkana_2022": 0.8347
+          },
+          "worst_control_false_flood_fraction": 0.0048,
+          "worst_control_event": "ecuador_poza_honda_control_2024"
+        },
+        "ties_at_best_objective": 1,
+        "by_mode": {
+          "rough_water": {
+            "candidates": 1,
+            "feasible": 1,
+            "best_objective": 0.43392,
+            "best_point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "off"
+            },
+            "rejected_by_control": 0
+          }
+        },
+        "candidates": [
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "off"
+            },
+            "params_hash": "ac472dbabf95",
+            "objective": 0.43392,
+            "per_event": {
+              "bhutan_punakha_2024": 0.1183,
+              "bosnia_konjic_2024": 0.0694,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_selsverket_2023": 0.5878,
+              "pakistan_larkana_2022": 0.8347
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          }
+        ]
+      },
+      "norway_selsverket_2023": {
+        "train_events": [
+          "bhutan_punakha_2024",
+          "bosnia_konjic_2024",
+          "ecuador_poza_honda_2025",
+          "norway_ringebu_2023",
+          "pakistan_larkana_2022"
+        ],
+        "control_events": [
+          "bhutan_punakha_control_2024",
+          "bosnia_konjic_control_2024",
+          "ecuador_poza_honda_control_2024",
+          "norway_ringebu_control_2023"
+        ],
+        "control_ceiling": 0.01,
+        "chosen": {
+          "parameters": {
+            "detect.mode": "rough_water",
+            "run.backscatter_coefficient": "sigma0-ellipsoid",
+            "detect.z_seed": 3.0,
+            "detect.hand_max_water_m": 20.0,
+            "detect.min_abs_change_db": 3.0,
+            "optical.fusion": "off"
+          },
+          "params_hash": "ac472dbabf95",
+          "mean_train_f1_tolerant": 0.49938,
+          "train_per_event_f1_tolerant": {
+            "bhutan_punakha_2024": 0.1183,
+            "bosnia_konjic_2024": 0.0694,
+            "ecuador_poza_honda_2025": 0.5594,
+            "norway_ringebu_2023": 0.9151,
+            "pakistan_larkana_2022": 0.8347
+          },
+          "worst_control_false_flood_fraction": 0.0048,
+          "worst_control_event": "ecuador_poza_honda_control_2024"
+        },
+        "ties_at_best_objective": 1,
+        "by_mode": {
+          "rough_water": {
+            "candidates": 1,
+            "feasible": 1,
+            "best_objective": 0.49938,
+            "best_point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "off"
+            },
+            "rejected_by_control": 0
+          }
+        },
+        "candidates": [
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "off"
+            },
+            "params_hash": "ac472dbabf95",
+            "objective": 0.49938,
+            "per_event": {
+              "bhutan_punakha_2024": 0.1183,
+              "bosnia_konjic_2024": 0.0694,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_ringebu_2023": 0.9151,
+              "pakistan_larkana_2022": 0.8347
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          }
+        ]
+      },
+      "pakistan_larkana_2022": {
+        "train_events": [
+          "bhutan_punakha_2024",
+          "bosnia_konjic_2024",
+          "ecuador_poza_honda_2025",
+          "norway_ringebu_2023",
+          "norway_selsverket_2023"
+        ],
+        "control_events": [
+          "bhutan_punakha_control_2024",
+          "bosnia_konjic_control_2024",
+          "ecuador_poza_honda_control_2024",
+          "norway_ringebu_control_2023"
+        ],
+        "control_ceiling": 0.01,
+        "chosen": {
+          "parameters": {
+            "detect.mode": "rough_water",
+            "run.backscatter_coefficient": "sigma0-ellipsoid",
+            "detect.z_seed": 3.5,
+            "detect.hand_max_water_m": 20.0,
+            "detect.min_abs_change_db": 3.0,
+            "optical.fusion": "off"
+          },
+          "params_hash": "36408acdc5a1",
+          "mean_train_f1_tolerant": 0.45008,
+          "train_per_event_f1_tolerant": {
+            "bhutan_punakha_2024": 0.1183,
+            "bosnia_konjic_2024": 0.0698,
+            "ecuador_poza_honda_2025": 0.5594,
+            "norway_ringebu_2023": 0.9151,
+            "norway_selsverket_2023": 0.5878
+          },
+          "worst_control_false_flood_fraction": 0.0048,
+          "worst_control_event": "ecuador_poza_honda_control_2024"
+        },
+        "ties_at_best_objective": 1,
+        "by_mode": {
+          "rough_water": {
+            "candidates": 1,
+            "feasible": 1,
+            "best_objective": 0.45008,
+            "best_point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.5,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "off"
+            },
+            "rejected_by_control": 0
+          }
+        },
+        "candidates": [
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.5,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "off"
+            },
+            "params_hash": "36408acdc5a1",
+            "objective": 0.45008,
+            "per_event": {
+              "bhutan_punakha_2024": 0.1183,
+              "bosnia_konjic_2024": 0.0698,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_ringebu_2023": 0.9151,
+              "norway_selsverket_2023": 0.5878
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          }
+        ]
+      }
+    },
+    "fusion_union": {
+      "bhutan_punakha_2024": {
+        "train_events": [
+          "bosnia_konjic_2024",
+          "ecuador_poza_honda_2025",
+          "norway_ringebu_2023",
+          "norway_selsverket_2023",
+          "pakistan_larkana_2022"
+        ],
+        "control_events": [
+          "bhutan_punakha_control_2024",
+          "bosnia_konjic_control_2024",
+          "ecuador_poza_honda_control_2024",
+          "norway_ringebu_control_2023"
+        ],
+        "control_ceiling": 0.01,
+        "chosen": {
+          "parameters": {
+            "detect.mode": "rough_water",
+            "run.backscatter_coefficient": "sigma0-ellipsoid",
+            "detect.z_seed": 3.0,
+            "detect.hand_max_water_m": 20.0,
+            "detect.min_abs_change_db": 3.0,
+            "optical.fusion": "union",
+            "optical.mndwi_water": 0.0,
+            "optical.ndvi_drop_min": 0.2
+          },
+          "params_hash": "63a6d284bc4e",
+          "mean_train_f1_tolerant": 0.60538,
+          "train_per_event_f1_tolerant": {
+            "bosnia_konjic_2024": 0.0789,
+            "ecuador_poza_honda_2025": 0.5594,
+            "norway_ringebu_2023": 0.9151,
+            "norway_selsverket_2023": 0.5845,
+            "pakistan_larkana_2022": 0.889
+          },
+          "worst_control_false_flood_fraction": 0.0048,
+          "worst_control_event": "ecuador_poza_honda_control_2024"
+        },
+        "ties_at_best_objective": 1,
+        "by_mode": {
+          "rough_water": {
+            "candidates": 4,
+            "feasible": 4,
+            "best_objective": 0.60538,
+            "best_point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.0,
+              "optical.ndvi_drop_min": 0.2
+            },
+            "rejected_by_control": 0
+          }
+        },
+        "candidates": [
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.0,
+              "optical.ndvi_drop_min": 0.1
+            },
+            "params_hash": "89ef34aa792a",
+            "objective": 0.60456,
+            "per_event": {
+              "bosnia_konjic_2024": 0.0748,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_ringebu_2023": 0.9151,
+              "norway_selsverket_2023": 0.5845,
+              "pakistan_larkana_2022": 0.889
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          },
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.0,
+              "optical.ndvi_drop_min": 0.2
+            },
+            "params_hash": "63a6d284bc4e",
+            "objective": 0.60538,
+            "per_event": {
+              "bosnia_konjic_2024": 0.0789,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_ringebu_2023": 0.9151,
+              "norway_selsverket_2023": 0.5845,
+              "pakistan_larkana_2022": 0.889
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          },
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.2,
+              "optical.ndvi_drop_min": 0.1
+            },
+            "params_hash": "3810eddbb537",
+            "objective": 0.5985,
+            "per_event": {
+              "bosnia_konjic_2024": 0.0605,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_ringebu_2023": 0.9151,
+              "norway_selsverket_2023": 0.5876,
+              "pakistan_larkana_2022": 0.8699
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          },
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.2,
+              "optical.ndvi_drop_min": 0.2
+            },
+            "params_hash": "2395c7cab4bd",
+            "objective": 0.5992,
+            "per_event": {
+              "bosnia_konjic_2024": 0.064,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_ringebu_2023": 0.9151,
+              "norway_selsverket_2023": 0.5876,
+              "pakistan_larkana_2022": 0.8699
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          }
+        ]
+      },
+      "bosnia_konjic_2024": {
+        "train_events": [
+          "bhutan_punakha_2024",
+          "ecuador_poza_honda_2025",
+          "norway_ringebu_2023",
+          "norway_selsverket_2023",
+          "pakistan_larkana_2022"
+        ],
+        "control_events": [
+          "bhutan_punakha_control_2024",
+          "bosnia_konjic_control_2024",
+          "ecuador_poza_honda_control_2024",
+          "norway_ringebu_control_2023"
+        ],
+        "control_ceiling": 0.01,
+        "chosen": {
+          "parameters": {
+            "detect.mode": "rough_water",
+            "run.backscatter_coefficient": "sigma0-ellipsoid",
+            "detect.z_seed": 3.0,
+            "detect.hand_max_water_m": 20.0,
+            "detect.min_abs_change_db": 3.0,
+            "optical.fusion": "union",
+            "optical.mndwi_water": 0.0,
+            "optical.ndvi_drop_min": 0.2
+          },
+          "params_hash": "63a6d284bc4e",
+          "mean_train_f1_tolerant": 0.6128,
+          "train_per_event_f1_tolerant": {
+            "bhutan_punakha_2024": 0.116,
+            "ecuador_poza_honda_2025": 0.5594,
+            "norway_ringebu_2023": 0.9151,
+            "norway_selsverket_2023": 0.5845,
+            "pakistan_larkana_2022": 0.889
+          },
+          "worst_control_false_flood_fraction": 0.0048,
+          "worst_control_event": "ecuador_poza_honda_control_2024"
+        },
+        "ties_at_best_objective": 1,
+        "by_mode": {
+          "rough_water": {
+            "candidates": 4,
+            "feasible": 4,
+            "best_objective": 0.6128,
+            "best_point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.0,
+              "optical.ndvi_drop_min": 0.2
+            },
+            "rejected_by_control": 0
+          }
+        },
+        "candidates": [
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.0,
+              "optical.ndvi_drop_min": 0.1
+            },
+            "params_hash": "89ef34aa792a",
+            "objective": 0.61064,
+            "per_event": {
+              "bhutan_punakha_2024": 0.1052,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_ringebu_2023": 0.9151,
+              "norway_selsverket_2023": 0.5845,
+              "pakistan_larkana_2022": 0.889
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          },
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.0,
+              "optical.ndvi_drop_min": 0.2
+            },
+            "params_hash": "63a6d284bc4e",
+            "objective": 0.6128,
+            "per_event": {
+              "bhutan_punakha_2024": 0.116,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_ringebu_2023": 0.9151,
+              "norway_selsverket_2023": 0.5845,
+              "pakistan_larkana_2022": 0.889
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          },
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.2,
+              "optical.ndvi_drop_min": 0.1
+            },
+            "params_hash": "3810eddbb537",
+            "objective": 0.60772,
+            "per_event": {
+              "bhutan_punakha_2024": 0.1066,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_ringebu_2023": 0.9151,
+              "norway_selsverket_2023": 0.5876,
+              "pakistan_larkana_2022": 0.8699
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          },
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.2,
+              "optical.ndvi_drop_min": 0.2
+            },
+            "params_hash": "2395c7cab4bd",
+            "objective": 0.61,
+            "per_event": {
+              "bhutan_punakha_2024": 0.118,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_ringebu_2023": 0.9151,
+              "norway_selsverket_2023": 0.5876,
+              "pakistan_larkana_2022": 0.8699
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          }
+        ]
+      },
+      "ecuador_poza_honda_2025": {
+        "train_events": [
+          "bhutan_punakha_2024",
+          "bosnia_konjic_2024",
+          "norway_ringebu_2023",
+          "norway_selsverket_2023",
+          "pakistan_larkana_2022"
+        ],
+        "control_events": [
+          "bhutan_punakha_control_2024",
+          "bosnia_konjic_control_2024",
+          "ecuador_poza_honda_control_2024",
+          "norway_ringebu_control_2023"
+        ],
+        "control_ceiling": 0.01,
+        "chosen": {
+          "parameters": {
+            "detect.mode": "rough_water",
+            "run.backscatter_coefficient": "sigma0-ellipsoid",
+            "detect.z_seed": 2.5,
+            "detect.hand_max_water_m": 20.0,
+            "detect.min_abs_change_db": 3.0,
+            "optical.fusion": "union",
+            "optical.mndwi_water": 0.0,
+            "optical.ndvi_drop_min": 0.2
+          },
+          "params_hash": "297a77922b9f",
+          "mean_train_f1_tolerant": 0.5167,
+          "train_per_event_f1_tolerant": {
+            "bhutan_punakha_2024": 0.116,
+            "bosnia_konjic_2024": 0.0789,
+            "norway_ringebu_2023": 0.9151,
+            "norway_selsverket_2023": 0.5845,
+            "pakistan_larkana_2022": 0.889
+          },
+          "worst_control_false_flood_fraction": 0.0048,
+          "worst_control_event": "ecuador_poza_honda_control_2024"
+        },
+        "ties_at_best_objective": 1,
+        "by_mode": {
+          "rough_water": {
+            "candidates": 4,
+            "feasible": 4,
+            "best_objective": 0.5167,
+            "best_point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 2.5,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.0,
+              "optical.ndvi_drop_min": 0.2
+            },
+            "rejected_by_control": 0
+          }
+        },
+        "candidates": [
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 2.5,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.0,
+              "optical.ndvi_drop_min": 0.1
+            },
+            "params_hash": "40677f6c4db6",
+            "objective": 0.51372,
+            "per_event": {
+              "bhutan_punakha_2024": 0.1052,
+              "bosnia_konjic_2024": 0.0748,
+              "norway_ringebu_2023": 0.9151,
+              "norway_selsverket_2023": 0.5845,
+              "pakistan_larkana_2022": 0.889
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          },
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 2.5,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.0,
+              "optical.ndvi_drop_min": 0.2
+            },
+            "params_hash": "297a77922b9f",
+            "objective": 0.5167,
+            "per_event": {
+              "bhutan_punakha_2024": 0.116,
+              "bosnia_konjic_2024": 0.0789,
+              "norway_ringebu_2023": 0.9151,
+              "norway_selsverket_2023": 0.5845,
+              "pakistan_larkana_2022": 0.889
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          },
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 2.5,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.2,
+              "optical.ndvi_drop_min": 0.1
+            },
+            "params_hash": "37234252cd18",
+            "objective": 0.50794,
+            "per_event": {
+              "bhutan_punakha_2024": 0.1066,
+              "bosnia_konjic_2024": 0.0605,
+              "norway_ringebu_2023": 0.9151,
+              "norway_selsverket_2023": 0.5876,
+              "pakistan_larkana_2022": 0.8699
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          },
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 2.5,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.2,
+              "optical.ndvi_drop_min": 0.2
+            },
+            "params_hash": "bafa9b4c2fd7",
+            "objective": 0.51092,
+            "per_event": {
+              "bhutan_punakha_2024": 0.118,
+              "bosnia_konjic_2024": 0.064,
+              "norway_ringebu_2023": 0.9151,
+              "norway_selsverket_2023": 0.5876,
+              "pakistan_larkana_2022": 0.8699
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          }
+        ]
+      },
+      "norway_ringebu_2023": {
+        "train_events": [
+          "bhutan_punakha_2024",
+          "bosnia_konjic_2024",
+          "ecuador_poza_honda_2025",
+          "norway_selsverket_2023",
+          "pakistan_larkana_2022"
+        ],
+        "control_events": [
+          "bhutan_punakha_control_2024",
+          "bosnia_konjic_control_2024",
+          "ecuador_poza_honda_control_2024",
+          "norway_ringebu_control_2023"
+        ],
+        "control_ceiling": 0.01,
+        "chosen": {
+          "parameters": {
+            "detect.mode": "rough_water",
+            "run.backscatter_coefficient": "sigma0-ellipsoid",
+            "detect.z_seed": 3.0,
+            "detect.hand_max_water_m": 20.0,
+            "detect.min_abs_change_db": 3.0,
+            "optical.fusion": "union",
+            "optical.mndwi_water": 0.0,
+            "optical.ndvi_drop_min": 0.2
+          },
+          "params_hash": "63a6d284bc4e",
+          "mean_train_f1_tolerant": 0.44556,
+          "train_per_event_f1_tolerant": {
+            "bhutan_punakha_2024": 0.116,
+            "bosnia_konjic_2024": 0.0789,
+            "ecuador_poza_honda_2025": 0.5594,
+            "norway_selsverket_2023": 0.5845,
+            "pakistan_larkana_2022": 0.889
+          },
+          "worst_control_false_flood_fraction": 0.0048,
+          "worst_control_event": "ecuador_poza_honda_control_2024"
+        },
+        "ties_at_best_objective": 1,
+        "by_mode": {
+          "rough_water": {
+            "candidates": 4,
+            "feasible": 4,
+            "best_objective": 0.44556,
+            "best_point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.0,
+              "optical.ndvi_drop_min": 0.2
+            },
+            "rejected_by_control": 0
+          }
+        },
+        "candidates": [
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.0,
+              "optical.ndvi_drop_min": 0.1
+            },
+            "params_hash": "89ef34aa792a",
+            "objective": 0.44258,
+            "per_event": {
+              "bhutan_punakha_2024": 0.1052,
+              "bosnia_konjic_2024": 0.0748,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_selsverket_2023": 0.5845,
+              "pakistan_larkana_2022": 0.889
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          },
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.0,
+              "optical.ndvi_drop_min": 0.2
+            },
+            "params_hash": "63a6d284bc4e",
+            "objective": 0.44556,
+            "per_event": {
+              "bhutan_punakha_2024": 0.116,
+              "bosnia_konjic_2024": 0.0789,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_selsverket_2023": 0.5845,
+              "pakistan_larkana_2022": 0.889
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          },
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.2,
+              "optical.ndvi_drop_min": 0.1
+            },
+            "params_hash": "3810eddbb537",
+            "objective": 0.4368,
+            "per_event": {
+              "bhutan_punakha_2024": 0.1066,
+              "bosnia_konjic_2024": 0.0605,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_selsverket_2023": 0.5876,
+              "pakistan_larkana_2022": 0.8699
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          },
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.2,
+              "optical.ndvi_drop_min": 0.2
+            },
+            "params_hash": "2395c7cab4bd",
+            "objective": 0.43978,
+            "per_event": {
+              "bhutan_punakha_2024": 0.118,
+              "bosnia_konjic_2024": 0.064,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_selsverket_2023": 0.5876,
+              "pakistan_larkana_2022": 0.8699
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          }
+        ]
+      },
+      "norway_selsverket_2023": {
+        "train_events": [
+          "bhutan_punakha_2024",
+          "bosnia_konjic_2024",
+          "ecuador_poza_honda_2025",
+          "norway_ringebu_2023",
+          "pakistan_larkana_2022"
+        ],
+        "control_events": [
+          "bhutan_punakha_control_2024",
+          "bosnia_konjic_control_2024",
+          "ecuador_poza_honda_control_2024",
+          "norway_ringebu_control_2023"
+        ],
+        "control_ceiling": 0.01,
+        "chosen": {
+          "parameters": {
+            "detect.mode": "rough_water",
+            "run.backscatter_coefficient": "sigma0-ellipsoid",
+            "detect.z_seed": 3.0,
+            "detect.hand_max_water_m": 20.0,
+            "detect.min_abs_change_db": 3.0,
+            "optical.fusion": "union",
+            "optical.mndwi_water": 0.0,
+            "optical.ndvi_drop_min": 0.2
+          },
+          "params_hash": "63a6d284bc4e",
+          "mean_train_f1_tolerant": 0.51168,
+          "train_per_event_f1_tolerant": {
+            "bhutan_punakha_2024": 0.116,
+            "bosnia_konjic_2024": 0.0789,
+            "ecuador_poza_honda_2025": 0.5594,
+            "norway_ringebu_2023": 0.9151,
+            "pakistan_larkana_2022": 0.889
+          },
+          "worst_control_false_flood_fraction": 0.0048,
+          "worst_control_event": "ecuador_poza_honda_control_2024"
+        },
+        "ties_at_best_objective": 1,
+        "by_mode": {
+          "rough_water": {
+            "candidates": 4,
+            "feasible": 4,
+            "best_objective": 0.51168,
+            "best_point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.0,
+              "optical.ndvi_drop_min": 0.2
+            },
+            "rejected_by_control": 0
+          }
+        },
+        "candidates": [
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.0,
+              "optical.ndvi_drop_min": 0.1
+            },
+            "params_hash": "89ef34aa792a",
+            "objective": 0.5087,
+            "per_event": {
+              "bhutan_punakha_2024": 0.1052,
+              "bosnia_konjic_2024": 0.0748,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_ringebu_2023": 0.9151,
+              "pakistan_larkana_2022": 0.889
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          },
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.0,
+              "optical.ndvi_drop_min": 0.2
+            },
+            "params_hash": "63a6d284bc4e",
+            "objective": 0.51168,
+            "per_event": {
+              "bhutan_punakha_2024": 0.116,
+              "bosnia_konjic_2024": 0.0789,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_ringebu_2023": 0.9151,
+              "pakistan_larkana_2022": 0.889
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          },
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.2,
+              "optical.ndvi_drop_min": 0.1
+            },
+            "params_hash": "3810eddbb537",
+            "objective": 0.5023,
+            "per_event": {
+              "bhutan_punakha_2024": 0.1066,
+              "bosnia_konjic_2024": 0.0605,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_ringebu_2023": 0.9151,
+              "pakistan_larkana_2022": 0.8699
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          },
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.0,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.2,
+              "optical.ndvi_drop_min": 0.2
+            },
+            "params_hash": "2395c7cab4bd",
+            "objective": 0.50528,
+            "per_event": {
+              "bhutan_punakha_2024": 0.118,
+              "bosnia_konjic_2024": 0.064,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_ringebu_2023": 0.9151,
+              "pakistan_larkana_2022": 0.8699
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          }
+        ]
+      },
+      "pakistan_larkana_2022": {
+        "train_events": [
+          "bhutan_punakha_2024",
+          "bosnia_konjic_2024",
+          "ecuador_poza_honda_2025",
+          "norway_ringebu_2023",
+          "norway_selsverket_2023"
+        ],
+        "control_events": [
+          "bhutan_punakha_control_2024",
+          "bosnia_konjic_control_2024",
+          "ecuador_poza_honda_control_2024",
+          "norway_ringebu_control_2023"
+        ],
+        "control_ceiling": 0.01,
+        "chosen": {
+          "parameters": {
+            "detect.mode": "rough_water",
+            "run.backscatter_coefficient": "sigma0-ellipsoid",
+            "detect.z_seed": 3.5,
+            "detect.hand_max_water_m": 20.0,
+            "detect.min_abs_change_db": 3.0,
+            "optical.fusion": "union",
+            "optical.mndwi_water": 0.0,
+            "optical.ndvi_drop_min": 0.2
+          },
+          "params_hash": "e5e341834c3d",
+          "mean_train_f1_tolerant": 0.45088,
+          "train_per_event_f1_tolerant": {
+            "bhutan_punakha_2024": 0.1161,
+            "bosnia_konjic_2024": 0.0793,
+            "ecuador_poza_honda_2025": 0.5594,
+            "norway_ringebu_2023": 0.9151,
+            "norway_selsverket_2023": 0.5845
+          },
+          "worst_control_false_flood_fraction": 0.0048,
+          "worst_control_event": "ecuador_poza_honda_control_2024"
+        },
+        "ties_at_best_objective": 1,
+        "by_mode": {
+          "rough_water": {
+            "candidates": 4,
+            "feasible": 4,
+            "best_objective": 0.45088,
+            "best_point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.5,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.0,
+              "optical.ndvi_drop_min": 0.2
+            },
+            "rejected_by_control": 0
+          }
+        },
+        "candidates": [
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.5,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.0,
+              "optical.ndvi_drop_min": 0.1
+            },
+            "params_hash": "1fd7047044fd",
+            "objective": 0.44786,
+            "per_event": {
+              "bhutan_punakha_2024": 0.1052,
+              "bosnia_konjic_2024": 0.0751,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_ringebu_2023": 0.9151,
+              "norway_selsverket_2023": 0.5845
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          },
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.5,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.0,
+              "optical.ndvi_drop_min": 0.2
+            },
+            "params_hash": "e5e341834c3d",
+            "objective": 0.45088,
+            "per_event": {
+              "bhutan_punakha_2024": 0.1161,
+              "bosnia_konjic_2024": 0.0793,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_ringebu_2023": 0.9151,
+              "norway_selsverket_2023": 0.5845
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          },
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.5,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.2,
+              "optical.ndvi_drop_min": 0.1
+            },
+            "params_hash": "2a8831efad55",
+            "objective": 0.44592,
+            "per_event": {
+              "bhutan_punakha_2024": 0.1067,
+              "bosnia_konjic_2024": 0.0608,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_ringebu_2023": 0.9151,
+              "norway_selsverket_2023": 0.5876
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          },
+          {
+            "point": {
+              "detect.mode": "rough_water",
+              "run.backscatter_coefficient": "sigma0-ellipsoid",
+              "detect.z_seed": 3.5,
+              "detect.hand_max_water_m": 20.0,
+              "detect.min_abs_change_db": 3.0,
+              "optical.fusion": "union",
+              "optical.mndwi_water": 0.2,
+              "optical.ndvi_drop_min": 0.2
+            },
+            "params_hash": "e3b90968de7c",
+            "objective": 0.4489,
+            "per_event": {
+              "bhutan_punakha_2024": 0.1181,
+              "bosnia_konjic_2024": 0.0643,
+              "ecuador_poza_honda_2025": 0.5594,
+              "norway_ringebu_2023": 0.9151,
+              "norway_selsverket_2023": 0.5876
+            },
+            "worst_control": 0.0048,
+            "worst_control_event": "ecuador_poza_honda_control_2024",
+            "feasible": true,
+            "rejected": null
+          }
+        ]
+      }
+    },
+    "held_out_f1_tolerant": {
+      "off": {
+        "bhutan_punakha_2024": 0.1183,
+        "bosnia_konjic_2024": 0.0694,
+        "ecuador_poza_honda_2025": 0.5553,
+        "norway_ringebu_2023": 0.9151,
+        "norway_selsverket_2023": 0.5878,
+        "pakistan_larkana_2022": 0.8343
+      },
+      "on": {
+        "bhutan_punakha_2024": 0.116,
+        "bosnia_konjic_2024": 0.0789,
+        "ecuador_poza_honda_2025": 0.5553,
+        "norway_ringebu_2023": 0.9151,
+        "norway_selsverket_2023": 0.5845,
+        "pakistan_larkana_2022": 0.8891
+      }
+    },
+    "controls_false_flood_fraction": {
+      "off": {
+        "bhutan_punakha_control_2024": 0.0,
+        "bosnia_konjic_control_2024": 0.0,
+        "ecuador_poza_honda_control_2024": 0.0048,
+        "norway_ringebu_control_2023": 0.0014
+      },
+      "on": {
+        "bhutan_punakha_control_2024": 0.0022,
+        "bosnia_konjic_control_2024": 0.0011,
+        "ecuador_poza_honda_control_2024": 0.0048,
+        "norway_ringebu_control_2023": 0.0014
+      }
+    },
+    "adoption": {
+      "rule": {
+        "min_mean_gain": 0.0,
+        "max_event_regression": 0.01
+      },
+      "control_ceiling": 0.01,
+      "events_compared": [
+        "bhutan_punakha_2024",
+        "bosnia_konjic_2024",
+        "ecuador_poza_honda_2025",
+        "norway_ringebu_2023",
+        "norway_selsverket_2023",
+        "pakistan_larkana_2022"
+      ],
+      "controls_compared": [
+        "bhutan_punakha_control_2024",
+        "bosnia_konjic_control_2024",
+        "ecuador_poza_honda_control_2024",
+        "norway_ringebu_control_2023"
+      ],
+      "per_event": {
+        "bhutan_punakha_2024": {
+          "off": 0.1183,
+          "on": 0.116,
+          "delta": -0.0023
+        },
+        "bosnia_konjic_2024": {
+          "off": 0.0694,
+          "on": 0.0789,
+          "delta": 0.0095
+        },
+        "ecuador_poza_honda_2025": {
+          "off": 0.5553,
+          "on": 0.5553,
+          "delta": 0.0
+        },
+        "norway_ringebu_2023": {
+          "off": 0.9151,
+          "on": 0.9151,
+          "delta": 0.0
+        },
+        "norway_selsverket_2023": {
+          "off": 0.5878,
+          "on": 0.5845,
+          "delta": -0.0033
+        },
+        "pakistan_larkana_2022": {
+          "off": 0.8343,
+          "on": 0.8891,
+          "delta": 0.0548
+        }
+      },
+      "per_control": {
+        "bhutan_punakha_control_2024": {
+          "off": 0.0,
+          "on": 0.0022,
+          "delta": 0.0022
+        },
+        "bosnia_konjic_control_2024": {
+          "off": 0.0,
+          "on": 0.0011,
+          "delta": 0.0011
+        },
+        "ecuador_poza_honda_control_2024": {
+          "off": 0.0048,
+          "on": 0.0048,
+          "delta": 0.0
+        },
+        "norway_ringebu_control_2023": {
+          "off": 0.0014,
+          "on": 0.0014,
+          "delta": 0.0
+        }
+      },
+      "criteria": {
+        "mean_tolerant_f1_improves": {
+          "measured_off": 0.513367,
+          "measured_on": 0.52315,
+          "gain": 0.009783,
+          "required": "> 0.0",
+          "pass": true
+        },
+        "no_event_regresses_more_than_allowed": {
+          "limit": 0.01,
+          "events_worse": {},
+          "pass": true
+        },
+        "no_control_regresses_more_than_allowed": {
+          "limit": 0.01,
+          "controls_worse": {},
+          "pass": true
+        },
+        "every_control_under_the_gate_ceiling": {
+          "ceiling": 0.01,
+          "controls_over": {},
+          "pass": true
+        }
+      },
+      "keep_fusion": true
+    },
+    "chosen_configuration": {
+      "detect.mode": "rough_water",
+      "run.backscatter_coefficient": "sigma0-ellipsoid",
+      "detect.z_seed": 3.0,
+      "detect.hand_max_water_m": 20.0,
+      "detect.min_abs_change_db": 3.0,
+      "optical.fusion": "union",
+      "optical.mndwi_water": 0.0,
+      "optical.ndvi_drop_min": 0.2
+    },
+    "chosen_params_hash": "63a6d284bc4e",
+    "caveats": [
+      "Every number here was measured with the reflectance conversion CORRECTED on 2026-10-12: the Copernicus openEO backend returns L2A already offset-corrected, and the earlier code applied BOA_ADD_OFFSET a second time. Any optical number from before that date is void.",
+      "Four of the ten gate-plan events have no usable Sentinel-2 pair (clear fraction below min_clear_fraction), so on those the two columns are identical by construction. They are kept in the pool, not dropped: dropping them would be Rule 3.2.",
+      "`off` is NOT the radar-only configuration: it consulted Sentinel-2 and then changed no pixel, so it has its own params_hash. Its metrics are identical to the radar-only ones, which is asserted, not assumed.",
+      "Measured with n_pre=3, as the radar pass was."
+    ]
   },
   "caveats": [
     "The two modes have different numbers of grid candidates (darkening: 18, rough_water: 12), so the mode with more candidates has more chances to fit the training events. Only the held-out numbers decide which mode is adopted.",

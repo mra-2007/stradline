@@ -907,3 +907,394 @@ measured from `runs/case_smoke`; the Sentinel-2 figures are **derived from them
 and not yet confirmed against a real file**, and the constants
 (`BYTES_PER_PIXEL_S2_BAND`, `BYTES_PER_PIXEL_S2_SCL`) should be recalibrated
 once the first files land.
+
+---
+
+## 2026-10-12 — BUG, found on the first real Sentinel-2 download: the BOA offset was applied twice
+
+The open item recorded at the end of the previous entry — *"whether this openEO
+backend returns L2A as raw digital numbers, or has already applied the
+baseline-04 offset, is not established"* — is now settled, and the answer is the
+one that was wrong in the code.
+
+**The Copernicus Data Space openEO backend returns L2A reflectance with
+`BOA_ADD_OFFSET` ALREADY APPLIED.** `optical.to_reflectance` applied it again.
+
+### The evidence, from all 20 downloaded files
+
+Two independent proofs, both from the pixels:
+
+1. **Negative reflectance.** Over pixels the scene-classification layer calls
+   usable, subtracting the offset a second time drives **60-97% of the green
+   (B03) and red (B04) bands below zero**, and 9.1-62.8% of each file pooled
+   over all five bands. Reflectance is a non-negative physical quantity.
+   Without the second subtraction the same figure is **0.0-2.0%**, which is the
+   small over-correction tail atmospheric correction is known to produce.
+2. **Digital numbers below the offset.** The files contain valid values of 4,
+   18, 24 and down to -997. A raw baseline-04 product stores
+   `reflectance x 10000 + 1000` as an unsigned integer with 0 reserved for
+   NO_DATA, so **no valid value can be below 1**, let alone negative. Values
+   near -1000 are exactly what a stored zero looks like after the backend has
+   subtracted the offset.
+
+Both point the same way, and the two hypotheses are two orders of magnitude
+apart on test 1. Representative numbers, `median` being the median converted
+reflectance of the whole file:
+
+| file | raw min DN | raw median DN | negative, offset applied once | negative, applied twice | median (correct) |
+|---|---|---|---|---|---|
+| `bhutan_punakha_2024` 2024-08-01 | -353 | 1537 | 0.003% | 40.00% | 0.154 |
+| `bosnia_konjic_2024` 2024-08-14 | -993 | 852 | 0.122% | 54.86% | 0.085 |
+| `bhutan_punakha_control_2024` 2024-01-14 | -743 | 668 | 0.037% | 62.84% | 0.067 |
+| `norway_ringebu_control_2023` 2023-04-22 | -997 | 1308 | 1.964% | 45.76% | 0.131 |
+| `pakistan_larkana_2022` 2022-09-05 | -892 | 779 | 0.297% | 60.12% | 0.078 |
+
+### Why nothing caught it
+
+Three guards existed and all three passed:
+
+- `plausible_reflectance_range` is `(-0.2, 1.6)`, and the error is a shift of
+  exactly **-0.1**. A green band at 0.05 becomes -0.05, which is still inside
+  the plausible range, so `implausible_fraction` was **0.000** on every file and
+  the refusal never fired. The range was set to catch a wrong *scale* — a factor
+  of 10000 — and it does; it cannot catch a wrong *offset* of a tenth.
+- `negative_fraction` **was** computed and recorded, specifically as the
+  signature of this bug, and it read 0.40-0.63. Nothing acted on it. Recording a
+  number is not the same as testing it, and that is the lesson worth keeping
+  from this entry.
+- Every synthetic test passed, because the test fixtures
+  (`tests/test_pipeline_optical.py`) write digital numbers in the *archive*
+  convention, `reflectance * 10_000 + 1_000`, which is the convention this
+  backend does not use. A synthetic test cannot discover a fact about a backend.
+
+Impact: it corrupted **both** indices. MNDWI and NDVI are normalised ratios, so
+a multiplicative scale cancels but an offset does not: shifting B03 and B11 down
+by 0.1 changes `(B03-B11)/(B03+B11)` by an amount that depends on the brightness
+of the pixel, which is a non-linear distortion of exactly the quantity the water
+test thresholds. No optical number produced before today is meaningful. None was
+ever published or gated — fusion was `off` and no optical row was ever written —
+so nothing in `eval/results/` or the README has to be withdrawn.
+
+### The fix: decide it from the pixels, per file, in both directions
+
+`optical.dn_offset` now decides whether the specification offset still needs
+applying, rather than assuming either way:
+
+> apply the specification offset **unless** doing so would make more than
+> `OpticalParams.max_negative_fraction` (5%) of valid pixels negative.
+
+Set from physics and the product specification, not from any dev-event score:
+reflectance is not negative, over-correction is a few percent at worst
+(measured worst case here 1.96%), and a doubled offset is tens of percent. The
+5% ceiling is the same value and the same argument as the existing
+`max_implausible_fraction`, and sits roughly 2.5x above the worst correct
+observation and 2x below the lowest incorrect one.
+
+The rule is **symmetric**, which is what makes it safe to leave in the path
+rather than hard-coding this backend's habit:
+
+- a genuine archive product, offset not yet applied, has a small true negative
+  fraction and **keeps** its offset (asserted in `tests/test_optical.py`);
+- if this backend ever stops pre-applying the offset, the same line of code
+  starts applying it again, with no edit here;
+- the processing baseline still decides the case it can decide — before
+  baseline 04.00 there is no offset to apply or to double-apply.
+
+Everything the decision rested on is written to `run_report.json` under
+`optical.evidence.reflectance_conversion.<date>.offset_decision`: both candidate
+negative fractions, the ceiling, the raw minimum and median, and which test
+decided. Rule 6 — a reader checks the conclusion instead of trusting it.
+
+### The one file the test cannot decide, stated rather than hidden
+
+`ecuador_poza_honda_control_2024` 2024-08-31 is **87% cloud**; its median
+reflectance is 0.56 and its 1st percentile 0.087, so it contains no pixel dark
+enough to place the zero point, and **both** conventions yield plausible,
+non-negative reflectance (0.00% against 1.70%). There is no pixel test that can
+decide it, and the rule picks the specification convention, which on this
+backend is the wrong one.
+
+Its 1.70% also **overlaps** the 1.96% worst case of a correctly converted file
+(`norway_ringebu_control_2023` 2023-04-22), so the two populations are not
+cleanly separated and the "two orders of magnitude" figure above describes 19
+files, not 20. No ceiling can split them. The comments in `config.py` and
+`optical.py` and the README now say so, because attributing the safety of this
+rule to its margin would be attributing it to the wrong mechanism.
+
+It costs nothing, for a reason that is itself part of the guarantee: a date that
+bright is a date under cloud, so its clear fraction (12.7%) is below
+`min_clear_fraction` (20%) and `build_evidence` refuses the pair before any
+index is computed. The wrong conversion cannot reach a map.
+`tests/test_optical_real_files.py` asserts the disjunction — a file is **either**
+distinguishable by its dark tail **or** too cloudy to be used — so a future file
+that is neither fails the suite instead of being converted on a coin toss.
+
+### Tests added
+
+- `tests/test_optical.py` — four cases on the conversion: an already-corrected
+  product does not get the offset twice (the regression test for this bug), a
+  genuine archive product still does, the decision records every number it
+  rested on, and an older baseline decides on the baseline alone.
+- `tests/test_optical_real_files.py` — **new file, and the only test that reads
+  downloaded Sentinel-2 data.** Every real file must convert to plausible,
+  non-negative reflectance, and must be decidable or cloud-refused. It skips
+  when the cache is absent, so a fresh clone is unaffected. It exists because
+  the bug was undiscoverable on synthetic input, by construction.
+
+### Sentinel-2 download size: estimate replaced by measurement
+
+The previous entry predicted **857 MB** of Sentinel-2 from figures *derived*
+from Sentinel-1 and flagged as not confirmed against a real file. The real
+download is **454 MB in 40 files** — the estimate was 89% high.
+
+The derivation was wrong in an instructive way: it scaled from Sentinel-1, whose
+two float bands of speckle are near-incompressible, whereas optical reflectance
+over land is smooth and the LZW-compressed GeoTIFF recovers most of a 4-byte
+float. Measured, pooled over the 40 files:
+
+| constant | was (derived) | now (measured) | per-file range |
+|---|---|---|---|
+| `BYTES_PER_PIXEL_S2_BAND` | 4.9 | **2.7** | 2.00-2.94 |
+| `BYTES_PER_PIXEL_S2_SCL` | 1.3 | **0.1** | 0.03-0.17 |
+
+`eval.fetch_dev_data --estimate --optical` now predicts 452 MB against 454 MB
+actual. The spread is terrain and cloud: densest are the two cloudy Ecuador
+dates, lightest the small uniform Norwegian valley. The pooled figure is used
+rather than the mean, so the estimate is right in total even where it is wrong
+per event, and `ESTIMATE_CAVEAT` now says which numbers are measured and from
+what.
+
+---
+
+## 2026-10-12 — MEASURED: optical fusion scored, adopted, and honestly a small win in the wrong place
+
+The second leave-one-event-out pass has run (`eval.tune --plan gates --optical`,
+run_id `20261012T114247Z`, 15 configurations x 10 events). Fusion `union` is
+**adopted** by the rule declared in `config.OPTICAL_ADOPTION` before the pass,
+and `strandline/config.py` now ships it.
+
+### Method, and what is out of sample about it
+
+Each fold's optical point is chosen on the other five flood events and crossed
+with **the SAR point the radar pass chose without that event**, so both halves
+of the configuration are out of sample for the event they are scored on. `off`
+and `union` are each selected within their own candidates (1 point and 4
+points), so each gets its own best shot on the same training events and the
+same SAR point: the only difference between the two columns is Sentinel-2.
+Controls are compared at the final SAR point and remain **in sample** with
+respect to the feasibility constraint, exactly as in the radar pass.
+
+One read of each optical pair serves all 5 points (`optical.ReadPair`); only
+`build_evidence` and `classify` run per point. `optical.READ_FIELDS` is the
+machine-checked contract that makes that safe — an axis that would change the
+read is rejected by `validate_optical_grids`.
+
+### The control that had to pass first: `off` must BE radar-only
+
+Fusion `off` gathers Sentinel-2, converts it, builds the evidence and then adds
+no pixel, so its metrics must be identical to the radar-only configuration at
+the same SAR point. Measured on the real dev set: **30/30 event-point pairs
+identical** (`optical_pass.fusion_off_equals_radar_only`). Without that the `off`
+column would not be the configuration the published numbers describe and the
+comparison would mean nothing. It is checked, not assumed.
+
+### What Sentinel-2 could actually see
+
+| event | optical | clear pair | pre -> post | post latency |
+|---|---|---|---|---|
+| `bhutan_punakha_2024` | used | 53.7% | 2024-08-01 -> 2024-08-16 | 6 d |
+| `bosnia_konjic_2024` | used | 88.1% | 2024-08-14 -> 2024-10-23 | 19 d |
+| `ecuador_poza_honda_2025` | **refused** | 17.1% (33.2 pre, 42.9 post) | — | — |
+| `norway_ringebu_2023` | **refused** | 19.5% (80.0 pre, 29.9 post) | — | — |
+| `norway_selsverket_2023` | used | 32.6% | 2023-06-24 -> 2023-08-18 | 10 d |
+| `pakistan_larkana_2022` | used | 100.0% | 2022-07-12 -> 2022-09-05 | 10 d |
+| `bhutan_punakha_control_2024` | used | 62.8% | 2024-01-14 -> 2024-03-19 | 9 d |
+| `bosnia_konjic_control_2024` | used | 99.8% | 2024-06-22 -> 2024-07-27 | 7 d |
+| `ecuador_poza_honda_control_2024` | **refused** | 12.7% (100.0 pre, 12.7 post) | — | — |
+| `norway_ringebu_control_2023` | **refused** | 19.9% (29.1 pre, 80.0 post) | — | — |
+
+**Four of ten events have no usable pair**, and three of those four miss the 20%
+floor by less than a point (19.5%, 19.9%, 17.1%). That is uncomfortably close to
+the threshold and it is worth being explicit that `min_clear_fraction` was set
+from the specification before any of this was measured and has NOT been lowered
+to let them in — lowering it now, having seen that it would admit three more
+events, would be Rule 3.2. The pattern itself is the real finding: in every one
+of the four the *pre* or the *post* date is clear and the other is not, so it is
+the **intersection** that fails. A change detector needs both dates, and that is
+a structural cost of the method, not bad luck.
+
+The refused events are kept in the pool and scored at every point, radar-only.
+Their two columns are therefore identical **by construction**, which is why the
+per-event table prints the clear fraction next to the delta: a reader must be
+able to tell that apart from a genuine dead heat.
+
+### The result, per event (held out, same SAR point both ways)
+
+| event | clear pair | F1 tol `off` | F1 tol `union` | delta | strict F1 `off` | strict F1 `union` |
+|---|---|---|---|---|---|---|
+| `bhutan_punakha_2024` | 53.7% | 0.1183 | 0.1160 | **−0.0023** | 0.0757 | 0.0732 |
+| `bosnia_konjic_2024` | 88.1% | 0.0694 | 0.0789 | **+0.0095** | 0.0315 | 0.0377 |
+| `ecuador_poza_honda_2025` | — | 0.5553 | 0.5553 | 0.0000 | 0.4102 | 0.4102 |
+| `norway_ringebu_2023` | — | 0.9151 | 0.9151 | 0.0000 | 0.7320 | 0.7320 |
+| `norway_selsverket_2023` | 32.6% | 0.5878 | 0.5845 | **−0.0033** | 0.4765 | 0.4739 |
+| `pakistan_larkana_2022` | 100.0% | 0.8343 | 0.8891 | **+0.0548** | 0.7168 | 0.8154 |
+| **mean** | | **0.5134** | **0.5232** | **+0.0098** | 0.4071 | 0.4237 |
+
+Strict (zero-tolerance) F1 moves the same way and slightly further, 0.4071 ->
+0.4237, which is reported next to the tolerant numbers as Rule 2 requires.
+
+Controls (false-flood fraction, ceiling 1%):
+
+| control | `off` | `union` | delta |
+|---|---|---|---|
+| `bhutan_punakha_control_2024` | 0.0000 | 0.0022 | +0.0022 |
+| `bosnia_konjic_control_2024` | 0.0000 | 0.0011 | +0.0011 |
+| `ecuador_poza_honda_control_2024` | 0.0048 | 0.0048 | 0.0000 |
+| `norway_ringebu_control_2023` | 0.0014 | 0.0014 | 0.0000 |
+
+### Provenance of the rule, stated because the git history does not prove it
+
+`OPTICAL_ADOPTION` and the measured result land in the **same commit**, so the
+repository history cannot by itself show the rule was fixed before the numbers
+were known. What can be checked is better than a commit order anyway: the four
+criteria are **the human's, given in the task prompt before the pass was
+written**, verbatim —
+
+> "Keep fusion, and make it the default, only if mean tolerant F1 improves, no
+> event and no control gets worse by more than 0.01, and every control stays at
+> or under 1% false flood."
+
+`config.OPTICAL_ADOPTION` encodes exactly those four and nothing else, and
+`eval/tune.py::adoption_verdict` applies them mechanically, reporting the
+measured value beside each. Nothing was added, relaxed or reinterpreted after
+the result was seen — and had it been, the margin it would have had to move is
+on record here: the mean gain is +0.0098 against a required > 0, and the worst
+event regression −0.0033 against an allowed 0.01.
+
+`/audit` checked this and recorded precisely what is and is not established,
+which is worth copying here rather than paraphrasing:
+
+- **The candidate grid is clean on git alone.** `OPTICAL_TUNE_GRIDS` was
+  committed at `9c31e7c`, before any optical score existed, and ran
+  unchanged — `mndwi_water: (0.0, 0.2)`, `ndvi_drop_min: (0.10, 0.20)`. The
+  values that could be tuned were fixed in public beforehand.
+- **The rule itself is evidenced by the artefact, not by a commit.**
+  `eval/chosen_params.json` records `optical_pass.adoption.rule` written at the
+  run timestamp, and HEAD was committed 24 minutes earlier — so the rule was in
+  `config.py` before the verdict was computed, but inside an unwitnessed
+  window. The auditor states it cannot rule out that the thresholds were set
+  after seeing preliminary numbers, and neither can this entry.
+- **`min_mean_gain = 0.0` is the weakest possible bar.** True, and it is the
+  human's wording ("only if mean tolerant F1 improves"). It is the other three
+  criteria that do the work.
+
+**Process fix for the next pass, adopted now:** declare the rule in its own
+commit *before* running — `config: declare <RULE> before the <X> pass | gates:
+unchanged` — so the ordering is on the record and not on anyone's word.
+
+### The adoption rule, as applied
+
+| criterion | measured | required | |
+|---|---|---|---|
+| mean tolerant F1 improves | 0.5134 -> 0.5232, gain **+0.0098** | > 0 | PASS |
+| no flood event worse by more than 0.01 | worst **−0.0033** (`norway_selsverket_2023`) | <= 0.01 | PASS |
+| no control worse by more than 0.01 | worst **+0.0022** (`bhutan_punakha_control_2024`) | <= 0.01 | PASS |
+| every control at or under the gate ceiling | worst **0.0048** (unchanged) | <= 0.01 | PASS |
+
+**Verdict: KEEP.** All four criteria pass, so `OpticalParams.fusion` becomes
+`union`. The adopted point is `mndwi_water=0.0` (Xu 2006, unchanged) and
+`ndvi_drop_min=0.20`, which won on **all six folds** — the stricter of the two
+searched values. That is the direction to expect: the deposit signature is the
+looser of the two optical channels, it fires hardest on the dry controls (15% of
+the Bhutan control AOI as candidate pixels before the terrain tests), and 0.10
+cost the controls more than it bought the floods. `optical.ndvi_drop_min` is
+therefore now 0.20 in `config.py`, chosen by the tuner and not by hand.
+
+### The caveat that matters more than the verdict
+
+**The gain is concentrated, and it is in the wrong place.** Of the +0.0587 of
+summed per-event gain, **+0.0548 is one event** — Larkana 2022, a flat
+floodplain with a 100% clear pair, 1.41 million optical water candidate pixels,
+and the second-best radar score in the set. Bosnia adds +0.0095, and there the
+gain came from the *deposit* channel (538 water candidates against 19,013
+deposit candidates), not from water.
+
+Where the system actually fails — the steep Himalayan and Norwegian gorges that
+keep `flood_mapping` at FAIL — optical contributes **zero or slightly negative**:
+−0.0023 at Punakha, −0.0033 at Selsverket, and exactly nothing at the two events
+where cloud refused it. This is the same limitation recorded on 2026-10-11 from
+the other side: terrain shadow is commonest in exactly the narrow valleys where
+radar is weakest, so SCL removes optical coverage precisely where it would help
+most, and the surviving coverage is the valley *rim* rather than the floor.
+
+So the honest statement, which is what will be said in Q&A: **fusing Sentinel-2
+is a real but small improvement that helps most where the radar map was already
+good, and does not address the measured failure.** It is adopted because the
+declared rule says a measured improvement that costs no event and no control
+should be kept — not because it rescues anything.
+
+### Gate status after the pass, verbatim
+
+```
+flood_mapping      mean(precision_tolerant)       0.5137    >= 0.9  FAIL     6/3
+flood_mapping      mean(recall_tolerant)          0.5366    >= 0.9  FAIL     6/3
+flood_mapping      mean(f1_tolerant)              0.5231    >= 0.9  FAIL     6/3
+flood_mapping      min(f1_tolerant)               0.0789    >= 0.8  FAIL     6/3
+flood_mapping      mean(f1)                       0.4237    report  REPORT   6/3
+flood_mapping      mean(iou)                      0.3152    report  REPORT   6/3
+no_flood_controls  max(false_flood_fraction)      0.0048   <= 0.01  PASS     4/3
+```
+
+`flood_mapping` still **FAILS**: 0.523 against a 0.90 target, worst event 0.0789
+against a 0.80 floor. The optical pass moved the mean by one percentage point.
+`no_flood_controls` still **PASSES** at 0.0048, and the worst control is
+unchanged because optical was refused on it.
+
+Per-event table at the adopted configuration (`params_hash 63a6d284bc4e`, rows
+in `eval/results/flood.csv` under run_id `20261012T114247Z`):
+
+| event | clear | P | R | F1 | IoU | P tol | R tol | F1 tol |
+|---|---|---|---|---|---|---|---|---|
+| `bhutan_punakha_2024` | 0.537 | 0.0614 | 0.0907 | 0.0732 | 0.0380 | 0.0959 | 0.1469 | 0.1160 |
+| `bosnia_konjic_2024` | 0.881 | 0.0378 | 0.0376 | 0.0377 | 0.0192 | 0.0662 | 0.0977 | 0.0789 |
+| `ecuador_poza_honda_2025` | — | 0.4321 | 0.3904 | 0.4102 | 0.2580 | 0.5789 | 0.5335 | 0.5553 |
+| `norway_ringebu_2023` | — | 0.7685 | 0.6988 | 0.7320 | 0.5772 | 0.9234 | 0.9070 | 0.9151 |
+| `norway_selsverket_2023` | 0.326 | 0.4803 | 0.4677 | 0.4739 | 0.3105 | 0.5558 | 0.6164 | 0.5845 |
+| `pakistan_larkana_2022` | 1.000 | 0.7899 | 0.8426 | 0.8154 | 0.6883 | 0.8617 | 0.9183 | 0.8891 |
+| **mean** | | 0.4283 | 0.4213 | **0.4237** | **0.3152** | **0.5136** | **0.5366** | **0.5232** |
+
+Measured with `n_pre=3` (`DEV_N_PRE`, a cost setting) rather than the shipped
+default of 5, as every dev number in this log is. The tuner's diff also lists
+`run.n_pre 5 -> 3` for that reason; it is **not** a tuning result and was not
+applied.
+
+### FLOOD MAPPING IS NOW FROZEN
+
+No further detection change. The next work is the damage overlay, the cut-off
+analysis and the copilot, all of which read this map as it stands and must
+carry its measured accuracy and the narrow-valley caveat with every number
+they quote.
+
+### What changed in the code
+
+- `strandline/config.py` — `OpticalParams.fusion` `off` -> `union`;
+  `ndvi_drop_min` 0.15 -> 0.20; new `max_negative_fraction`; new
+  `OPTICAL_ADOPTION` (declared before the pass).
+- `strandline/optical.py` — `dn_offset` (the conversion fix), `ReadPair`,
+  `read_pair`, `evidence_from_pair`, `READ_FIELDS`.
+- `strandline/run.py` — `PreparedScene.optical_pair`, so a caller rebuilding
+  evidence re-reads exactly the pair that was scored.
+- `eval/tune.py` — the optical pass: `materialise_full`, `full_point_hash`,
+  `build_optical_matrix`, `optical_fold_selections`, `adoption_verdict`,
+  `fusion_off_matches_radar_only`, `--optical`.
+- `eval/run_scoreboard.py` — `op` threaded through `prepare_event`,
+  `score_with_scene` and `score_event`; `optical_provenance` written into every
+  score file, so no score can be silent about Sentinel-2.
+- `eval/fetch_dev_data.py` — Sentinel-2 bytes per pixel measured, not derived.
+- Tests: `tests/test_eval_tune_optical.py` and
+  `tests/test_optical_real_files.py` new; the shipped-default pin in
+  `tests/test_detect_optical_fusion.py` moved from "`off`" to "whatever
+  `eval/chosen_params.json` records as adopted", which is strictly stronger;
+  `tests/test_params_hash_reproducible.py` now accepts a hash reachable from the
+  radar grid **crossed with** the optical grid, and separately asserts that a
+  published optical row implies a recorded verdict of KEEP.

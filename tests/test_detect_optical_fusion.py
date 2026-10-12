@@ -15,6 +15,7 @@ What is established:
 """
 
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 
@@ -34,6 +35,8 @@ from strandline.config import (
 )
 from strandline.optical import OpticalEvidence
 
+ROOT = Path(__file__).resolve().parents[1]
+
 BRIGHTENS = 6.0      # a gorge flood that radar sees only as medium confidence
 
 
@@ -49,11 +52,10 @@ def _run(scene_data, params, optical=None):
 def _evidence(shape, water=None, debris=None, clear=None, fusion=FUSION_UNION):
     """Evidence carrying its own fusion mode, as OpticalParams.fusion sets it.
 
-    The tests pass FUSION_UNION explicitly, because the SHIPPED default is
-    FUSION_OFF until the leave-one-event-out optical pass has measured fusion
-    (strandline/config.py, OpticalParams.fusion). What is tested here is the
-    fusion machinery, not the shipped default - that default is pinned
-    separately, in test_the_shipped_default_changes_no_pixel.
+    The tests pass a fusion mode explicitly rather than reading the shipped
+    default, so that what is tested here is the fusion MACHINERY and the tests
+    do not all change meaning when the default does. The shipped default is
+    pinned separately, in test_the_shipped_default_is_the_one_that_was_measured.
     """
     zeros = np.zeros(shape, dtype=bool)
     return OpticalEvidence(
@@ -83,18 +85,57 @@ def test_no_optical_evidence_leaves_the_radar_map_exactly_as_it_was(scene):
     assert bare.stats["pixels"] == off.stats["pixels"]
 
 
-def test_the_shipped_default_changes_no_pixel(scene):
-    """The SHIPPED OpticalParams.fusion is `off`, so the shipped map is the
-    radar-only map that the dev-set numbers actually measured. Until the optical
-    leave-one-event-out pass has run, this must stay true."""
-    assert OpticalParams().fusion == FUSION_OFF
+def test_the_shipped_default_is_the_one_that_was_measured():
+    """The shipped fusion mode must be the one the optical pass actually adopted.
+
+    This replaced `test_the_shipped_default_changes_no_pixel` on 2026-10-12,
+    when the leave-one-event-out optical pass adopted `union` under the rule
+    declared in config.OPTICAL_ADOPTION (held-out mean tolerant F1 0.5134 ->
+    0.5232, no event worse by more than 0.0033, worst control 0.0022 against a
+    1% ceiling). The old test pinned `off` with the reason "until the optical
+    leave-one-event-out pass has run" - that condition is now satisfied, so the
+    pin moves rather than disappears.
+
+    It moves to something STRONGER: the default is no longer merely asserted
+    here, it is checked against the recorded verdict in
+    eval/chosen_params.json. A default that no measurement endorses now fails,
+    and so does a measurement nobody shipped.
+    """
+    import json
+
+    chosen = json.loads((ROOT / "eval" / "chosen_params.json").read_text(encoding="utf-8"))
+    optical_pass = chosen.get("optical_pass") or {}
+    if optical_pass.get("status") != "scored":
+        assert OpticalParams().fusion == FUSION_OFF, (
+            "no optical pass has been scored, so fusion must be off: shipping a fusion "
+            "mode no measurement endorses is exactly what OPTICAL_ADOPTION forbids")
+        return
+    adopted = optical_pass["adoption"]["keep_fusion"]
+    assert OpticalParams().fusion == (FUSION_UNION if adopted else FUSION_OFF), (
+        f"eval/chosen_params.json records keep_fusion={adopted}, but the shipped "
+        f"OpticalParams.fusion is {OpticalParams().fusion!r}")
+    if adopted:
+        point = optical_pass["chosen_configuration"]
+        for key, value in point.items():
+            if key.startswith("optical."):
+                field = key.split(".", 1)[1]
+                assert getattr(OpticalParams(), field) == value, (
+                    f"the optical pass adopted {field}={value} but config.py ships "
+                    f"{getattr(OpticalParams(), field)!r}")
+
+
+def test_fusion_off_still_changes_no_pixel(scene):
+    """`off` remains available and remains exactly off, whatever the default is.
+
+    It is one of the two values OPTICAL_TUNE_GRIDS searches and the comparison
+    the adoption rule rests on, so it has to keep meaning what it says.
+    """
     data = scene()
     shape = data["geometry"]["dem"].shape
-    shipped = _evidence(shape, water=np.ones(shape, dtype=bool),
-                        debris=np.ones(shape, dtype=bool),
-                        fusion=OpticalParams().fusion)
+    off = _evidence(shape, water=np.ones(shape, dtype=bool),
+                    debris=np.ones(shape, dtype=bool), fusion=FUSION_OFF)
     assert np.array_equal(_run(data, DetectParams()).classes,
-                          _run(data, DetectParams(), optical=shipped).classes)
+                          _run(data, DetectParams(), optical=off).classes)
 
 
 def test_fusion_off_ignores_even_a_wall_to_wall_optical_detection(scene):

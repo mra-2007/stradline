@@ -67,40 +67,117 @@ def test_no_optical_field_leaked_into_the_radar_dataclasses():
     """The structural reason the hashes above are stable. Keep it that way."""
     radar_fields = ({f for f in DetectParams().__dataclass_fields__}
                     | {f for f in RunParams().__dataclass_fields__})
-    optical_only = {"fusion", "enabled", "mndwi_water", "mndwi_rise_min", "ndvi_drop_min",
-                    "swir_rise_min", "scl_valid_classes", "max_scene_cloud_cover",
-                    "min_clear_fraction", "reflectance_scale", "boa_add_offset"}
+    optical_only = {f for f in OpticalParams().__dataclass_fields__} - {
+        # Names an optical parameter may legitimately SHARE with a radar one,
+        # because both dataclasses have their own: excluded so this test cannot
+        # fail on a coincidence of naming rather than a real leak.
+        "search_days_before", "max_post_latency_days", "post_same_day_ok",
+        "min_aoi_coverage"}
+    assert {"fusion", "mndwi_water", "boa_add_offset", "max_negative_fraction"} <= optical_only
     leaked = radar_fields & optical_only
     assert not leaked, (
         f"{sorted(leaked)} belongs in OpticalParams: a field here re-hashes every "
         f"configuration already recorded in eval/results/")
 
 
-def test_every_hash_in_the_results_csv_is_a_radar_only_hash():
-    """No published row may carry a hash this code cannot produce radar-only."""
-    import itertools
-    from dataclasses import replace
-    from strandline.config import TUNE_GRIDS
-    from eval.fetch_dev_data import dev_run_params
-    from strandline.config import DEV_N_PRE
+def _radar_reachable() -> dict[str, dict]:
+    """Every params_hash a point of the declared RADAR grid produces."""
+    from eval import tune
 
-    reachable = set()
-    for mode, grid in TUNE_GRIDS.items():
-        keys = list(grid)
-        for combo in itertools.product(*(grid[k] for k in keys)):
-            point = {"detect.mode": mode}
-            point.update(dict(zip(keys, combo)))
-            d = {k.split(".", 1)[1]: v for k, v in point.items() if k.startswith("detect.")}
-            r = {k.split(".", 1)[1]: v for k, v in point.items() if k.startswith("run.")}
-            dp = replace(DetectParams(), **d)
-            rp = replace(dev_run_params(n_pre=DEV_N_PRE), **r) if r else dev_run_params(
-                n_pre=DEV_N_PRE)
-            reachable.add(params_hash(dp, rp))
+    return {tune.point_hash(p): dict(p) for p in tune.grid_points()}
 
+
+def _optical_reachable() -> dict[str, dict]:
+    """Every params_hash a radar point CROSSED WITH an optical point produces.
+
+    The optical pass scores exactly these configurations, so a row it writes
+    must be one of them. They are listed separately from the radar-only ones so
+    a reader of a failure can see at once which kind of configuration a
+    published row claims to be.
+    """
+    from eval import tune
+
+    out: dict[str, dict] = {}
+    for sar in tune.grid_points():
+        for opt in tune.optical_grid_points():
+            point = tune.combine(sar, opt)
+            out[tune.full_point_hash(point)] = point
+    return out
+
+
+def test_every_hash_in_the_results_csv_is_reproducible_from_a_declared_grid_point():
+    """No published row may carry a hash this code cannot produce.
+
+    A row is reproducible if some point of the declared radar grid, or of that
+    grid crossed with the declared optical grid, hashes to it. Anything else
+    means a number was published from a configuration this code can no longer
+    emit - which is Rule 3.8 (reporting a number that cannot be traced).
+    """
+    radar, optical_too = _radar_reachable(), _optical_reachable()
     with FLOOD_CSV.open(encoding="utf-8") as f:
         hashes = {row["params_hash"] for row in csv.DictReader(f) if row.get("params_hash")}
     assert hashes, "no rows to check"
-    missing = sorted(hashes - reachable)
+    missing = sorted(hashes - set(radar) - set(optical_too))
     assert not missing, (
         f"params_hash {missing} appears in eval/results/flood.csv but no point of the "
-        f"declared radar grid reproduces it with this code")
+        f"declared radar grid, or of it crossed with the optical grid, reproduces it "
+        f"with this code")
+
+
+def test_no_run_id_mixes_a_radar_only_and_an_optical_configuration():
+    """One run_id, one configuration. The gate averages a run_id's rows.
+
+    `eval/check_gates.py` takes the LATEST run_id matching a module's `where`
+    and averages every row of it, so a run that wrote both its radar-only rows
+    and its optical rows would publish the mean of two different detectors
+    under one number - and nothing downstream could tell. `eval/tune.py`
+    prevents it by choosing one set of rows (see the `adopted` branch in
+    `main`), but that is one assignment standing between the project and a
+    meaningless gate, so the invariant is also checked here against the data
+    that actually got published.
+
+    Mixed `params_hash` values within a run_id are EXPECTED and fine -
+    leave-one-event-out gives each fold its own - so what is checked is the
+    coarser thing that must never be mixed: whether the row consulted
+    Sentinel-2 at all.
+    """
+    radar = _radar_reachable()
+    with FLOOD_CSV.open(encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    by_run: dict[str, set[bool]] = {}
+    for row in rows:
+        phash = row.get("params_hash")
+        if not phash:
+            continue
+        by_run.setdefault(row["run_id"], set()).add(phash in radar)
+    mixed = sorted(run for run, kinds in by_run.items() if len(kinds) > 1)
+    assert not mixed, (
+        f"run_id {mixed} contains BOTH radar-only and optical rows. check_gates averages "
+        f"every row of the latest run_id, so this gate number is the mean of two different "
+        f"configurations. One run must publish one configuration.")
+
+
+def test_an_optical_row_implies_a_recorded_keep_verdict():
+    """A published row that consulted Sentinel-2 must have a verdict behind it.
+
+    Kept apart from the reachability test on purpose: that one says a row is
+    TRACEABLE to a declared grid point, this one says a row produced by the
+    more permissive configuration was actually ENDORSED by the adoption rule.
+    Rows and verdict can only be made consistent by re-scoring, not by editing
+    either one alone.
+
+    Fusion was adopted on 2026-10-12, so the optical branch below is the live
+    one; the radar-only branch stays because `eval/results/flood.csv` is
+    append-only and still holds the pre-adoption rows, which must keep passing.
+    """
+    radar = _radar_reachable()
+    with FLOOD_CSV.open(encoding="utf-8") as f:
+        hashes = {row["params_hash"] for row in csv.DictReader(f) if row.get("params_hash")}
+    optical_rows = sorted(hashes - set(radar))
+    if not optical_rows:
+        return
+    adoption = (_chosen().get("optical_pass") or {}).get("adoption") or {}
+    assert adoption.get("keep_fusion") is True, (
+        f"rows {optical_rows} were written by a configuration that consulted Sentinel-2, "
+        f"but eval/chosen_params.json does not record an adoption verdict of KEEP. "
+        f"Either the rows or the verdict is wrong.")

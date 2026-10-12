@@ -220,16 +220,23 @@ class OpticalParams:
     # Sentinel-2 existed in this pipeline - see params_dict, and
     # tests/test_params_hash_reproducible.py, which pins the published hashes.
     #
-    # THE DEFAULT IS `off`, DELIBERATELY. With `off`, Sentinel-2 is still
-    # chosen, downloaded, masked, turned into evidence, written and reported -
-    # every run says what optical saw - but it changes no output pixel, so the
-    # class map is byte-identical to the radar-only detector that the dev-set
-    # numbers actually measured (tests/test_detect_optical_fusion.py). Fusion is
-    # switched to `union` when, and only when, the leave-one-event-out optical
-    # pass over OPTICAL_TUNE_GRIDS says it helps: shipping an unmeasured change
-    # to the scored quantity, and to the 1% false-flood ceiling, is not a trade
-    # this project makes (docs/tuning_log.md, 2026-10-11).
-    fusion: str = FUSION_OFF
+    # `union` since 2026-10-12, adopted by the leave-one-event-out optical pass
+    # (eval/chosen_params.json, run_id 20261012T...; docs/tuning_log.md) against
+    # the rule in OPTICAL_ADOPTION, which was declared before the pass was run.
+    # It was `off` until then, deliberately, because shipping an unmeasured
+    # change to the scored quantity and to the 1% false-flood ceiling is not a
+    # trade this project makes.
+    #
+    # What was measured, held out, over 6 independent flood events and 4
+    # controls: mean boundary-tolerant F1 0.5134 -> 0.5232 (+0.0098), no event
+    # worse by more than 0.0033, no control above 0.0022 against the 1%
+    # ceiling. READ THE CAVEAT: the gain is CONCENTRATED - +0.0548 on the one
+    # flat, wholly cloud-free floodplain event (Larkana) and +0.0095 on Bosnia,
+    # against -0.0023 and -0.0033 on two Himalayan/Norwegian events and exactly
+    # 0.0000 on the two where cloud refused optical entirely. Optical helps
+    # most where radar already worked, and does not fix the gorge failure that
+    # keeps the flood gate at FAIL.
+    fusion: str = FUSION_UNION
 
     # --- which scenes ------------------------------------------------------
     search_days_before: int = 60      # pre-event window to find a clear date
@@ -283,12 +290,26 @@ class OpticalParams:
     # second time, by a tenth of the whole reflectance range, and a normalised
     # index cannot survive that. The test is that reflectance is a non-negative
     # physical quantity: L2A over-correction pushes a SMALL share of dark
-    # pixels below zero, so an offset applied twice announces itself as a large
-    # one. Measured on the 20 dev-set files: 0.0-2.0% of valid pixels under the
-    # correct convention, 9.1-62.8% under the doubled one - two orders of
-    # magnitude apart, so this ceiling is not a close call. Set at the same
-    # 5% as max_implausible_fraction and from the same argument; not from any
-    # dev-event score (docs/tuning_log.md, 2026-10-11).
+    # pixels below zero, so an offset applied twice usually announces itself as
+    # a large one. Measured on the dev-set files: 0.0-2.0% of valid pixels under
+    # the correct convention against 9.1-62.8% under the doubled one - on 19 of
+    # the 20.
+    #
+    # THE TWENTIETH IS THE ONE TO UNDERSTAND. `ecuador_poza_honda_control_2024`
+    # 2024-08-31 is 87% cloud and has no dark tail, so the doubled offset costs
+    # it only 1.70% - BELOW the 1.96% worst case of a correctly converted file.
+    # The two populations therefore OVERLAP, and on that file this test cannot
+    # decide at all. What keeps it harmless is not this margin but
+    # min_clear_fraction, which refuses the pair at 12.7% clear long before an
+    # index is computed; tests/test_optical_real_files.py asserts that
+    # disjunction - a file is either decidable or too cloudy to use.
+    #
+    # So: a sound guard against the error that actually occurred, not a
+    # universal discriminator. Set at the same 5% as max_implausible_fraction
+    # and from the same argument - it sits ~2.5x above the worst correct
+    # observation and ~1.8x below the lowest incorrect one among the 19 the
+    # test can separate - and not from any dev-event score
+    # (docs/tuning_log.md, 2026-10-12).
     max_negative_fraction: float = 0.05
     # Values above this are digital numbers, not reflectance. Physical
     # reflectance cannot exceed ~1.6 even over snow and specular glint.
@@ -314,9 +335,18 @@ class OpticalParams:
     mndwi_rise_min: float = 0.20
 
     # Debris, mud and deposits: vegetation or soil buried by sediment loses
-    # NDVI and gains SWIR brightness. 0.15 is a loss well outside seasonal
-    # phenology over a few weeks. SEARCHED by OPTICAL_TUNE_GRID.
-    ndvi_drop_min: float = 0.15
+    # NDVI and gains SWIR brightness. 0.15 was the value set from phenology -
+    # a loss well outside seasonal change over a few weeks - and 0.10/0.20
+    # were SEARCHED around it by OPTICAL_TUNE_GRIDS.
+    #
+    # 0.20 chosen on 2026-10-12 by the leave-one-event-out optical pass: the
+    # stricter of the two won on every one of the six folds, which is what
+    # should be expected - the deposit signature is the looser of the two
+    # optical channels, and the events where it fires hardest are the dry
+    # controls (15% of the Bhutan control AOI as candidate pixels before the
+    # terrain tests). The looser 0.10 cost the controls more than it bought the
+    # floods. Not hand-picked: see eval/chosen_params.json.
+    ndvi_drop_min: float = 0.20
     # Fresh mud and boulder deposits are brighter in SWIR than the vegetation
     # or wet soil they bury. 0.03 reflectance is roughly three times the
     # radiometric uncertainty of an L2A SWIR band. Not searched.
@@ -551,6 +581,35 @@ OPTICAL_TUNE_GRIDS: dict[str, dict[str, tuple]] = {
         "optical.mndwi_water": (0.0, 0.2),
         "optical.ndvi_drop_min": (0.10, 0.20),
     },
+}
+
+
+# --- When optical fusion may become the default ------------------------------
+#
+# DECLARED BEFORE THE OPTICAL PASS WAS RUN (docs/tuning_log.md, 2026-10-12), so
+# the bar cannot be moved to fit the result. Winning the mean is NOT enough:
+# fusion only ever ADDS pixels, so it can buy recall on one event while
+# quietly costing precision on another and raising the false-flood rate on a
+# dry valley, and the mean would hide both.
+#
+#   min_mean_gain          the mean held-out boundary-tolerant F1 must actually
+#                          improve. 0.0 means "strictly greater": a tie is not
+#                          an improvement, and the simpler configuration wins a
+#                          tie because it is the one the dev numbers measured.
+#   max_event_regression   no single flood event may lose more than this much
+#                          tolerant F1, and no control may gain more than this
+#                          much false-flood fraction. 0.01 is the project's own
+#                          false-flood ceiling, reused deliberately: a change
+#                          that costs any one event or control as much as the
+#                          entire error budget allows is not an improvement
+#                          however well it averages.
+#
+# The absolute control ceiling (every control <= 1% false flood) is NOT
+# repeated here - it is read from eval/gates.yaml, which is human-owned, so the
+# two can never drift apart.
+OPTICAL_ADOPTION = {
+    "min_mean_gain": 0.0,
+    "max_event_regression": 0.01,
 }
 
 

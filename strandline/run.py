@@ -95,6 +95,12 @@ class PreparedScene:
     # of the same name inside this class body.
     optical_evidence: optical.OpticalEvidence | None = None
     optical_params: OpticalParams | None = None
+    # The Sentinel-2 pair the optical stage actually CHOSE, kept so a caller
+    # that wants to rebuild the evidence (eval/tune.py, trying several index
+    # thresholds against one read of the files) re-reads exactly the two dates
+    # that were scored, instead of asking the catalogue again and risking a
+    # different choice.
+    optical_pair: catalog.S2Pair | None = None
     # What the optical stage did, whether or not it produced evidence. Always
     # present, so a report can never be silent about Sentinel-2.
     optical_report: dict = field(default_factory=lambda: {"status": OPTICAL_DISABLED})
@@ -184,7 +190,7 @@ def optical_preflight(bbox, event_day: date, op: OpticalParams, log=print
 
 def optical_stage(bbox, event_day: date, grid: ingest.Grid, cache: Path,
                   op: OpticalParams | None, conn=None, log=print
-                  ) -> tuple[optical.OpticalEvidence | None, dict]:
+                  ) -> tuple[optical.OpticalEvidence | None, dict, catalog.S2Pair | None]:
     """Sentinel-2 evidence for this area and date. NEVER raises.
 
     Live robustness (project rule 5): a flood map must not be lost because the
@@ -200,7 +206,7 @@ def optical_stage(bbox, event_day: date, grid: ingest.Grid, cache: Path,
     """
     report: dict = {"status": OPTICAL_DISABLED, "enabled": bool(op is not None and op.enabled)}
     if op is None or not op.enabled:
-        return None, report
+        return None, report, None
 
     try:
         pair = optical_preflight(bbox, event_day, op, log=log)
@@ -211,7 +217,7 @@ def optical_stage(bbox, event_day: date, grid: ingest.Grid, cache: Path,
                 f"[-{op.search_days_before} d, +{op.max_post_latency_days} d] around "
                 f"{event_day}; the map is radar-only")
             log("      " + report["message"])
-            return None, report
+            return None, report, None
 
         report["pair"] = {
             "pre": {"day": str(pair.pre.day), "cloud_cover_percent": round(pair.pre.cloud_cover, 1),
@@ -247,13 +253,13 @@ def optical_stage(bbox, event_day: date, grid: ingest.Grid, cache: Path,
         log(f"      optical: {evidence.stats['clear_fraction_pair']:.0%} of the area clear on "
             f"both dates, {evidence.stats['optical_water_candidate_pixels']} water and "
             f"{evidence.stats['optical_debris_candidate_pixels']} deposit candidate pixels")
-        return evidence, report
+        return evidence, report, pair
 
     except optical.OpticalError as err:
         report["status"] = OPTICAL_REFUSED
         report["message"] = str(err)
         log("      optical REFUSED: " + str(err))
-        return None, report
+        return None, report, None
     except AssertionError:
         # NOT swallowed. The broad handler below exists to protect a live run
         # from the optical stage, but an AssertionError here is never a flood;
@@ -267,7 +273,7 @@ def optical_stage(bbox, event_day: date, grid: ingest.Grid, cache: Path,
         report["error_type"] = type(err).__name__
         report["message"] = str(err)
         log(f"      optical FAILED ({type(err).__name__}: {err}); continuing with radar only")
-        return None, report
+        return None, report, None
 
 
 def prepare(bbox, event_day: date, cache: Path, rp: RunParams, dp: DetectParams,
@@ -318,15 +324,15 @@ def prepare(bbox, event_day: date, cache: Path, rp: RunParams, dp: DetectParams,
                                            rp.stream_threshold_km2, paths["terrain"], log=log)
 
     log("[6/7] Sentinel-2 optical evidence (optional) ...")
-    evidence, optical_report = optical_stage(bbox, event_day, grid, cache, op,
-                                             conn=conn, log=log)
+    evidence, optical_report, s2_pair = optical_stage(bbox, event_day, grid, cache, op,
+                                                      conn=conn, log=log)
     return PreparedScene(
         grid=grid, choice=choice,
         pre_vv_db=np.stack([p[0] for p in pre]), pre_vh_db=np.stack([p[1] for p in pre]),
         post_vv_db=post_vv, post_vh_db=post_vh, terrain=terr, run_params=rp,
         preprocess_params={f: getattr(dp, f) for f in PREPROCESS_FIELDS},
         post_mask_counts=mask_counts, optical_evidence=evidence,
-        optical_params=op, optical_report=optical_report,
+        optical_params=op, optical_report=optical_report, optical_pair=s2_pair,
     )
 
 
@@ -482,10 +488,11 @@ def main(argv=None) -> int:
                          "(default: %(default)s; deposits persist, standing water may not)")
     ap.add_argument("--optical-fusion", choices=OPTICAL_FUSION_MODES,
                     default=OpticalParams.fusion,
-                    help="what Sentinel-2 evidence may do to the classes. 'off' (default): "
-                         "computed, written and reported, but changes no pixel, so the map is "
-                         "the measured radar-only map. 'union': fused in - UNSCORED until the "
-                         "leave-one-event-out optical pass has run")
+                    help="what Sentinel-2 evidence may do to the classes. 'union' (default "
+                         "since 2026-10-12, adopted by the leave-one-event-out optical pass): "
+                         "optical candidates are added to the map, subject to the same terrain "
+                         "and drainage tests as radar. 'off': computed, written and reported, "
+                         "but changes no pixel, so the map is the radar-only map")
     args = ap.parse_args(argv)
 
     rp = replace(RunParams(), resolution_m=args.res, n_pre=args.n_pre,

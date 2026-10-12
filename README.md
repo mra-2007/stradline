@@ -125,13 +125,12 @@ Track B requires Sentinel-2 where the sky is clear, so a live run gathers it by 
 (`--no-optical` turns the stage off). It is **evidence, not an assumption**: nothing here guesses
 through cloud, and where optical cannot see, the map is the radar map.
 
-**Gathered by default, fused only on request.** `OpticalParams.fusion` defaults to `off`:
-Sentinel-2 is chosen, downloaded, masked, turned into evidence, written and reported on every
-run, but it changes **no output pixel**, so the class map a default run produces is byte-identical
-to the radar-only detector that the measured numbers below actually describe
-(`tests/test_detect_optical_fusion.py`, `tests/test_pipeline_optical.py`). `--optical-fusion union`
-fuses it in; that configuration is **unscored** until the leave-one-event-out optical pass has run,
-which is exactly why it is not the default.
+**Gathered and fused by default, since it was measured.** `OpticalParams.fusion` was `off` until
+2026-10-12 — Sentinel-2 gathered and reported on every run but changing no pixel — precisely so
+that no unmeasured change reached the scored quantity. The leave-one-event-out optical pass has
+now run and adopted `union` under the rule declared before it (see Status). `--optical-fusion off`
+still produces the radar-only map exactly, and is the control the comparison rests on
+(`tests/test_detect_optical_fusion.py`, `tests/test_pipeline_optical.py`).
 
 1. **Scene choice from metadata.** Every L2A product carries a `cloudCover` attribute, so the
    clearest pre-event and post-event *date* is chosen from the catalogue, before any download —
@@ -146,10 +145,28 @@ which is exactly why it is not the default.
    and resampled nearest-neighbour in its own cube — never bilinearly. The share of the AOI clear
    on each date and on the pair is reported; below `min_clear_fraction` (20%) optical is refused
    with its reason.
-3. **Reflectance.** Scale and offset are taken from the file when it declares them, otherwise the
-   `BOA_ADD_OFFSET` is derived from the processing baseline in the product name. The conversion
-   actually applied is recorded in `run_report.json`, and an implausible result refuses the stage
-   rather than poisoning an index.
+3. **Reflectance, with the offset decided from the pixels.** Scale and offset are taken from the
+   file when it declares them. Otherwise the values are digital numbers, and whether
+   `BOA_ADD_OFFSET` still needs applying is **measured, not assumed**: the processing baseline in
+   the product name says the offset *exists*, but not whether the backend has already applied it,
+   and this one has. So the rule is *apply the specification offset unless doing so would make
+   more than 5% of valid pixels negative* — reflectance is not a negative quantity, true
+   over-correction is a few percent at worst (measured: ≤ 2.0%), and a doubled offset is tens of
+   percent (measured: 9–63% on 19 of the 20 dev-set files). It is **not a universal
+   discriminator**: the twentieth is 87% cloud, has no dark pixels to place the zero point, and
+   reads 1.70% either way — below the 1.96% worst case of a correctly converted file, so the two
+   overlap. A scene that bright is under cloud by definition and is refused on
+   `min_clear_fraction` before any index is computed; that, not the margin, is what makes the
+   undecidable case harmless, and `tests/test_optical_real_files.py` asserts the disjunction
+   (every real file is **either** decidable **or** too cloudy to use). The rule is symmetric, so
+   a genuine archive product still gets its offset and no code changes if the backend's
+   convention ever does. Both candidate figures, the
+   raw minimum and which test decided are written to `run_report.json`
+   (`optical.evidence.reflectance_conversion.<date>.offset_decision`), and an implausible result
+   refuses the stage rather than poisoning an index. This matters out of all proportion to its
+   size: MNDWI and NDVI are normalised ratios, so a multiplicative scale cancels but an offset
+   does not. Getting it wrong is exactly the bug found on the first real download — see
+   `docs/tuning_log.md`, 2026-10-12.
 4. **Two change signatures, never a single-date classification.**
    - *water*: MNDWI = (B03 − B11)/(B03 + B11) (Xu 2006) must read as water **and** have risen
      since the pre-event date. The rise test is what rejects permanent water, wet rock and dark
@@ -170,14 +187,15 @@ which is exactly why it is not the default.
    `optical.status` (`used`, `disabled`, `no_clear_pair`, `refused`, `failed`) with its reason
    (`tests/test_pipeline_optical.py`).
 
-**`union` is UNSCORED.** The measured numbers in Status below are radar-only
-(`params_hash d4f9b1791c82`), and because fusion defaults to `off` they still describe the map a
-default run produces. No accuracy number may be quoted for `union` until the dev-set S2 data is
-downloaded and floods *and controls* are re-scored — controls too, because fusion can only add
-pixels and so can only raise the false-flood rate. A run that merely *consulted* Sentinel-2 records
-a different `params_hash` (the optical section enters the hash whenever the stage is enabled), which
-is deliberate: the hash says what the run asked for, `optical.status` says what it got. See
-`docs/tuning_log.md`, 2026-10-11, for the parameter grid declared before any optical scoring.
+**`union` is SCORED, on floods and on controls.** The numbers in Status below are the fused
+configuration (final `params_hash 63a6d284bc4e`; two leave-one-out folds carry their own hash, see
+below), and because fusion is now the default they describe the map a default run produces. Controls were re-scored too, as they had to be: fusion can only
+add pixels and so can only raise the false-flood rate, and the worst control did rise, from
+0.0000 to 0.0022, well inside the 1% ceiling. A run that merely *consulted* Sentinel-2 still
+records its own `params_hash` (the optical section enters the hash whenever the stage is enabled):
+the hash says what the run asked for, `optical.status` says what it got — `used` on 6 of the 10
+dev events, `refused` on 4 where the clear pair fell below 20%. See `docs/tuning_log.md`,
+2026-10-12, for the pass, the adoption rule and the caveat on where the gain comes from.
 
 ## Scoring the dev set (checking only, never an input)
 
@@ -189,8 +207,8 @@ rem 1. fetch the Sentinel-1 and DEM rasters the scoreboard needs (openEO, resuma
 venv\Scripts\python.exe -m eval.fetch_dev_data --estimate
 venv\Scripts\python.exe -m eval.fetch_dev_data --plan gates --workers 3
 
-rem 1b. and the Sentinel-2 pair per event, needed to score --optical-fusion union
-rem     (~857 MB more, 40 files; floods AND controls, since fusion can only add pixels)
+rem 1b. and the Sentinel-2 pair per event, needed to score optical fusion
+rem     (454 MB more in 40 files, MEASURED; floods AND controls, since fusion only adds pixels)
 venv\Scripts\python.exe -m eval.fetch_dev_data --estimate --optical
 venv\Scripts\python.exe -m eval.fetch_dev_data --plan gates --optical --workers 3
 
@@ -199,6 +217,11 @@ venv\Scripts\python.exe -m eval.run_scoreboard --no-write
 
 rem 3. choose parameters by leave-one-event-out and score each left-out event
 venv\Scripts\python.exe -m eval.tune
+
+rem 3b. and the second pass over the optical grid: fusion off vs union, same SAR
+rem      point per fold, then the declared adoption rule. Rows only if it says KEEP.
+venv\Scripts\python.exe -m eval.tune --plan gates --optical
+
 venv\Scripts\python.exe -m eval.check_gates
 ```
 
@@ -206,7 +229,7 @@ venv\Scripts\python.exe -m eval.check_gates
 |---|---|
 | `eval/fetch_dev_data.py` | Downloads only allowed inputs (Sentinel-1, Copernicus DEM, and with `--optical` the Sentinel-2 pair) into `runs/eval/<event>/cache`, resumable, `--estimate` for a size plan with no network. An event with no clear Sentinel-2 pair downloads none and is scored radar-only. |
 | `eval/run_scoreboard.py` | Runs the pipeline per event from the cache and scores floods against their reference using each event's `reference_classes`; controls on `false_flood_fraction`. Appends rows to `eval/results/flood.csv`. |
-| `eval/tune.py` | Leave-one-event-out over the grid in `config.py::TUNE_GRID`: maximise mean tolerant F1 on the OTHER events subject to every control ≤ 1% false flood, then score the left-out event (`split=loeo`). Writes `eval/chosen_params.json` and a diff against `config.py` — it never edits `config.py`. |
+| `eval/tune.py` | Leave-one-event-out over the grid in `config.py::TUNE_GRIDS`: maximise mean tolerant F1 on the OTHER events subject to every control ≤ 1% false flood, then score the left-out event (`split=loeo`). With `--optical`, a **second** leave-one-event-out pass over `OPTICAL_TUNE_GRIDS`, crossing each fold's own SAR point with every optical point, then the adoption rule in `config.OPTICAL_ADOPTION` — declared before the pass, and rows are appended only if it says KEEP. Before the verdict is trusted it checks that fusion `off` reproduces the radar-only numbers exactly (30/30 on the current dev set). Writes `eval/chosen_params.json` and a diff against `config.py` — it never edits `config.py`. |
 | `validation/compare.py` | The metric definitions, used by both the scoreboard and the CLI below, so a manual check and a gate row cannot disagree. |
 
 Things these scripts refuse to do, by design:
@@ -243,19 +266,27 @@ not real-world accuracy.
 **Measured on real data (6 independent mountain/valley flood references, leave-one-event-out,
 20 m boundary tolerance).** Primary quantity is flood-affected area = our flood classes ∪ debris,
 against each reference's flooded + debris/mass-movement classes. Every number below is a row in
-`eval/results/flood.csv` (`run_id=20261011T110254Z`, `params_hash=d4f9b1791c82`, `split=loeo` for
-floods, `split=full` for controls); method and caveats: `eval/chosen_params.json`,
+`eval/results/flood.csv` (`run_id=20261012T114247Z`, `split=loeo` for floods, `split=full` for
+controls). Leave-one-event-out means the rows do **not** share one `params_hash`: four events were
+scored at `63a6d284bc4e`, Poza Honda at `297a77922b9f` and Larkana at `e5e341834c3d`, those two
+being the folds whose SAR `z_seed` differed — the per-fold hashes are listed in
+`eval/chosen_params.json` under `optical_pass.fusion_union`; method and caveats: `eval/chosen_params.json`,
 `docs/tuning_log.md`. Measured at `n_pre=3` (`DEV_N_PRE`, the dev download-cost setting), a thinner
 reference stack than the shipped default of 5.
 
-> **These numbers are RADAR-ONLY — and that is still what a default run maps.** Sentinel-2 is
-> gathered and reported by default but `OpticalParams.fusion` is `off`, so the class map is
-> byte-identical to the detector these numbers measured (`params_hash=d4f9b1791c82`, reproducible
-> by this code — pinned by `tests/test_params_hash_reproducible.py`). What is **UNSCORED** is
-> `--optical-fusion union`: the dev-set Sentinel-2 data has not been downloaded, so no accuracy
-> number exists for fusion and none is claimed, and re-scoring must cover floods **and** controls
-> because fusion can only add pixels. `eval.check_gates` therefore reads exactly as it did before
-> the optical work. See `docs/tuning_log.md`, 2026-10-11, "Sentinel-2 optical evidence".
+> **These numbers are Sentinel-1 + Sentinel-2 fused, and that is what a default run maps.**
+> `OpticalParams.fusion` became `union` on 2026-10-12, adopted by the leave-one-event-out optical
+> pass against the rule declared in `config.OPTICAL_ADOPTION` *before* the pass was run. Held out:
+> mean tolerant F1 **0.5134 → 0.5232**, no event worse by more than 0.0033, worst control 0.0022
+> against a 1% ceiling. The configuration is reproducible by this code and pinned by
+> `tests/test_params_hash_reproducible.py` and `tests/test_detect_optical_fusion.py`.
+>
+> **Read the gain before relying on it: it is concentrated in the wrong place.** +0.0548 of the
+> +0.0587 summed gain is one event — Larkana, a flat floodplain with a 100% clear pair and the
+> second-best radar score. In the steep gorges where the system actually fails, optical is
+> **zero or slightly negative** (−0.0023, −0.0033) and on four of the ten events cloud refused it
+> altogether. Fusing Sentinel-2 helps most where radar already worked; it does not fix the
+> measured failure. See `docs/tuning_log.md`, 2026-10-12.
 
 ### Final per-event scores (`venv\Scripts\python.exe -m eval.check_gates`)
 
@@ -264,32 +295,42 @@ of parameter selection.
 
 | Event | Terrain | P | R | **F1** | IoU | P tol | R tol | **F1 tol** |
 |---|---|---|---|---|---|---|---|---|
-| bosnia_konjic_2024 | gorge, 21.8° mean slope | 0.036 | 0.028 | **0.032** | 0.016 | 0.065 | 0.075 | **0.069** |
-| bhutan_punakha_2024 | gorge, 24.4° | 0.071 | 0.081 | **0.076** | 0.039 | 0.111 | 0.126 | **0.118** |
-| ecuador_poza_honda_2025 | hill valley, 13.1° | 0.432 | 0.390 | **0.410** | 0.258 | 0.579 | 0.534 | **0.555** |
-| norway_selsverket_2023 | valley, 16.3° | 0.486 | 0.467 | **0.477** | 0.313 | 0.562 | 0.616 | **0.588** |
-| pakistan_larkana_2022 | irrigated plain, 0.3° | 0.822 | 0.636 | **0.717** | 0.559 | 0.866 | 0.805 | **0.834** |
-| norway_ringebu_2023 | broad valley, 9.9° | 0.769 | 0.699 | **0.732** | 0.577 | 0.923 | 0.907 | **0.915** |
-| **mean (6 events)** | | **0.436** | **0.384** | **0.407** | **0.294** | **0.518** | **0.511** | **0.513** |
+`S2` is the share of the area Sentinel-2 could see on **both** dates; `—` means cloud refused
+optical and the row is radar-only.
 
-No-flood controls, false flood fraction: Punakha 0.0000, Konjic 0.0000, Ringebu 0.0014,
+| Event | Terrain | S2 | P | R | **F1** | IoU | P tol | R tol | **F1 tol** |
+|---|---|---|---|---|---|---|---|---|---|
+| bosnia_konjic_2024 | gorge, 21.8° mean slope | 88% | 0.038 | 0.038 | **0.038** | 0.019 | 0.066 | 0.098 | **0.079** |
+| bhutan_punakha_2024 | gorge, 24.4° | 54% | 0.061 | 0.091 | **0.073** | 0.038 | 0.096 | 0.147 | **0.116** |
+| ecuador_poza_honda_2025 | hill valley, 13.1° | — | 0.432 | 0.390 | **0.410** | 0.258 | 0.579 | 0.534 | **0.555** |
+| norway_selsverket_2023 | valley, 16.3° | 33% | 0.480 | 0.468 | **0.474** | 0.311 | 0.556 | 0.616 | **0.585** |
+| pakistan_larkana_2022 | irrigated plain, 0.3° | 100% | 0.790 | 0.843 | **0.815** | 0.688 | 0.862 | 0.918 | **0.889** |
+| norway_ringebu_2023 | broad valley, 9.9° | — | 0.769 | 0.699 | **0.732** | 0.577 | 0.923 | 0.907 | **0.915** |
+| **mean (6 events)** | | | **0.428** | **0.421** | **0.424** | **0.315** | **0.514** | **0.537** | **0.523** |
+
+No-flood controls, false flood fraction: Punakha 0.0022, Konjic 0.0011, Ringebu 0.0014,
 Poza Honda 0.0048. Coverage: 6/6 gate-eligible floods, 4 of 8 declared controls.
 
 ### Gate status
 
 | Gate | Measured | Target | Status |
 |---|---|---|---|
-| `flood_mapping` mean precision, tolerant | 0.5177 | ≥ 0.90 | **FAIL** |
-| `flood_mapping` mean recall, tolerant | 0.5105 | ≥ 0.90 | **FAIL** |
-| `flood_mapping` mean F1, tolerant | 0.5134 | ≥ 0.90 | **FAIL** |
-| `flood_mapping` worst single event, F1 tolerant | 0.0694 | ≥ 0.80 | **FAIL** |
-| `flood_mapping` mean F1, strict | 0.4071 | report | — |
-| `flood_mapping` mean IoU, strict | 0.2937 | report | — |
+| `flood_mapping` mean precision, tolerant | 0.5137 | ≥ 0.90 | **FAIL** |
+| `flood_mapping` mean recall, tolerant | 0.5366 | ≥ 0.90 | **FAIL** |
+| `flood_mapping` mean F1, tolerant | 0.5231 | ≥ 0.90 | **FAIL** |
+| `flood_mapping` worst single event, F1 tolerant | 0.0789 | ≥ 0.80 | **FAIL** |
+| `flood_mapping` mean F1, strict | 0.4237 | report | — |
+| `flood_mapping` mean IoU, strict | 0.3152 | report | — |
 | `no_flood_controls` max false flood | 0.0048 | ≤ 0.01 | **PASS** |
 
 **Module status: `flood_mapping` FAIL, `no_flood_controls` PASS.** By the definition of done in
-CLAUDE.md, SAR flood mapping is **not done**. It is finalised, not passing: the method, the
-parameters and the evidence are fixed and committed, and the gate it misses is reported as missed.
+CLAUDE.md, flood mapping is **not done**. It is finalised, not passing: the method, the parameters
+and the evidence are fixed and committed, and the gate it misses is reported as missed.
+
+**Flood mapping is FROZEN** as of 2026-10-12, after the optical fusion pass. No further detection
+change. Everything built on top of it — the damage overlay, the cut-off analysis, the copilot, the
+dashboard and the sitrep — reads this map as it stands and must carry its measured accuracy and the
+narrow-valley caveat with every number it quotes.
 
 The detector runs in `rough_water` mode, chosen over the original `darkening` mode by
 leave-one-event-out: it wins on 5 of 6 held-out events, and `darkening` is in fact **infeasible** —
@@ -304,21 +345,23 @@ Held-out F1 tracks the reference's positive fraction (rank correlation **0.886**
 
 | Event | F1 tol | reference ha | reference % of AOI | predicted ha | mean slope |
 |---|---|---|---|---|---|
-| bosnia_konjic_2024 | 0.069 | 42.6 | 0.134% | 33.5 | 21.8° |
-| bhutan_punakha_2024 | 0.118 | 31.3 | 0.023% | 35.3 | 24.4° |
+| bosnia_konjic_2024 | 0.079 | 42.6 | 0.134% | 42.3 | 21.8° |
+| bhutan_punakha_2024 | 0.116 | 31.3 | 0.023% | 46.3 | 24.4° |
 | ecuador_poza_honda_2025 | 0.555 | 197.6 | 0.306% | 178.6 | 13.1° |
-| norway_selsverket_2023 | 0.588 | 125.1 | 1.015% | 120.3 | 16.3° |
-| pakistan_larkana_2022 | 0.834 | 50187.7 | 50.795% | 38836.6 | 0.3° |
+| norway_selsverket_2023 | 0.585 | 125.1 | 1.015% | 121.8 | 16.3° |
+| pakistan_larkana_2022 | 0.889 | 50187.7 | 50.795% | 53535.1 | 0.3° |
 | norway_ringebu_2023 | 0.915 | 863.4 | 2.015% | 785.2 | 9.9° |
 
 Sources, column by column: F1 from `eval/results/flood.csv`; `reference_ha`,
 `reference_fraction_of_domain` and `predicted_flood_affected_ha` from each event's score file
-`runs/eval/<event>/scores/d4f9b1791c82.json`; mean slope from the DEM-derived `terrain:` note
-declared per event in `eval/events.yaml`.
+under `runs/eval/<event>/scores/` at that fold's chosen hash (`63a6d284bc4e` for four events,
+`297a77922b9f` for Poza Honda and `e5e341834c3d` for Larkana, which are the folds whose SAR
+`z_seed` differed — each listed in `eval/chosen_params.json` under `optical_pass.fusion_union`);
+mean slope from the DEM-derived `terrain:` note declared per event in `eval/events.yaml`.
 
 **The quantity of flooding is approximately right; on the two steepest events it is in the wrong
-place.** At Konjic the detector predicts 33.5 ha against a 42.6 ha reference and overlaps almost
-none of it. That is a **localisation failure at 20 m in a gorge, not a threshold that needs
+place.** At Konjic the detector predicts 42.3 ha against a 42.6 ha reference — within a hectare —
+and overlaps almost none of it. That is a **localisation failure at 20 m in a gorge, not a threshold that needs
 retuning** — no parameter in the declared grid fixes it, and `hand_max_water_m` was offered 35 m by
 the grid and the data declined it. A 20 m resolution cell in a floor only two or three pixels wide
 straddles water, bank and wall, so its class reflects whichever scatterer dominated a mixed pixel.
@@ -357,18 +400,25 @@ all read NO DATA — not started.
 - **Radar geometry.** Layover and shadow on steep slopes; the SAR mask band stays off until its encoding is verified.
 - **Debris ambiguity.** Brightening can also come from vegetation or structural change, hence "possible debris". Measured on EMSR770: the current debris channel covers 3.8% of that AOI at precision 0.0062 against the expert mass-movement class — far too permissive, see `docs/tuning_log.md`.
 - **Rough water — addressed, not solved.** The original `darkening` method assumed open water is dark; in a steep gorge a turbulent, sediment-laden flood is a rough scatterer and brightens instead, and measured on EMSR770 **0.0% of the expert flood extent passed the darkness gate**. The default is now `rough_water`, which accepts a coherent change of either sign on the valley floor and takes darkness only as the high-confidence test. That changed the numbers decisively (Punakha 0.025 → 0.118, Poza Honda 0.125 → 0.555 tolerant F1, and the binding Norwegian control from 4.9% to 0.14% false flood) and it is still far from the gate: the sign of the change was not the only problem.
-- **Optical evidence is unscored, and cloud-limited by nature.** Sentinel-2 is now *gathered*
-  where the sky is clear (fusion `off` by default, so it informs the report without changing the
-  map), and the reasons it may not be are reported per run, never hidden: no clear pair in
-  the window, too little of the area clear after SCL masking, a refused reflectance convention, or
-  a backend failure. Two costs are structural. (1) Terrain shadow is excluded as unusable, and
-  terrain shadow is commonest in exactly the narrow gorges where radar is weakest, so optical
-  coverage is lowest where it would help most — `optical.evidence.clear_fraction_pair` says how
-  much of each area it actually saw. (2) The post-event window is 20 days, so standing water may
-  have drained before the clear scene; optical *water* is therefore a lower bound at long latency
-  and deposits are the stronger optical signal. Whether fusion improves accuracy **has not been
-  measured**, so fusion is **off by default** and optical evidence currently informs the report
-  without changing the map; `off` is a live possibility in the declared grid and may win.
+- **Optical evidence is measured now, and it helps where help was least needed.** Fusing
+  Sentinel-2 gains **+0.0098** mean tolerant F1 held out, but **+0.0548 of the +0.0587 summed
+  gain is a single event** — Larkana, a flat floodplain with a 100% clear pair. In the gorges that
+  cause the gate failure it is −0.0023, −0.0033, and exactly nothing where cloud refused it. It is
+  adopted because the declared rule says a measured gain that costs no event and no control is
+  kept, not because it fixes anything.
+- **Optical is cloud-limited by nature, and that limit bites hardest where it would help most.**
+  **Four of the ten dev events had no usable pair at all**, and three of those four missed the 20%
+  floor by under a point (19.5%, 19.9%, 17.1%). In every one it is the *intersection* of two clear
+  dates that fails — one date is clear, the other is not — which is a structural cost of using
+  optical as a change detector, not bad luck. `min_clear_fraction` was set from the specification
+  before any of this was measured and has deliberately **not** been lowered to admit them. Two
+  further costs are structural. (1) Terrain shadow is excluded as unusable, and it is commonest in
+  exactly the narrow gorges where radar is weakest, so optical coverage is lowest where it would
+  help most — `optical.evidence.clear_fraction_pair` says how much of each area it actually saw.
+  (2) The post-event window is 20 days, so standing water may have drained before the clear scene;
+  optical *water* is therefore a lower bound at long latency and deposits are the stronger optical
+  signal. On Bosnia the whole optical gain came from the deposit channel (538 water candidates
+  against 19,013 deposit candidates).
 - **Bridges.** Too narrow to confirm collapse at this resolution.
 
 ## Attribution

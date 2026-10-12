@@ -23,6 +23,7 @@ from strandline import catalog, ingest, optical, run
 from strandline.config import (
     CLASS_FLOOD_HIGH,
     CLASS_FLOOD_MEDIUM,
+    FLOOD_AFFECTED_CLASSES,
     SOURCE_BOTH,
     SOURCE_NONE,
     SOURCE_OPTICAL,
@@ -119,9 +120,10 @@ def _radar_fakes(monkeypatch, rng):
 
 RP = RunParams(stream_threshold_km2=0.5)
 
-# The SHIPPED default is fusion `off` (optical computed and reported, but
-# changing no pixel) until the leave-one-event-out optical pass has measured it,
-# so a test of the fusion machinery must ask for `union` explicitly.
+# Asked for explicitly rather than read from the shipped default, so that a
+# test of the fusion MACHINERY keeps testing the same thing if the default ever
+# moves again. The default itself is pinned against the recorded adoption
+# verdict in tests/test_detect_optical_fusion.py.
 OP_UNION = replace(OpticalParams(), fusion=FUSION_UNION)
 
 
@@ -183,12 +185,18 @@ def test_fusion_adds_the_reach_radar_missed(tmp_path, monkeypatch):
     assert affected("fused") > affected("radar")
 
 
-def test_the_shipped_default_reports_optical_but_changes_no_pixel(tmp_path, monkeypatch):
-    """The default is fusion `off`: Sentinel-2 is chosen, downloaded, masked,
-    written and reported, and the class map is the measured radar-only map.
+def test_the_shipped_default_fuses_optical_and_only_ever_adds(tmp_path, monkeypatch):
+    """The default is fusion `union` since 2026-10-12, when the optical pass
+    adopted it (docs/tuning_log.md; pinned against the recorded verdict in
+    tests/test_detect_optical_fusion.py).
 
     This is the configuration a judge gets by running the CLI with no flags, so
-    it is the one that must match the numbers in the README."""
+    it is the one that must match the numbers in the README. Until that date the
+    default was `off` and this test asserted the map was unchanged; what it
+    asserts now is the invariant that makes fusion safe to ship - optical only
+    ever ADDS flood-affected pixels, it can never take one away, so the reach of
+    the radar map is a floor under the fused one.
+    """
     _radar_fakes(monkeypatch, np.random.default_rng(3))
     monkeypatch.setattr(optical, "download_s2_date", _fake_s2_download())
     assert run.run(BBOX, EVENT, tmp_path / "default", RP, DetectParams(), dry_run=False) == 0
@@ -201,16 +209,24 @@ def test_the_shipped_default_reports_optical_but_changes_no_pixel(tmp_path, monk
         with rasterio.open(tmp_path / where / "flood_classes.tif") as src:
             return src.read(1)
 
-    # Optical was really used as EVIDENCE ...
     opt = json.loads((tmp_path / "default" / "run_report.json").read_text())["optical"]
     assert opt["status"] == "used"
-    assert opt["fusion"] == "off"
+    assert opt["fusion"] == "union"
+    assert opt["fused_into_map"] is True
     assert opt["evidence"]["optical_water_candidate_pixels"] > 1000
-    # ... and changed not one pixel of the map.
-    assert opt["fused_into_map"] is False
-    assert np.array_equal(classes("default"), classes("radar"))
+
+    # FLOOD_AFFECTED_CLASSES, not the water classes alone: the scored quantity
+    # is flood UNION debris (provenance.scored_quantity), so a fusion bug that
+    # turned a debris pixel into "no significant change" would shrink what the
+    # gate measures while leaving the water classes untouched.
+    fused, radar = classes("default"), classes("radar")
+    was = np.isin(radar, list(FLOOD_AFFECTED_CLASSES))
+    now = np.isin(fused, list(FLOOD_AFFECTED_CLASSES))
+    assert (was & ~now).sum() == 0, "fusion removed flood-affected pixels; it may only add"
+    assert now.sum() > was.sum(), "the clear optical pair added nothing at all"
+    # And the second sensor is credited per pixel.
     with rasterio.open(tmp_path / "default" / "flood_source.tif") as src:
-        assert set(np.unique(src.read(1))) <= {SOURCE_NONE, SOURCE_SAR}
+        assert {SOURCE_OPTICAL, SOURCE_BOTH} & set(np.unique(src.read(1)))
 
 
 # --- every failure is a report, not a lost run --------------------------------

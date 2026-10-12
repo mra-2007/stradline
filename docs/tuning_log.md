@@ -1444,3 +1444,127 @@ parameter-and-metric question, not a bug.
 The honest one-line summary for Q&A: **the flood-water channel carries the
 map; the debris channel contributes 296.8 ha across the dev set, 96% of it on
 a dry control, and 0.0 precision where ground truth exists.**
+
+---
+
+## 2026-10-12 — DECLARED BEFORE SCORING: a stricter control criterion, and two new options
+
+**Nothing in this entry has been scored.** It is written, and committed, before
+the pass it governs is run — the process fix promised in the previous entry,
+where `/audit` correctly noted that git could not corroborate a "declared
+before" claim because the rule and the result landed in one commit. This time
+the declaration is its own commit and the ordering is on the record.
+
+Two decisions, both prompted by the class-count audit above.
+
+### Decision 1: every control must now pass BOTH false-flood ceilings
+
+The audit showed the gated control metric is diluted by terrain-excluded
+ground: `bhutan_punakha_control_2024` reads 0.0022 over the whole scoring
+domain and **4.37%** over the ground the detector could actually classify,
+because 95% of that AOI is terrain-excluded and sits in the denominator. A 1%
+ceiling that a 4.37% false-flood rate passes is not doing the job it was
+written for.
+
+So from now on, for this and **every later adoption decision**, a parameter set
+is feasible only if every control satisfies both:
+
+| constraint | source | value |
+|---|---|---|
+| `false_flood_fraction` (whole scoring domain) | `eval/gates.yaml`, human-owned | <= 0.01 |
+| `false_flood_fraction_analysed_area` (domain minus terrain-excluded) | this project, declared here | <= 0.01 |
+
+**`eval/gates.yaml` is NOT touched.** The published gate keeps its declared
+metric and its declared domain, exactly as before; this is an ADDITIONAL
+feasibility constraint inside the tuner, and it can only ever make adoption
+harder. Tightening a constraint is not the "changing what is measured" Rule 3.2
+forbids — that rule is about loosening, shrinking and excluding, and all three
+remain forbidden. The reference definition, the scoring domain and the boundary
+tolerance are unchanged.
+
+Consequence accepted in advance: this may make the currently shipped
+configuration INFEASIBLE. Fusion `union` puts Bhutan's control at 4.37% over
+analysed ground, so on today's evidence `union` cannot survive the new
+criterion. That is the point of adding it.
+
+A cached control score written before this field existed cannot demonstrate the
+constraint, so it is not reused: the tuner re-scores any control whose cached
+score lacks `false_flood_fraction_analysed_area` rather than assuming it would
+have passed.
+
+### Decision 2: two options added to the declared grid
+
+Both are added to the SECOND (optical) pass, which is crossed with the SAR
+point each fold chose without its held-out event — the same structure as
+before, so both halves of every configuration stay out of sample.
+
+**(a) `extent.debris_in_flood_extent`, values `(True, False)`.**
+
+`True` is today's behaviour: the debris class is part of the flood extent and
+of the primary scored quantity. `False` keeps debris as an **output layer**,
+written and reported as *"possible debris, unverified"*, but takes it out of
+the flood extent — so it is not scored, not counted in flood-affected hectares,
+and **must not be consumed by the damage overlay or the cut-off analysis**,
+which are the next modules to be built.
+
+Why it is on the grid rather than simply switched off: the audit measured the
+debris class at precision **0.0** against the only expert mass-movement
+reference in the dev set (18 predicted, 0 correct, 582 missed), with 96% of all
+its dev-set pixels on a dry no-flood control. That is strong evidence against
+it, but "strong evidence against" is not the same as a measured decision, and
+this project does not ship either one on a judgement call when it can score it.
+
+The reference definition does **not** change: references are still scored as
+flooded + debris/mass-movement, exactly as declared on 2026-10-11. So `False`
+makes the task HARDER in principle — the 582 reference debris pixels at Konjic
+become unreachable misses — and it is allowed to lose on that basis.
+
+Where the flag lives, and why not on `DetectParams`: it changes no pixel of the
+class map (debris is still written as `CLASS_DEBRIS`), but it does change the
+scored quantity, so it must change `params_hash`. Putting it on `DetectParams`
+would re-hash every configuration already published — the exact bug recorded in
+this log on 2026-10-11. It therefore gets its own `ExtentParams`, whose section
+`params_dict` includes **only when it differs from the default**, so every
+published hash stays reproducible and the new option gets a hash of its own.
+
+**(b) `optical.fusion`, values `(off, union, water_only)`.**
+
+`water_only` is new and the code **does** support it with a small change: the
+MNDWI water evidence is fused exactly as in `union`, and the NDVI-drop /
+SWIR-rise deposit channel contributes nothing. It is worth scoring because the
+audit localised the damage precisely — the optical deposit channel produced
+7,111 false pixels on one dry control, while the optical *water* channel is
+where Larkana's +0.0548 came from (1.41 million water candidates on a 100%
+clear pair). `water_only` is the configuration that keeps the one and drops the
+other, and no one has measured it.
+
+One sub-grid per fusion mode, so no point ever varies a parameter its mode
+ignores — the convention already in force:
+
+```
+off         {}                                             1 point
+union       mndwi_water (0.0, 0.2) x ndvi_drop_min (0.10, 0.20)   4 points
+water_only  mndwi_water (0.0, 0.2)                         2 points
+```
+
+`ndvi_drop_min` is deliberately absent from `water_only`: with no deposit
+channel it cannot change a pixel. Crossed with `debris_in_flood_extent`, the
+second pass is **7 x 2 = 14 points**, and crossed with the three distinct SAR
+points the folds chose, **42 configurations**.
+
+### How the winner is chosen, and the rule this supersedes
+
+The objective and the tie-break are unchanged: maximise mean boundary-tolerant
+F1 over the training events, subject to every control passing **both** ceilings,
+ties broken by grid order (declaration order in `config.py`).
+
+`OPTICAL_ADOPTION`'s requirement that the mean must IMPROVE is **explicitly
+suspended for this decision**, and that is a deliberate declaration, not a
+convenience: the stricter control criterion may rule out the configuration now
+shipped, and when the reason for a change is that the incumbent is infeasible,
+"it does not improve the mean" must not be allowed to block it. **Whatever wins
+under the two ceilings is adopted, even if the mean is worse than today's
+0.5232.** A configuration that scores lower but keeps a dry valley dry is the
+better system, and this project would rather report a lower number it believes.
+
+After this pass, flood mapping is frozen for good.

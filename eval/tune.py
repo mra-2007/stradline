@@ -1523,6 +1523,39 @@ def optical_coverage(matrix: Matrix, planned: list[dict]) -> dict:
     return out
 
 
+def adopted_something(report: dict) -> bool:
+    """Did this run adopt a configuration, by any of the declared routes?"""
+    if report.get("chosen_parameters"):
+        return True
+    optical_pass = report.get("optical_pass") or {}
+    if (optical_pass.get("dominance") or {}).get("chosen") is not None:
+        return True
+    return bool((optical_pass.get("adoption") or {}).get("keep_fusion"))
+
+
+def overwrite_refusal(path: Path, report: dict) -> str | None:
+    """Why this run must not overwrite `path`, or None if it may.
+
+    A run that adopted NOTHING must not erase a record that documents an
+    adoption: the rows in eval/results/flood.csv are keyed to that record, and
+    without it nothing says which configuration the published gate describes.
+    This is not hypothetical - it happened on 2026-10-13, when re-running the
+    pass on a clean tree (to refresh a provenance hash) replaced the adoption
+    record with a run that correctly adopted nothing, because by then the
+    shipped configuration WAS the adopted one and so could not be dominated.
+    """
+    if adopted_something(report) or not path.exists():
+        return None
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not adopted_something(existing):
+        return None
+    return (f"this run adopted nothing, but {path.name} records an adoption "
+            f"(run_id {existing.get('run_id')})")
+
+
 # --- main ---------------------------------------------------------------------
 
 def main(argv=None) -> int:
@@ -1546,6 +1579,10 @@ def main(argv=None) -> int:
     ap.add_argument("--runs-root", type=Path, default=EVAL_RUNS)
     ap.add_argument("--results-dir", type=Path, default=None)
     ap.add_argument("--chosen-out", type=Path, default=CHOSEN)
+    ap.add_argument("--force-chosen-out", action="store_true",
+                    help="overwrite the chosen-parameters record even when this run adopted "
+                         "nothing and the existing record documents an adoption. Only with "
+                         "that record gone, nothing says what the published rows describe")
     args = ap.parse_args(argv)
 
     if args.apply_check:
@@ -1740,9 +1777,18 @@ def main(argv=None) -> int:
         ],
     }
     if not args.no_write:
-        args.chosen_out.parent.mkdir(parents=True, exist_ok=True)
-        args.chosen_out.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
-        print(f"\nwrote {_rel(args.chosen_out)}")
+        refusal = overwrite_refusal(args.chosen_out, report)
+        if refusal and not args.force_chosen_out:
+            print(f"\nNOT writing {_rel(args.chosen_out)}: {refusal}")
+            print("  The rows in eval/results/flood.csv are described by the record already "
+                  "there; overwriting it would leave them describing nothing.")
+            print(f"  Send this run elsewhere with --chosen-out, or pass "
+                  f"--force-chosen-out if you mean to discard that record.")
+        else:
+            args.chosen_out.parent.mkdir(parents=True, exist_ok=True)
+            args.chosen_out.write_text(json.dumps(report, indent=2, default=str),
+                                       encoding="utf-8")
+            print(f"\nwrote {_rel(args.chosen_out)}")
 
     # Printed whenever anything was adopted, which includes the dominance rule
     # firing after the radar pass found nothing feasible.

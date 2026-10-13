@@ -2066,3 +2066,73 @@ control criterion on Ecuador — and that `debris_in_flood_extent` is now
 **False**, so the flood extent is flood water only. The debris layer is still
 written and must be labelled *"possible debris, unverified"*; the damage overlay
 and the cut-off analysis **must not consume it**.
+
+---
+
+## 2026-10-13 — Provenance of the adopted rows, and a record the tuner nearly erased
+
+`/audit` objected, correctly, that the adopted gate rows were written by a dirty
+tree: their `git_commit` column reads `2c8d8f4-dirty`, so no commit reproduced
+them. Resolving that turned up two more things worth writing down.
+
+### The rows do reproduce from the committed tree
+
+The code is committed as `65d301e`. Every published pair was re-scored from
+scratch against it and compared metric by metric:
+
+| event | hash | result |
+|---|---|---|
+| `bhutan_punakha_2024` | `0550873e7ea6` | identical |
+| `bosnia_konjic_2024` | `0550873e7ea6` | identical |
+| `ecuador_poza_honda_2025` | `d46da9ccd649` | identical |
+| `norway_ringebu_2023` | `0550873e7ea6` | identical |
+| `norway_selsverket_2023` | `0550873e7ea6` | identical |
+| `pakistan_larkana_2022` | `f08e2edf2c4c` | identical |
+| all four controls | `0550873e7ea6` | identical |
+
+**10 of 10 byte-identical**, and separately all 10 CSV rows match their score
+files exactly. So the `-dirty` suffix records the state of the tree at the
+moment of writing, which is what it is for, and not an irreproducible number.
+The suffix stays: rewriting history to make a label tidy would be worse than the
+label.
+
+### Why the rows could NOT simply be re-emitted with a clean hash
+
+The obvious fix - re-run the pass on the clean tree and let it append fresh rows
+- does not work, for a reason that is itself a property worth recording. The
+dominance rule compares candidates against **the shipped configuration**, and
+the shipped configuration is now the adopted one. Nothing can be strictly better
+than itself, so the rule correctly adopts nothing, writes no rows, and reports
+`nothing (incumbent stands)`.
+
+That is the right answer and a good sign: **the adopted point is a fixed point
+of the rule.** Re-running cannot drift it, and a future candidate must beat the
+shipped configuration on every quantity in every fold to displace it.
+
+### The bug that nearly cost the record
+
+That re-run **overwrote `eval/chosen_params.json`** with its own
+adopted-nothing report - erasing the record of the adoption that the published
+rows are keyed to. Caught by inspecting the diff, and restored from `65d301e`.
+
+Nothing in the data was lost, but the failure mode is sharp: a well-intentioned
+re-run, on a clean tree, for a good reason, silently replaces the only record
+saying which configuration the published gate describes. The earlier refusal
+pass avoided it only because I happened to pass `--chosen-out` to a different
+file, which is luck, not design.
+
+So the tuner now refuses it. `overwrite_refusal` blocks a write to the
+chosen-parameters record when **this run adopted nothing and the existing record
+documents an adoption**, naming the run_id it is protecting and pointing at
+`--chosen-out` or the explicit `--force-chosen-out`. Two tests pin it, including
+the exact scenario above. Verified by re-running the pass afterwards: the record
+survived and no row was appended.
+
+A pattern across the last two days, stated because it keeps recurring in
+different clothes: **the dangerous operations here are not the scoring ones, they
+are the recording ones.** A wrong number gets caught by a gate or an audit. A
+lost or overwritten record leaves the numbers intact and makes them unexplainable,
+which under Rule 3.8 is the same as not having them. The protections that have
+had to be added - append-only results, a separate artefact for a refusal, the
+`-dirty` marker, the extent hash baseline, and now this - are all of that one
+kind.

@@ -838,3 +838,46 @@ def test_the_extent_default_is_reported_by_extent_of():
     assert tune.extent_of({}) is ExtentParams().debris_in_flood_extent
     assert tune.extent_of({"extent.debris_in_flood_extent": True}) is True
     assert tune.extent_of({"extent.debris_in_flood_extent": False}) is False
+
+
+# --- the adoption record must not be erased by a run that adopts nothing ----
+
+def test_a_run_that_adopts_nothing_may_not_overwrite_an_adoption_record(tmp_path):
+    """The rows in flood.csv are keyed to that record.
+
+    This happened: re-running the pass on a clean tree, to refresh a provenance
+    hash, replaced the adoption record with a run that correctly adopted nothing
+    - because by then the shipped configuration WAS the adopted one and so could
+    not be dominated. The published rows were left describing nothing.
+    """
+    import json
+
+    path = tmp_path / "chosen_params.json"
+    adopted = {"run_id": "A", "optical_pass": {"dominance": {"chosen": {"x": 1}}}}
+    path.write_text(json.dumps(adopted), encoding="utf-8")
+
+    nothing = {"run_id": "B", "chosen_parameters": None,
+               "optical_pass": {"dominance": {"chosen": None},
+                                "adoption": {"keep_fusion": False}}}
+    refusal = tune.overwrite_refusal(path, nothing)
+    assert refusal and "adopted nothing" in refusal
+    assert "A" in refusal, "the refusal must name the record it is protecting"
+
+    # A run that DID adopt may overwrite it, and so may any run if the existing
+    # record adopted nothing itself.
+    assert tune.overwrite_refusal(path, adopted) is None
+    path.write_text(json.dumps(nothing), encoding="utf-8")
+    assert tune.overwrite_refusal(path, nothing) is None
+    assert tune.overwrite_refusal(tmp_path / "absent.json", nothing) is None
+
+
+def test_adopted_something_recognises_every_declared_route():
+    assert tune.adopted_something({"chosen_parameters": {"params_hash": "x"}})
+    assert tune.adopted_something(
+        {"optical_pass": {"dominance": {"chosen": {"optical.fusion": "union"}}}})
+    assert tune.adopted_something({"optical_pass": {"adoption": {"keep_fusion": True}}})
+    assert not tune.adopted_something(
+        {"chosen_parameters": None,
+         "optical_pass": {"dominance": {"chosen": None},
+                          "adoption": {"keep_fusion": False}}})
+    assert not tune.adopted_something({})

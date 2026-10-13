@@ -593,6 +593,189 @@ class DamageParams:
             raise ValueError(f"min_segment_m must not be negative, got {self.min_segment_m!r}.")
 
 
+# --- Road network and cut-off analysis ----------------------------------------
+
+# What a VEHICLE can drive on, by OSM `highway` value. Ambulances and trucks
+# are the point, so `track` is NOT here: an agricultural track may be
+# impassable to a van in the dry and is certainly not a relief route. The
+# `_link` values are the slip roads that join these, and omitting them would
+# disconnect junctions that physically connect.
+VEHICLE_HIGHWAY_TYPES = (
+    "motorway", "trunk", "primary", "secondary", "tertiary",
+    "motorway_link", "trunk_link", "primary_link", "secondary_link", "tertiary_link",
+    "unclassified", "residential", "living_street", "service", "road",
+)
+
+# What a PERSON ON FOOT can additionally use. A valley cut off to vehicles is
+# often still walkable, and that difference is the whole reason two graphs
+# exist: "cut off" means something different to an ambulance and to a family
+# carrying someone out.
+FOOT_EXTRA_HIGHWAY_TYPES = (
+    "path", "track", "footway", "steps", "pedestrian", "bridleway", "cycleway",
+)
+
+GRAPH_VEHICLE = "vehicle"
+GRAPH_FOOT = "foot"
+GRAPH_KINDS = (GRAPH_VEHICLE, GRAPH_FOOT)
+
+# OSM `place` values that are a settlement someone lives in. `suburb` and
+# `neighbourhood` are deliberately NOT here even though osm.py downloads them:
+# they sit inside a town that is already its own node, so counting them would
+# report the same people several times.
+SETTLEMENT_PLACE_TYPES = ("city", "town", "village", "hamlet")
+
+# Where someone goes for help that a village does not have. Routing "to the
+# nearest town" means one of these.
+TOWN_PLACE_TYPES = ("city", "town")
+
+# What a settlement's reachability can be. One declared vocabulary, used by the
+# outputs, the evaluation and the copilot.
+STATUS_REACHABLE = "reachable"
+STATUS_DETOUR = "detour"
+STATUS_CUT_OFF = "cut off"
+# Distinct from `cut off` ON PURPOSE, and the distinction matters more than any
+# other in this module: it means OSM maps no road to this settlement AT ALL, or
+# none that reaches a destination even with no flood. The flood did not cut it
+# off; we cannot say anything about it. Reporting that as "cut off" would invent
+# a flood impact out of a mapping gap - which is exactly the failure the Larkana
+# damage result (65 buildings mapped) warns about.
+STATUS_NO_BASELINE = "no route before the flood"
+SETTLEMENT_STATUSES = (STATUS_REACHABLE, STATUS_DETOUR, STATUS_CUT_OFF,
+                       STATUS_NO_BASELINE)
+
+SCENARIO_BRIDGES_INTACT = "bridges_intact"
+SCENARIO_BRIDGES_FAILED = "bridges_failed"
+SCENARIOS = (SCENARIO_BRIDGES_INTACT, SCENARIO_BRIDGES_FAILED)
+
+# THE ONE definition the `settlement_f1` gate is computed over, declared here so
+# it cannot drift between the pipeline, the evaluation and a report: a
+# settlement is CUT OFF when it has no VEHICLE route to its nearest health
+# facility with bridges assumed INTACT. Vehicle, because that is what an
+# ambulance needs; health facility, because that is the destination a cut-off
+# village is cut off FROM; bridges intact, because it is the conservative
+# scenario and the failed-bridge one is a what-if reported beside it. Every
+# other combination is still computed and written out.
+CUTOFF_GATE_GRAPH = GRAPH_VEHICLE
+CUTOFF_GATE_TARGET = "health"
+CUTOFF_GATE_SCENARIO = SCENARIO_BRIDGES_INTACT
+
+
+@dataclass(frozen=True)
+class NetworkParams:
+    """How the road graph, the settlements and the routes are built.
+
+    NOT in params_hash, for the ReliabilityParams reason: nothing here changes
+    a pixel of the flood class map. Everything is recorded in run_report.json
+    under `cutoff.parameters`.
+    """
+
+    # Two line endpoints closer than this are the same junction. OSM ways that
+    # share a node already share exact coordinates; this catches the ways that
+    # meet at coordinates rounded differently by different editors, which would
+    # otherwise leave a physically connected network split in two.
+    node_snap_m: float = 1.0
+
+    # A route longer than this multiple of the pre-flood route is a DETOUR
+    # rather than reachable. 1.5x is a declared operational choice - half again
+    # as far is the point at which a journey needs rethinking rather than just
+    # taking longer - and is not fitted to any score.
+    detour_factor: float = 1.5
+
+    # A settlement is joined to the graph at the nearest node within this
+    # distance. Beyond it, the settlement is reported as having no mapped road
+    # access (STATUS_NO_BASELINE) rather than being attached to a road it has
+    # no plausible connection to. 500 m is a generous walk to the nearest
+    # mapped way.
+    settlement_link_max_m: float = 500.0
+
+    # --- unnamed hamlets, from building clusters -------------------------------
+    # OSM place nodes miss small settlements routinely, especially in the
+    # mountains, so a cluster of buildings with no place node is treated as a
+    # settlement too. DBSCAN because it finds clusters of unknown number and
+    # shape and leaves isolated buildings unclustered, which is what a scattered
+    # farmstead should be.
+    #
+    # 150 m: buildings in one hamlet are within a short walk of each other;
+    # beyond that they are separate places. 5 buildings: fewer is a farm, not a
+    # settlement. Both declared from settlement geography, not from a score.
+    cluster_eps_m: float = 150.0
+    cluster_min_buildings: int = 5
+    # A cluster whose centre is within this distance of an OSM place node is
+    # that place, not a new one, and is dropped to avoid double counting.
+    cluster_merge_distance_m: float = 500.0
+
+    def __post_init__(self) -> None:
+        if self.detour_factor <= 1.0:
+            raise ValueError(
+                f"detour_factor must be greater than 1, got {self.detour_factor!r}: "
+                f"a route cannot be a detour by being shorter.")
+        for name in ("node_snap_m", "settlement_link_max_m", "cluster_eps_m",
+                     "cluster_merge_distance_m"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be positive, got {getattr(self, name)!r}.")
+        if self.cluster_min_buildings < 2:
+            raise ValueError(
+                f"cluster_min_buildings must be at least 2, got "
+                f"{self.cluster_min_buildings!r}: one building is not a cluster.")
+
+
+@dataclass(frozen=True)
+class MonteCarloParams:
+    """The ensemble behind a cut-off PROBABILITY.
+
+    READ THIS BEFORE QUOTING A PROBABILITY. It is the share of an ensemble of
+    perturbed runs in which a settlement comes out cut off. It is a SENSITIVITY
+    measure - how stable the answer is against the two choices the flood extent
+    is most sensitive to, plus the narrow-valley coin flip - and it is NOT a
+    calibrated probability of being cut off in the world. Nothing in this
+    project has been validated against observed cut-off outcomes, so a
+    settlement at 0.8 is one whose cut-off status survives most perturbations,
+    not one with an 80% chance of being isolated.
+
+    NOT in params_hash: no field here changes a pixel of the class map.
+    """
+
+    n_runs: int = 200
+    # Fixed, so the same inputs give byte-identical output (Rule 5). A neutral
+    # constant, not derived from any area or date.
+    seed: int = 0
+
+    # The change-score threshold is perturbed over this range, ADDED to the
+    # z_seed the run actually used. +-0.5 is one std_floor_db (0.5 dB) of
+    # z-score, i.e. the sensor's own radiometric stability expressed in the
+    # units the threshold is in - the smallest perturbation that is physically
+    # meaningful rather than cosmetic.
+    z_seed_delta: tuple = (-0.5, 0.5)
+
+    # The road buffer is perturbed over these pixel values. 0 is "only pixels
+    # actually mapped as flood", 2 is twice the geolocation tolerance; the
+    # middle value is the shipped one.
+    buffer_px_choices: tuple = (0, 1, 2)
+
+    # A narrow-valley low-confidence pixel is counted as flooded on a coin
+    # flip. 0.5 is the honest value for a pixel the sensor cannot resolve: the
+    # reliability layer says the class there is a guess about which scatterer
+    # dominated a mixed cell, so neither "flooded" nor "dry" is better
+    # supported.
+    narrow_valley_flood_probability: float = 0.5
+
+    def __post_init__(self) -> None:
+        if self.n_runs < 1:
+            raise ValueError(f"n_runs must be at least 1, got {self.n_runs!r}.")
+        if not 0.0 <= self.narrow_valley_flood_probability <= 1.0:
+            raise ValueError("narrow_valley_flood_probability must be in [0, 1], got "
+                             f"{self.narrow_valley_flood_probability!r}.")
+        lo, hi = self.z_seed_delta
+        if not lo <= 0.0 <= hi:
+            raise ValueError(
+                f"z_seed_delta must bracket zero, got {self.z_seed_delta!r}: the ensemble "
+                f"has to include the threshold the run actually used.")
+        if not self.buffer_px_choices or any(int(b) < 0 for b in self.buffer_px_choices):
+            raise ValueError(
+                f"buffer_px_choices must be non-empty and non-negative, got "
+                f"{self.buffer_px_choices!r}.")
+
+
 def params_dict(detect: DetectParams, run: RunParams,
                 optical: "OpticalParams | None" = None,
                 extent: "ExtentParams | None" = None) -> dict:

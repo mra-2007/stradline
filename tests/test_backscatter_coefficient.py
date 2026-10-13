@@ -23,7 +23,7 @@ import pytest
 
 from strandline import ingest
 from strandline.config import (BACKSCATTER_COEFFICIENTS, ELEVATION_MODELS,
-                               OsmParams, RunParams)
+                               MonteCarloParams, OsmParams, RunParams)
 
 DAY = dt.date(2026, 8, 28)
 SIGMA = "sigma0-ellipsoid"
@@ -182,12 +182,14 @@ def test_cli_accepts_the_supported_coefficient_and_defaults_to_sigma0(monkeypatc
     captured = {}
 
     def fake_run(bbox, event_day, out, rp, dp, dry_run, op=None, ep=None,
-                 osmp=None, dmgp=None):
+                 osmp=None, dmgp=None, npar=None, mc=None):
         captured["coefficient"] = rp.backscatter_coefficient
         captured["elevation_model"] = rp.elevation_model
         captured["optical"] = op
         captured["osm"] = osmp
         captured["damage"] = dmgp
+        captured["network"] = npar
+        captured["monte_carlo"] = mc
         return 0
 
     monkeypatch.setattr(run_module, "run", fake_run)
@@ -221,6 +223,16 @@ def test_cli_accepts_the_supported_coefficient_and_defaults_to_sigma0(monkeypatc
 
     run_module.main(argv + ["--osm-buffer-km", "25"])
     assert captured["osm"].buffer_km == 25.0
+
+    # The cut-off analysis rides on the same road network, so --no-damage turns
+    # both off and the default turns both on.
+    run_module.main(argv)
+    assert captured["network"] is not None
+    assert captured["monte_carlo"].n_runs == MonteCarloParams.n_runs
+    run_module.main(argv + ["--no-damage"])
+    assert captured["network"] is None and captured["monte_carlo"] is None
+    run_module.main(argv + ["--mc-runs", "25"])
+    assert captured["monte_carlo"].n_runs == 25
 
 
 @pytest.mark.parametrize("bad", ["beta0", "gamma0-terrain"])

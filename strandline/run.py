@@ -35,8 +35,8 @@ from pathlib import Path
 
 import numpy as np
 
-from strandline import (catalog, damage, detect, ingest, optical, osm, outputs,
-                        reliability, terrain)
+from strandline import (catalog, damage, detect, ingest, network, optical, osm,
+                        outputs, reliability, terrain)
 from strandline.config import (
     BACKSCATTER_COEFFICIENTS,
     CLASS_DEBRIS,
@@ -47,6 +47,8 @@ from strandline.config import (
     DamageParams,
     DetectParams,
     ExtentParams,
+    MonteCarloParams,
+    NetworkParams,
     OpticalParams,
     OsmParams,
     ReliabilityParams,
@@ -467,8 +469,11 @@ def damage_stage(bbox, event_day: date, scene: PreparedScene,
                  result: detect.DetectionResult, out: Path,
                  osmp: OsmParams | None, dmgp: DamageParams | None,
                  ep: ExtentParams | None = None, allow_download: bool = True,
-                 log=print) -> tuple[object | None, dict]:
+                 snapshot=None, log=print) -> tuple[object | None, dict]:
     """OSM snapshot + damage overlay. NEVER raises.
+
+    `snapshot` may be supplied by a caller that has already read OSM, so the
+    damage and cut-off stages share one read rather than downloading twice.
 
     Same contract as `optical_stage`, for the same reason (Rule 5): a flood map
     must not be lost because OpenStreetMap could not be read. Every failure -
@@ -493,13 +498,14 @@ def damage_stage(bbox, event_day: date, scene: PreparedScene,
     if osmp is None:
         return None, {"status": OSM_DISABLED,
                       "message": "the damage overlay was not requested (--no-damage)"}
-    try:
-        snapshot = osm.load_snapshot(bbox, event_day, out / "cache", osmp,
-                                     allow_download=allow_download, log=log)
-    except osm.OsmError as err:
-        log(f"      OSM REFUSED: {err}")
-        return None, {"status": OSM_REFUSED, "message": str(err),
-                      "damage_available": False}
+    if snapshot is None:
+        try:
+            snapshot = osm.load_snapshot(bbox, event_day, out / "cache", osmp,
+                                         allow_download=allow_download, log=log)
+        except osm.OsmError as err:
+            log(f"      OSM REFUSED: {err}")
+            return None, {"status": OSM_REFUSED, "message": str(err),
+                          "damage_available": False}
     try:
         assessment = damage.assess(result.classes, scene.grid, snapshot.layers,
                                    dmgp if dmgp is not None else DamageParams(), ep, log=log)
@@ -520,10 +526,53 @@ def damage_stage(bbox, event_day: date, scene: PreparedScene,
                         "osm": snapshot.report(), **assessment.report()}
 
 
+def cutoff_stage(scene: PreparedScene, result: detect.DetectionResult,
+                 rel_codes, out: Path, snapshot, assessment,
+                 dp: DetectParams, npar: NetworkParams | None,
+                 mc: MonteCarloParams | None, dmgp: DamageParams | None,
+                 ep: ExtentParams | None = None, log=print) -> tuple[object | None, dict]:
+    """Who is cut off. NEVER raises, for the `damage_stage` reasons.
+
+    Needs the OSM snapshot the damage stage already read, so it runs after it
+    and is skipped when that stage produced nothing - with the reason recorded,
+    never as "nobody is cut off".
+    """
+    if snapshot is None:
+        return None, {"status": OSM_DISABLED,
+                      "message": ("no OpenStreetMap snapshot for this run, so no road "
+                                  "network and no cut-off answer. This is NOT a finding "
+                                  "that nobody is isolated.")}
+    bridges_out = None
+    if assessment is not None:
+        layer = assessment.layers.get("bridges_out")
+        if layer is not None and len(layer) and "@osmId" in layer.columns:
+            bridges_out = {str(v) for v in layer["@osmId"]}
+    try:
+        cutoff = network.assess(
+            result.classes, result.z_combined, rel_codes, scene.grid, snapshot.layers,
+            z_seed=dp.z_seed, np_=npar, mc=mc, dmgp=dmgp, extent=ep,
+            bridges_out_ids=bridges_out, log=log)
+        network.write_layers(out, cutoff, scene.grid, log=log)
+    except network.NetworkError as err:
+        log(f"      CUT-OFF REFUSED: {err}")
+        return None, {"status": OSM_REFUSED, "cutoff_available": False,
+                      "message": str(err)}
+    except AssertionError:
+        raise
+    except Exception as err:
+        log(f"      CUT-OFF ANALYSIS FAILED: {type(err).__name__}: {err}")
+        return None, {"status": OSM_FAILED, "cutoff_available": False,
+                      "error_type": type(err).__name__, "message": str(err),
+                      "note": ("there is NO cut-off answer for this run; the flood map, "
+                               "the damage layers and this report are unaffected.")}
+    return cutoff, {"status": OSM_USED, "cutoff_available": True, **cutoff.report()}
+
+
 def write(out: Path, scene: PreparedScene, result: detect.DetectionResult, bbox,
           event_day: date, rp: RunParams, dp: DetectParams, runtime_s: float,
           relp: ReliabilityParams | None = None, ep: ExtentParams | None = None,
           osmp: OsmParams | None = None, dmgp: DamageParams | None = None,
+          npar: NetworkParams | None = None, mc: MonteCarloParams | None = None,
           allow_osm_download: bool = True, log=print) -> dict:
     grid, choice = scene.grid, scene.choice
     relp = relp if relp is not None else ReliabilityParams()
@@ -548,17 +597,35 @@ def write(out: Path, scene: PreparedScene, result: detect.DetectionResult, bbox,
     # of params_hash (config.params_dict), so it contributes a report section
     # rather than a configuration. Always present, like `optical`, so no report
     # is silent about whether a damage answer exists.
-    _assessment, damage_report = damage_stage(bbox, event_day, scene, result, out,
-                                              osmp, dmgp, ep,
-                                              allow_download=allow_osm_download, log=log)
-    report["damage"] = damage_report
+    snapshot = None
+    if osmp is not None:
+        try:
+            snapshot = osm.load_snapshot(bbox, event_day, out / "cache", osmp,
+                                         allow_download=allow_osm_download, log=log)
+        except osm.OsmError as err:
+            log(f"      OSM REFUSED: {err}")
+            snapshot = None
+            report["damage"] = {"status": OSM_REFUSED, "message": str(err),
+                                "damage_available": False}
+    if "damage" not in report:
+        assessment, damage_report = damage_stage(
+            bbox, event_day, scene, result, out, osmp, dmgp, ep,
+            allow_download=allow_osm_download, snapshot=snapshot, log=log)
+        report["damage"] = damage_report
+    else:
+        assessment = None
+    _cutoff, cutoff_report = cutoff_stage(
+        scene, result, rel.codes if rel is not None else None, out, snapshot,
+        assessment, dp, npar, mc, dmgp, ep, log=log)
+    report["cutoff"] = cutoff_report
     outputs.write_report(out / "run_report.json", report)
     return report
 
 
 def run(bbox, event_day: date, out: Path, rp: RunParams, dp: DetectParams, dry_run: bool,
         op: OpticalParams | None = None, ep: ExtentParams | None = None,
-        osmp: OsmParams | None = None, dmgp: DamageParams | None = None) -> int:
+        osmp: OsmParams | None = None, dmgp: DamageParams | None = None,
+        npar: NetworkParams | None = None, mc: MonteCarloParams | None = None) -> int:
     t_start = time.time()
     out.mkdir(parents=True, exist_ok=True)
     op = OpticalParams() if op is None else op
@@ -582,7 +649,7 @@ def run(bbox, event_day: date, out: Path, rp: RunParams, dp: DetectParams, dry_r
         raise SystemExit(str(err)) from err
 
     report = write(out, scene, result, bbox, event_day, rp, dp, time.time() - t_start, ep=ep,
-                   osmp=osmp, dmgp=dmgp)
+                   osmp=osmp, dmgp=dmgp, npar=npar, mc=mc)
     print(json.dumps(report["areas_ha"], indent=2))
     optical_status = report["optical"]["status"]
     print(f"Sentinel-2 optical evidence: {optical_status}"
@@ -599,6 +666,17 @@ def run(bbox, event_day: date, out: Path, rp: RunParams, dp: DetectParams, dry_r
     else:
         print(f"Damage overlay: {dmg['status'].upper()} - NO damage answer for this run. "
               f"{dmg.get('message', '')}")
+    cut = report["cutoff"]
+    if cut["status"] == OSM_USED:
+        print(f"Cut off ({cut['definition']['gated_definition']}): "
+              f"{cut['cut_off_by_the_gated_definition']} of "
+              f"{cut['settlements']['total']} settlement(s); "
+              f"{cut['probability']['at_or_above_0.5']} at probability >= 0.5 over "
+              f"{cut['probability']['runs']} perturbed run(s). The probability is a "
+              f"SENSITIVITY measure, not a calibrated chance.")
+    else:
+        print(f"Cut-off analysis: {cut['status'].upper()} - NO cut-off answer for this run. "
+              f"{cut.get('message', '')}")
     print(f"Done in {report['runtime_s']} s -> {out}")
     return 0
 
@@ -630,12 +708,17 @@ def main(argv=None) -> int:
                          "and drainage tests as radar. 'off': computed, written and reported, "
                          "but changes no pixel, so the map is the radar-only map")
     ap.add_argument("--no-damage", dest="damage", action="store_false", default=True,
-                    help="skip the OpenStreetMap download and the damage overlay. The flood "
-                         "map is unaffected; run_report.json records the overlay as disabled")
+                    help="skip the OpenStreetMap download, the damage overlay AND the "
+                         "cut-off analysis (both need the road network). The flood map is "
+                         "unaffected; run_report.json records them as disabled")
     ap.add_argument("--osm-buffer-km", type=float, default=OsmParams.buffer_km,
                     help="context beyond the mapped area for OSM, in km (default: "
                          "%(default)s). A settlement can be cut off by a bridge outside the "
                          "flood bbox, so the overlay needs more ground than the map")
+    ap.add_argument("--mc-runs", type=int, default=MonteCarloParams.n_runs,
+                    help="perturbed runs behind each cut-off probability (default: "
+                         "%(default)s). The probability is a sensitivity measure over "
+                         "these runs, never a calibrated chance of isolation")
     args = ap.parse_args(argv)
 
     rp = replace(RunParams(), resolution_m=args.res, n_pre=args.n_pre,
@@ -646,7 +729,9 @@ def main(argv=None) -> int:
                  fusion=args.optical_fusion)
     osmp = replace(OsmParams(), buffer_km=args.osm_buffer_km) if args.damage else None
     return run(tuple(args.bbox), args.event_date, args.out, rp, DetectParams(), args.dry_run,
-               op=op, osmp=osmp, dmgp=DamageParams() if args.damage else None)
+               op=op, osmp=osmp, dmgp=DamageParams() if args.damage else None,
+               npar=NetworkParams() if args.damage else None,
+               mc=replace(MonteCarloParams(), n_runs=args.mc_runs) if args.damage else None)
 
 
 if __name__ == "__main__":

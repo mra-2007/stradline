@@ -164,6 +164,75 @@ Himalayan valley may be mapped as sparsely as rural Sindh was in 2022.
    and changing the metric after seeing the score is Rule 3.2. It can only be a human's declared
    decision, made before any re-score.
 
+## The cut-off gate FAILS: measured, with the root cause (2026-10-13)
+
+**Read this first: none of the numbers below is a measurement of whether anybody was really cut
+off.** No road was driven and no village was visited. Both sides of every comparison are inferences
+from a flood polygon over the same pre-event OpenStreetMap road network, so what is measured is
+whether OUR flood extent leads to the same isolation conclusions as an expert flood extent.
+
+`eval/results/cutoff.csv`, run `20261013T152246Z`, all six gate flood events, under the one declared
+definition (`config.CUTOFF_GATE_*`: no vehicle route to the nearest health facility, bridges intact).
+Per-event evidence in `runs/eval/<event>/scores/cutoff_<params_hash>.json`.
+
+| gate | measured | target | status |
+|---|---|---|---|
+| `mean(settlement_f1)` | **0.3134** | ≥ 0.90 | FAIL |
+| `min(settlement_f1)` | **0.0000** | ≥ 0.80 | FAIL |
+
+| event | flood F1 tol | settlement F1 | cut off ours / ref | settlements | clinics in OSM |
+|---|---|---|---|---|---|
+| bhutan_punakha_2024 | 0.1356 | 0.0000 | 5 / 7, **no overlap** | 856 | 82 |
+| bosnia_konjic_2024 | 0.0798 | 0.0000 | 8 / 3, **no overlap** | 424 | 7 |
+| ecuador_poza_honda_2025 | 0.5553 | 0.0000 | **0** / 14 | 829 | 69 |
+| norway_ringebu_2023 | 0.9151 | 0.8421 | 8 / 11 | 1102 | 8 |
+| norway_selsverket_2023 | 0.5845 | 0.3717 | 22 / 91 | 623 | 1 |
+| pakistan_larkana_2022 | 0.8891 | 0.6667 | 1 / 2 | 47 | 11 |
+
+**Root cause 1: it inherits the flood extent, and the flood gate FAILS.** Settlement F1 tracks flood
+tolerant F1 with a Spearman rank correlation of **0.93** (n = 6) — the tightest coupling of the three
+downstream modules, tighter than the damage overlay's 0.886. Ringebu, the best flood map in the set,
+gives the best cut-off score (0.8421); the two gorge events, whose flood maps score 0.08 and 0.14,
+give exactly 0.0000. The analysis is transmitting the flood map's error faithfully, and no routing
+change beats the extent it is given.
+
+**Root cause 2: set-F1 over a VERY small cut-off set is brutal.** Only 0–22 settlements are cut off
+out of 424–1102, so a handful decides the whole score. At Punakha we name 5 and the reference names
+7 and the intersection is **zero** — a comparable count, a completely disjoint set, F1 0.0. A
+displaced extent severs *different* roads, so it isolates *different* villages. This is the same
+amplification the damage buildings showed, sharper: the quantity is nearly right and the identity is
+wrong.
+
+**Root cause 3, and the most interesting one: severing a road is stricter than overlapping it.**
+Ecuador has a mid-range flood map (tolerant F1 0.5553) and cuts off **nobody** against the
+reference's 14. To cut a road, the extent must span it *continuously*; a fragmented extent that
+overlaps the right pixels in the right general place can still leave a dry path through every
+crossing. Pixel F1 does not measure that, which is why a 0.55 flood map can score 0.0 here while a
+0.89 one scores 0.67.
+
+**A fourth thing, not a cause but a limit on what the question even means:** OSM health-facility
+density varies from **1** facility (Selsverket) to **82** (Punakha) across these areas. "Route to the
+nearest clinic" is a different question in each. At Selsverket, 104 of 623 settlements have no route
+to the single clinic even with no flood at all, and are correctly reported `no route before the
+flood` rather than cut off. Settlements the graph could attach nowhere are a much smaller effect
+(1–91 per event, 11% at worst) and are counted in every run.
+
+**Options, for the human to choose.** None is implemented.
+
+1. **Fix the flood map first and re-score unchanged** (recommended). Root cause 1 dominates at
+   Spearman 0.93. Cost: Fix A + Fix B above (16–26 h estimated) then one re-run, which needs no new
+   OSM download — the snapshots are cached per bbox and snapshot date.
+2. **Ask the human to change what the cut-off gate measures.** Set-F1 over sets of fewer than ten is
+   a very high-variance statistic, and root cause 3 says pixel accuracy is the wrong predictor of it.
+   A count-based or population-weighted metric, or one scored over *settlement-destination pairs*
+   rather than settlements, would be more stable. But `eval/gates.yaml` is human-owned and changing a
+   metric after seeing the score is Rule 3.2, so this can only be a human's declared decision made
+   before any re-score.
+3. **Make the extent connectivity-aware before routing** — close gaps narrower than a declared width
+   across a road, so a fragmented extent severs what it physically would. This addresses root cause 3
+   directly and would help the damage overlay too, but it is a detection change: declared decision,
+   leave-one-event-out pass and control check first, exactly as for Fix A and Fix B.
+
 ## Audit leftovers, 2026-10-13 (`/audit` on `c6497c8` and `f2f2d3e`, verdict FAIL)
 
 Nine of the eleven findings were fixed in the follow-up commit. These are what remains.

@@ -84,13 +84,15 @@ No-go if downloads keep failing or no usable same-track pair exists.
 | `damaged_buildings.geojson` | OSM building footprints the mapped water reached (footprint intersects the extent buffered by one pixel) |
 | `cut_roads.geojson` | road segments, split at junctions, with a part inside the buffered extent; each carries `segment_length_m`, `flooded_length_m` and `flooded_fraction` |
 | `bridges_out.geojson` | bridge ways crossing a waterway whose nearby channel is flooded, each labelled *"likely out, unverified"* |
-| `run_report.json` | provenance: scenes, track, dates, every parameter, areas, runtime, attribution, `reliability.narrow_valley`, the `optical` block (Sentinel-2 status, fusion mode, whether it was fused into the map, dates, cloud cover, clear fraction, how much of the area optical covered) and the `damage` block (status, the OSM snapshot date and buffer, feature counts per layer, damaged/cut/bridge counts and lengths) |
+| `settlements.geojson` | every settlement with its status, its cut-off probability, and the route length to the nearest clinic and nearest town before and after, on both graphs and under both bridge scenarios |
+| `routes.geojson` | the link from each settlement to the road node it routes from, per graph |
+| `run_report.json` | provenance: scenes, track, dates, every parameter, areas, runtime, attribution, `reliability.narrow_valley`, the `optical` block (Sentinel-2 status, fusion mode, whether it was fused into the map, dates, cloud cover, clear fraction, how much of the area optical covered) the `damage` block (status, the OSM snapshot date and buffer, feature counts per layer, damaged/cut/bridge counts and lengths) and the `cutoff` block (status, the declared cut-off definition, settlement and graph counts, status counts per graph/destination/scenario, and the ensemble behind every probability) |
 | `cache\` | downloaded rasters and OSM layers, reused on every rerun |
 
-The three damage layers are written **even when empty**, because a missing file cannot distinguish
-"nothing was damaged" from "the overlay did not run". If OpenStreetMap cannot be read, the flood map
-is still produced and `run_report.json → damage.status` is `refused` with the reason — never a
-damage count of zero.
+The damage and cut-off layers are written **even when empty**, because a missing file cannot
+distinguish "nothing was damaged" from "the overlay did not run". If OpenStreetMap cannot be read,
+the flood map is still produced and `run_report.json → damage.status` / `cutoff.status` is `refused`
+or `failed` with the reason — never a damage count of zero and never "nobody is cut off".
 
 | Code | Meaning |
 |---|---|
@@ -266,6 +268,58 @@ actually in force is auditable from the report alone.
 Debris is consumed **only if it is part of the flood extent**: the overlay takes its classes from
 `ExtentParams.flood_extent_classes()`, which with the shipped default excludes class 4.
 
+## Method (who is cut off)
+
+`strandline/network.py` builds **two graphs** from the pre-event OSM snapshot — what a vehicle can
+drive (`config.VEHICLE_HIGHWAY_TYPES`, which deliberately excludes `track`) and what a person can
+walk (that plus paths, tracks, footways and steps) — with roads split at junctions first, so an edge
+is a stretch that can be routed around rather than an OSM editing unit. Edges the flood reached are
+removed, using the same extent and the same 1 px buffer as the damage overlay.
+
+**Settlements** are OSM place nodes (`city`, `town`, `village`, `hamlet`) **plus DBSCAN clusters of
+buildings** for the hamlets OSM has not named — at least 5 buildings within 150 m of each other,
+with clusters inside 500 m of an existing place node dropped as the same place. OSM place nodes are
+authoritative but routinely missing for small mountain settlements, and a cluster of roofs is a
+reasonable guess that people live there; neither alone is enough. DBSCAN is implemented on a
+KD-tree in-repo rather than adding scikit-learn as a dependency.
+
+Each settlement is routed to its **nearest health facility** and its **nearest town**, before and
+after the flood, on both graphs, under two scenarios (**bridges intact** and **bridges failed** —
+where "failed" means only the bridges the damage overlay flagged *likely out*, not every bridge).
+
+| Status | Meaning |
+|---|---|
+| `reachable` | a post-flood route exists and is not much longer |
+| `detour` | the post-flood route is more than `detour_factor` (1.5x) the pre-flood one |
+| `cut off` | no post-flood route, where one existed before |
+| `no route before the flood` | **not a flood impact.** No mapped road reaches this settlement, or none reaches a destination even with no flood. The flood did not isolate it; we cannot say anything about it. |
+
+That last row is the one that matters most: collapsing it into `cut off` would manufacture a flood
+impact out of a mapping gap. Every run also reports how many settlements it could not attach to any
+graph at all, because attachment is to the nearest graph *node* and a settlement beside the middle of
+a long road can fall outside the 500 m link distance.
+
+**The gated definition**, declared once in `config.CUTOFF_GATE_*` so it cannot drift between the
+pipeline, the evaluation and a report: a settlement is **cut off** when it has **no vehicle route to
+its nearest health facility with bridges intact**. Every other combination is still computed and
+written to `settlements.geojson`.
+
+**The probability** is 200 perturbed runs at a fixed seed: the cached change-score threshold moved
+by ±0.5 z (one `std_floor_db` of z-score), the road buffer drawn from 0/1/2 px, and every
+low-confidence narrow-valley pixel counted as flooded on a coin flip. Each member is **anchored on
+the extent the detector actually produced** and moved only where the change score justifies it, so
+at zero perturbation it reproduces the real map exactly — an ensemble that did not contain the real
+answer could not say how stable the real answer is.
+
+> **The probability is a SENSITIVITY measure, not a calibrated chance.** It is the share of the
+> ensemble in which a settlement comes out cut off. Nothing here has been validated against observed
+> cut-off outcomes, so 0.8 means "this answer survives most perturbations", not "80% chance of being
+> isolated". Every output repeats this.
+
+Neither `NetworkParams` nor `MonteCarloParams` enters `params_hash`, for the `ReliabilityParams`
+reason: nothing in them changes a pixel of the flood class map. Both are recorded under
+`run_report.json → cutoff.parameters`. No downloads: the analysis reads arrays and cached OSM only.
+
 ## Scoring the dev set (checking only, never an input)
 
 Three steps. Nothing here is ever a pipeline input: references are read only by `validation/` and
@@ -300,6 +354,7 @@ venv\Scripts\python.exe -m eval.check_gates
 | `eval/run_scoreboard.py` | Runs the pipeline per event from the cache and scores floods against their reference using each event's `reference_classes`; controls on `false_flood_fraction`. Appends rows to `eval/results/flood.csv`. |
 | `eval/tune.py` | Leave-one-event-out over the grid in `config.py::TUNE_GRIDS`: maximise mean tolerant F1 on the OTHER events subject to every control ≤ 1% false flood, then score the left-out event (`split=loeo`). With `--optical`, a **second** leave-one-event-out pass over `OPTICAL_TUNE_GRIDS`, crossing each fold's own SAR point with every optical point, then the adoption rule in `config.OPTICAL_ADOPTION` — declared before the pass, and rows are appended only if it says KEEP. Before the verdict is trusted it checks that fusion `off` reproduces the radar-only numbers exactly (30/30 on the current dev set). Writes `eval/chosen_params.json` and a diff against `config.py` — it never edits `config.py`. |
 | `validation/compare.py` | The metric definitions, used by both the scoreboard and the CLI below, so a manual check and a gate row cannot disagree. |
+| `eval/cutoff_eval.py` | Runs the cut-off analysis TWICE per gate flood event over the same pre-event OSM road network and the same settlements and graphs — once with our flood extent, once with the reference extent — and compares the two cut-off sets. Appends `settlement_f1` to `eval/results/cutoff.csv`, and publishes per event how many settlements, kilometres of road and health facilities OSM actually has. **Thin mapping is a limitation, never a reason to drop an event** (Rule 3.2). Not a measurement of real isolation: nobody was visited. |
 | `eval/damage_eval.py` | Runs the damage overlay TWICE per gate flood event over the same pre-event OSM snapshot - once with our flood extent, once with the reference extent (same `reference_classes` as flood scoring) - and compares the two flagged sets as sets of OSM features. Appends `building_f1` and `road_segment_f1` to `eval/results/damage.csv`. **It is not a measurement of real building damage:** nothing was inspected, both sides are inferences from a flood polygon, and the result inherits the flood map's accuracy. |
 | `eval/diagnose_errors.py` | Takes the error map apart, per event: every missed reference pixel attributed to one cause (not analysed / no change signal / a named rule), every false alarm attributed to a terrain position and the rule that admitted it, boundary offset and a ±5 px shift scan, acquisition facts, and an oracle upper bound per error source. Writes `docs/accuracy_diagnosis.md` plus `docs/accuracy_diagnosis.json`, its provenance. Changes no code and no parameter, appends no results row, and re-renders from the JSON with `--from-json`. |
 
@@ -434,6 +489,8 @@ Poza Honda 0.0048. Coverage: 6/6 gate-eligible floods, 4 of 8 declared controls.
 | `no_flood_controls` max false flood | 0.0048 | ≤ 0.01 | **PASS** |
 | `damage_overlay` mean building F1 | 0.1808 | ≥ 0.90 | **FAIL** |
 | `damage_overlay` mean road segment F1 | 0.3995 | ≥ 0.90 | **FAIL** |
+| `cutoff_analysis` mean settlement F1 | 0.3134 | ≥ 0.90 | **FAIL** |
+| `cutoff_analysis` worst single event | 0.0000 | ≥ 0.80 | **FAIL** |
 
 Damage rows: `eval/results/damage.csv`, run `20261013T123135Z`, all six gate flood events, with the
 per-event evidence behind each row in `runs/eval/<event>/scores/damage_<params_hash>.json`.
@@ -455,8 +512,21 @@ its bbox plus buffer, against 17,718–76,814 elsewhere, so its building F1 is 0
 better flood maps in the set. Full per-event evidence, the three root causes and three options are
 in `docs/open_items.md`.
 
-**Module status: `flood_mapping` FAIL, `no_flood_controls` PASS, `damage_overlay` FAIL.**
-By the definition of done in
+Cut-off rows: `eval/results/cutoff.csv`, run `20261013T152246Z`, all six gate flood events, with
+per-event evidence in `runs/eval/<event>/scores/cutoff_<params_hash>.json`. **Like the damage
+numbers, these are not a measurement of whether anybody was really cut off** — nobody was visited,
+and both sides are inferences from a flood polygon over the same OSM road network.
+
+**The cut-off analysis inherits the flood extent most tightly of all:** settlement F1 tracks flood
+tolerant F1 at Spearman **0.93** (n = 6). Ringebu, the best flood map, scores 0.8421; the two gorge
+events score exactly 0.0000. Two further causes are in `docs/open_items.md`: set-F1 over cut-off sets
+of 0–22 settlements out of 424–1102 is brutally high-variance (at Punakha we name 5 and the reference
+names 7 with **zero** overlap), and **severing a road is stricter than overlapping it** — Ecuador has
+a mid-range flood map and cuts off nobody against the reference's 14, because a fragmented extent can
+leave a dry path through every crossing.
+
+**Module status: `flood_mapping` FAIL, `no_flood_controls` PASS, `damage_overlay` FAIL,
+`cutoff_analysis` FAIL.** By the definition of done in
 CLAUDE.md, flood mapping is **not done**. It is finalised, not passing: the method, the parameters
 and the evidence are fixed and committed, and the gate it misses is reported as missed.
 

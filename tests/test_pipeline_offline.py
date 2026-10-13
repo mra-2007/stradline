@@ -91,7 +91,10 @@ def test_full_run_offline(tmp_path, monkeypatch):
     # scene must not share a hash with this one.
     assert report["parameters"]["optical"]["enabled"] is True
     assert report["track"]["relative_orbit"] == 85
-    assert len(report["track"]["pre"]) == 5
+    # The report records the stack depth the run actually used, which is the
+    # shipped default (config.N_PRE) - the same depth every dev-event score was
+    # measured at, so this run's params_hash is one a score file exists for.
+    assert len(report["track"]["pre"]) == rp.n_pre == RunParams().n_pre
     assert report["attribution"][0].startswith("Contains modified Copernicus Sentinel data")
 
     # The narrow-valley reliability layer is reported, with its own parameters,

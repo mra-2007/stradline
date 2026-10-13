@@ -161,10 +161,36 @@ BACKSCATTER_COEFFICIENTS = ("sigma0-ellipsoid",)
 ELEVATION_MODELS = ("COPERNICUS_30",)
 
 
+# Pre-event images in the temporal reference stack - ONE value, used both by a
+# default run and by every dev-event score, which is the whole point of it
+# being declared here.
+#
+# It was 5 for a default run while the dev set was scored at 3, so a default
+# invocation produced a configuration that had never been measured and whose
+# params_hash matched no published row. docs/accuracy_diagnosis.md measured
+# that mismatch (2026-10-13) and it was the only one applying to every fold.
+# A pipeline that ships a configuration nobody scored cannot say what its
+# accuracy is, so the shipped default was brought to the measured value rather
+# than the dev set raised to the shipped one - which would have invalidated
+# every recorded score and cost another full download of the dev set.
+#
+# The cost is real and is NOT hidden: 3 is `RunParams.min_pre`, the thinnest
+# stack the pipeline accepts, and a 3-image stack gives a noisier per-pixel std
+# than 5, so `DetectParams.std_floor_db` does more of the work and z-scores are
+# less stable. Whether 5 is actually better is UNMEASURED - no dev-event score
+# exists at 5 - and answering it means a fresh download of the dev set at
+# n_pre=5 and a leave-one-event-out pass. Until that is done, this value is
+# what the published numbers describe.
+#
+# `DEV_N_PRE` below is an alias kept for the eval code that reads it by that
+# name; tests/test_shipped_defaults.py asserts the two can never drift apart.
+N_PRE = 3
+
+
 @dataclass(frozen=True)
 class RunParams:
     resolution_m: float = 20.0
-    n_pre: int = 5                 # pre-event images in the reference stack
+    n_pre: int = N_PRE             # pre-event images in the reference stack (see N_PRE)
     min_pre: int = 3               # refuse to run with fewer
     max_post_latency_days: int = 12
     post_same_day_ok: bool = False  # event time unknown: use next day onward
@@ -593,18 +619,20 @@ EXTENT_HASH_BASELINE = ExtentParams(debris_in_flood_extent=True)
 # --- Dev-event scoring cost ---------------------------------------------------
 #
 # Scoring the dev set means downloading a Sentinel-1 stack per event per
-# backscatter coefficient. DEV_N_PRE trades reference-stack depth for download
-# time and openEO quota: 3 is `RunParams.min_pre`, the thinnest stack the
-# pipeline will accept, and one dev event (the steepest) has only 3 pre images
-# available anyway.
+# backscatter coefficient, so stack depth is a download-cost setting as well as
+# a detection one. 3 is `RunParams.min_pre`, the thinnest stack the pipeline
+# will accept, and one dev event (the steepest) has only 3 pre images available
+# anyway, so the dev set could not have been scored deeper without dropping it.
 #
-# This is a COST setting, not a tuned value, and it is not free: a 3-image
-# reference stack gives a noisier per-pixel std than 5, so `std_floor_db` does
-# more of the work and z-scores are less stable. Numbers measured at
-# DEV_N_PRE therefore describe a thinner stack than the shipped default
-# (RunParams.n_pre = 5) and must be reported as such. Every params_hash
-# records n_pre, so any row can be traced back to the stack depth used.
-DEV_N_PRE = 3
+# Since 2026-10-13 this is an ALIAS of `N_PRE`, not an independent value: the
+# shipped default and the scored configuration are the same stack depth, so a
+# default run reproduces the evaluated params_hash. The full rationale, and the
+# unmeasured cost of having chosen 3 over 5, is at `N_PRE` above. Nothing here
+# may give it a value of its own; tests/test_shipped_defaults.py enforces that.
+#
+# Every params_hash still records n_pre, so any row can be traced back to the
+# stack depth used.
+DEV_N_PRE = N_PRE
 
 
 # --- Parameter search grids (eval/tune.py, leave-one-event-out) --------------

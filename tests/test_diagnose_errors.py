@@ -266,14 +266,28 @@ def test_river_width_refuses_rather_than_guessing_from_a_few_pixels():
 
 # --- config mismatches ---------------------------------------------------------
 
-def test_config_mismatch_reports_the_dev_n_pre_difference():
-    scored = {"an_event": {"run.n_pre": 3, "detect.mode": DetectParams().mode}}
+def test_config_mismatch_reports_a_stack_depth_difference():
+    """The mechanism, on a depth that really differs from the shipped one.
+
+    The dev-set n_pre mismatch this originally caught was closed on 2026-10-13
+    (config.N_PRE), so the scored value here is offset from the shipped default
+    instead of pinned to 3 - otherwise the test would assert a mismatch that no
+    longer exists and would have to be deleted rather than kept useful.
+    """
+    shipped = RunParams().n_pre
+    scored = {"an_event": {"run.n_pre": shipped + 2, "detect.mode": DetectParams().mode}}
     found = dx.config_mismatches(scored)
-    keys = {m["key"] for m in found}
-    assert "run.n_pre" in keys
     entry = next(m for m in found if m["key"] == "run.n_pre")
-    assert entry["shipped_default"] == RunParams().n_pre == dx.default_n_pre_of_a_live_run()
-    assert entry["scored"][0]["value"] == 3
+    assert entry["shipped_default"] == shipped == dx.default_n_pre_of_a_live_run()
+    assert entry["scored"][0]["value"] == shipped + 2
+
+
+def test_config_mismatch_is_silent_once_the_dev_stack_depth_matches():
+    """The consistency change itself, seen from the diagnosis side."""
+    from eval.fetch_dev_data import dev_run_params
+
+    scored = {"an_event": {"run.n_pre": dev_run_params().n_pre}}
+    assert [m for m in dx.config_mismatches(scored) if m["key"] == "run.n_pre"] == []
 
 
 def test_config_mismatch_is_empty_when_the_shipped_defaults_were_scored():

@@ -142,3 +142,26 @@ Results CSVs: see the comment block at the end of `eval/gates.yaml`. Every row h
   evidence. Any unmatched number means the answer is rejected and regenerated or refused.
 - English and Nepali. Works offline with the keyword fallback. Every answer carries its trace.
 - Never stop processes with taskkill /IM; stop only by PID. Never start, stop or restart eval.fetch_dev_data; the human runs it, and --estimate is its only no-network mode.
+## Working protocol (human-owned; applies to every prompt)
+
+Scope
+- Flood detection is frozen: do not edit strandline/detect.py, terrain.py, reliability.py, optical.py, the detection or optical parameters in config.py, or eval/chosen_params.json unless the prompt says "flood-mapping change".
+- Build only what the prompt asks. No refactors, renames or extras outside the task.
+
+Start
+- Begin with a numbered plan of at most 6 steps with rough minutes each, then work without waiting for approval unless a rule blocks you. Print "Step k/n done" after each step.
+- Read only the files the task needs; Grep before Read. Never read docs/tuning_log.md or eval/results/*.csv in full; grep or tail them.
+
+Long jobs
+- Never run a command expected to take more than 10 minutes (downloads, drills, re-scoring every event). Print the exact Windows cmd command for the human (venv\Scripts\python.exe ...) and stop; continue when the human says it finished.
+- No polling loops. No background agents except the one end-of-module audit.
+
+Testing
+- New code gets focused tests (synthetic inputs, known answers). While iterating run only the new tests; run the full suite once before committing.
+
+Finish (every module)
+1. /gate once; report it as printed. If a gate fails, give value, target and main cause once. At most one improvement attempt, and only if the prompt asks for it.
+2. /audit once. Apply its findings once, re-run the tests. No second audit round. Leftovers go to docs/open_items.md, one line each.
+3. Update only this module's README section: how to run it and the measured numbers with their source file.
+4. Commit: "<module>: <what> | gates: <status>".
+5. Final message, at most 10 lines: what was built, gate numbers, open items, commit hash, and the next command for the human if any.

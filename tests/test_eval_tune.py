@@ -324,12 +324,27 @@ def test_config_diff_is_empty_for_the_declared_defaults():
 
 
 def test_config_diff_names_every_change():
+    # n_pre is offset from the SHIPPED default rather than set to a literal:
+    # since 2026-10-13 the shipped depth equals the scored one (config.N_PRE),
+    # so a literal 3 would be no difference at all and this test would pass
+    # while proving nothing about run-section keys.
+    deeper = RunParams().n_pre + 2
     dp = replace(DetectParams(), z_seed=2.5, water_db_max=-18.0)
-    rp = replace(RunParams(), n_pre=3)
+    rp = replace(RunParams(), n_pre=deeper)
     diff = {d["key"]: (d["config_py"], d["chosen"]) for d in tune.config_diff(dp, rp)}
     assert diff["detect.z_seed"] == (3.0, 2.5)
     assert diff["detect.water_db_max"] == (-15.0, -18.0)
-    assert diff["run.n_pre"] == (5, 3)
+    assert diff["run.n_pre"] == (RunParams().n_pre, deeper)
+
+
+def test_config_diff_is_empty_when_the_shipped_defaults_are_the_chosen_ones():
+    """The other half: no difference must be reported when there is none.
+
+    This is what the n_pre consistency change made true, so it is worth
+    asserting directly - a diff that invented a row here would send a human to
+    edit config.py for no reason.
+    """
+    assert tune.config_diff(DetectParams(), RunParams()) == []
 
 
 def test_the_tuner_writes_no_source_file(tmp_path):

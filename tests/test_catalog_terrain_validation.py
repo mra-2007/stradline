@@ -33,7 +33,16 @@ def test_choose_track_prefers_earliest_post_with_enough_pre():
     choice, log = catalog.choose_track(acqs, EVENT, RunParams())
     assert choice is not None, log
     assert choice.track[1] == 85 and choice.latency_days == 2
-    assert len(choice.pre) == 5
+    # Five pre-event acquisitions are available on the chosen track; the stack
+    # is capped at the configured depth and takes the LATEST of them, which is
+    # what `catalog.choose_track` slices with [-n_pre:]. Asserted against the
+    # config rather than a literal, so changing the shipped depth does not
+    # require editing this test to keep saying the same thing.
+    rp = RunParams()
+    assert len(choice.pre) == rp.n_pre
+    assert len(choice.pre) < 5, "the fixture must offer more pre images than the cap"
+    assert choice.pre == sorted(choice.pre, key=lambda a: a.day)
+    assert choice.pre[-1].day == EVENT - timedelta(days=10)  # the most recent pre image
     assert all(a.track == choice.track for a in choice.pre)  # never mixes tracks
 
 

@@ -1651,14 +1651,31 @@ be auditable rather than asserted:
 
 | rejected by | count | which |
 |---|---|---|
-| the **gated** ceiling (`false_flood_fraction` > 0.01) | **24** | all 18 `darkening` points, plus the 6 `rough_water` points with `hand_max_water_m` 35 m — `norway_ringebu_control_2023` at 1.1%–5.2% |
-| the **new analysed-area** ceiling | **6** | the 6 `rough_water` points with `hand_max_water_m` 20 m — `ecuador_poza_honda_control_2024` at 1.64% |
+| the **gated** ceiling (`false_flood_fraction` > 0.01) | **24** | all 18 `darkening` points, plus the 6 `rough_water` points with `min_abs_change_db` **2.0 dB** — `norway_ringebu_control_2023` at 1.13%–5.16% |
+| the **new analysed-area** ceiling | **6** | the 6 `rough_water` points with `min_abs_change_db` **3.0 dB** — `ecuador_poza_honda_control_2024` at 1.64% |
 | feasible | **0** | — |
 
+The discriminating axis is `min_abs_change_db`, and that is worth stating
+precisely because the counts alone do not reveal it: `hand_max_water_m` also
+splits the twelve `rough_water` points six and six, but it splits them 3 gated /
+3 analysed on EACH of its two values, so it explains nothing. `min_abs_change_db`
+splits them cleanly — every 2.0 dB point is rejected on the gated ceiling, every
+3.0 dB point on the new one. Physically that is what should be expected: 2.0 dB
+is near the sensor's radiometric stability, so it admits enough marginal change
+to flood the Norwegian control outright, while 3.0 dB is tight enough to pass
+the gated ceiling and is then caught by the stricter one at Ecuador.
+
 So most of the grid was already infeasible on the OLD ceiling: the `darkening`
-mode has been known infeasible since 2026-10-11, and widening the terrain zone
-to 35 m floods the Norwegian control. The new criterion is what removed the last
-6 — the six points that include the shipped configuration.
+mode has been known infeasible since 2026-10-11, and the loose 2.0 dB change
+threshold floods the Norwegian control. The new criterion is what removed the
+last 6 — the six points that include the shipped configuration (`d4f9b1791c82`
+is one of them).
+
+An earlier version of this table attributed the split to `hand_max_water_m` and
+concluded that "widening the terrain zone to 35 m floods the Norwegian control".
+That was wrong, and `/audit` caught it from the artefact. The counts were right
+and the conclusion drawn from them was not, which is the third time in this
+entry that a number has been checked and the sentence around it has not.
 
 ### What the two new options measured, reported because it was asked for
 
@@ -1913,3 +1930,139 @@ the project actually ships; the code asserts the incumbent is a point of the
 declared grid. The per-fold comparison table for every candidate is written to
 `eval/chosen_params.json` under `optical_pass.dominance`, so the verdict can be
 checked rather than taken.
+
+---
+
+## 2026-10-12 — ADOPTED by the dominance rule: debris leaves the flood extent
+
+The rule declared above was implemented in `eval/tune.py` and run. It found
+**four** candidates that dominate the incumbent, all four tied on false alarms,
+and grid order chose among them:
+
+**ADOPTED: `optical.fusion = union`, `optical.mndwi_water = 0.0`,
+`optical.ndvi_drop_min = 0.10`, `extent.debris_in_flood_extent = False`** —
+`params_hash 0550873e7ea6`, `eval/chosen_params.json`, run_id
+`20261012T165259Z`.
+
+Strictly better than the incumbent on **24** of the compared quantities, worse
+on **none**, in every one of the six folds. The four dominating candidates were
+`union` 0.0/0.10 debris-OUT, `union` 0.0/0.20 debris-OUT, `water_only` 0.0
+debris-IN and `water_only` 0.0 debris-OUT — every one of which removes either
+the debris class from the extent or the optical deposit channel, or both, which
+is the same direction from four independent starting points.
+
+`config.py` now ships it: `ndvi_drop_min` 0.20 -> 0.10 and
+`debris_in_flood_extent` True -> False. The two belong together. 0.20 was chosen
+earlier the same day *while debris was still part of the extent*, when the
+deposit channel's false positives counted against the score; with debris out of
+the extent they cannot reach the scored quantity at all, so the threshold no
+longer trades controls against floods and the looser value is simply better on
+the floods. Splitting the two changes would reinstate the trade.
+
+### The published numbers, after adoption
+
+Leave-one-event-out, 20 m boundary tolerance, `n_pre=3`. Each row is the event
+held out of parameter selection; `eval/results/flood.csv`, run_id
+`20261012T165259Z`.
+
+| event | P | R | **F1** | IoU | P tol | R tol | **F1 tol** | hash |
+|---|---|---|---|---|---|---|---|---|
+| `bhutan_punakha_2024` | 0.0805 | 0.0907 | **0.0853** | 0.0445 | 0.1259 | 0.1469 | **0.1356** | `0550873e7ea6` |
+| `bosnia_konjic_2024` | 0.0385 | 0.0376 | **0.0380** | 0.0194 | 0.0674 | 0.0977 | **0.0798** | `0550873e7ea6` |
+| `ecuador_poza_honda_2025` | 0.4321 | 0.3904 | **0.4102** | 0.2580 | 0.5789 | 0.5335 | **0.5553** | `d46da9ccd649` |
+| `norway_ringebu_2023` | 0.7685 | 0.6988 | **0.7320** | 0.5772 | 0.9234 | 0.9070 | **0.9151** | `0550873e7ea6` |
+| `norway_selsverket_2023` | 0.4803 | 0.4677 | **0.4739** | 0.3105 | 0.5558 | 0.6164 | **0.5845** | `0550873e7ea6` |
+| `pakistan_larkana_2022` | 0.7899 | 0.8426 | **0.8154** | 0.6883 | 0.8617 | 0.9183 | **0.8891** | `f08e2edf2c4c` |
+| **mean** | 0.4316 | 0.4213 | **0.4258** | 0.3163 | 0.5189 | 0.5366 | **0.5266** | |
+
+Gate movement, incumbent -> adopted: mean tolerant F1 **0.5231 -> 0.5266**,
+mean tolerant precision 0.5137 -> 0.5188, mean tolerant recall 0.5366 ->
+0.5366 (unchanged), strict F1 0.4237 -> 0.4258, strict IoU 0.3152 -> 0.3163,
+worst event 0.0789 -> 0.0798. Every one moved the right way or stood still.
+
+Controls, both fractions, at the adopted configuration:
+
+| control | gated | analysed-area | under 1%? |
+|---|---|---|---|
+| `bhutan_punakha_control_2024` | 0.0001 | 0.0028 | yes |
+| `bosnia_konjic_control_2024` | 0.0011 | 0.0100 | yes (at the line) |
+| `ecuador_poza_honda_control_2024` | 0.0048 | **0.0164** | **NO** |
+| `norway_ringebu_control_2023` | 0.0014 | 0.0068 | yes |
+
+Bhutan's analysed-area rate fell from **0.0437 to 0.0028**, a factor of 16, and
+its gated rate from 0.0022 to 0.0001. That is the single largest effect of this
+change and it is on a dry valley that should never have been called flooded.
+
+### THE OPEN ISSUE, unchanged and to be reported for as long as it is true
+
+**The stricter control criterion declared earlier today is still FAILED.**
+`ecuador_poza_honda_control_2024` reads **1.64% false flood over analysed
+ground** against a declared 1% ceiling. The dominance rule was never capable of
+fixing it and did not: that control's 7,780 false pixels are Sentinel-1 flood
+*water*, optical is refused there (12.7% clear) and its debris count is zero, so
+all 42 configurations on the grid read exactly 0.0164. Adoption is an
+improvement, not a resolution.
+
+The gated control gate (`no_flood_controls`) PASSES at 0.0048 because its
+denominator includes terrain-excluded ground; the project's own stricter reading
+of the same pixels does not. Both numbers are published, and the README says the
+shipped configuration fails the stricter one. Closing it needs the reservoir
+hypothesis tested and probably a detection change, which is option 3 and
+contradicts the freeze.
+
+### What `/audit` caught in this round, and what it cost
+
+The re-audit returned FAIL on two findings, both fixed here:
+
+1. **The tree was not frozen.** I kept implementing while the audit ran — the
+   third occurrence — so its PASS covered only `ce46ed6` and the entire
+   dominance work was unaudited. Worse, it found that my dominance branch
+   reconstructed per-fold Selections with `select(..., analysed_ceiling=1.0)`:
+   **the escape hatch whose removal from production I had just declared and
+   tested, used on the adoption path**. It is gone; the rows are now read
+   straight from the matrix, because by that point the rule has already chosen
+   and there is nothing left to select. `tests/test_eval_tune_optical.py` now
+   parses `eval/tune.py` with `ast` and fails if any call lifts or disables that
+   ceiling — the first version of that test used a regex and matched the
+   docstring sentence explaining the hatch, which is its own small lesson about
+   checking the check.
+2. **The refusal breakdown attributed the 24/6 split to the wrong parameter.**
+   Corrected above: the discriminating axis is `min_abs_change_db`, not
+   `hand_max_water_m`, which splits 3/3 on each value and explains nothing.
+
+Two further defects surfaced while fixing those, neither reported by the audit:
+
+- **`eval.run_scoreboard` was not scoring the shipped configuration.** It built
+  `DetectParams()` and `dev_run_params()` and passed no `OpticalParams` or
+  `ExtentParams`, so after the default moved it scored a radar-only,
+  debris-OUT configuration that no rule had adopted — and wrote ten rows for it
+  (`6bd9957fb9b5`, run_id `20261012T165407Z`, superseded). It now passes the
+  shipped `OpticalParams()` and `ExtentParams()` by default, prints both, and
+  reports `params 0550873e7ea6`; `--no-optical` remains available. The stray
+  rows stay, because the CSV is append-only, and are traceable to the declared
+  radar grid crossed with the declared extent grid.
+- **The hash-omission rule keyed off the LIVE default.** `params_dict` omitted
+  the `extent` section when it equalled `ExtentParams()`, which works right up
+  to the day the default moves — and then a configuration scoring a *different*
+  quantity silently hashes like the rows already published, which is the exact
+  failure the arrangement exists to prevent. It now compares against a fixed
+  constant, `EXTENT_HASH_BASELINE = ExtentParams(debris_in_flood_extent=True)`,
+  so the published hashes depend on what was measured rather than on what
+  happens to be shipped. All six previously published hashes still reproduce;
+  `tests/test_params_hash_reproducible.py` pins the constant and the reason.
+
+The nine tests that broke when the default moved all broke for the right
+reason, and all were corrected to assert the new truth rather than loosened:
+`--no-optical` is radar-only in sensor terms but no longer the pre-extent
+configuration and must not borrow its hash; the primary scored quantity is now
+flood water only and the recorded sentence says so; the shipped-default pin now
+accepts either endorsement route.
+
+### Flood mapping is frozen, for good
+
+No further detection change. What the next modules inherit, and must carry with
+every number: the accuracy above, the narrow-valley caveat, the failed stricter
+control criterion on Ecuador — and that `debris_in_flood_extent` is now
+**False**, so the flood extent is flood water only. The debris layer is still
+written and must be labelled *"possible debris, unverified"*; the damage overlay
+and the cut-off analysis **must not consume it**.

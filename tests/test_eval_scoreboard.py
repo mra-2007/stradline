@@ -31,6 +31,7 @@ from eval import scoreboard as sb
 from eval import run_scoreboard as rs
 from strandline import catalog, ingest, run as pipeline, terrain as terr_mod
 from strandline.config import (
+    ExtentParams,
     CLASS_NODATA,
     CLASS_TERRAIN_EXCLUDED,
     DetectParams,
@@ -265,7 +266,12 @@ def test_the_primary_metric_is_the_flood_affected_union(synthetic):
     reference's flooded + debris/mass-movement classes."""
     score = rs.score_with_scene(synthetic["event"], synthetic["scene"], DetectParams(),
                                 log=lambda *a: None)
-    assert score.provenance["scored_quantity"].startswith("flood_affected")
+    # The SHIPPED default narrowed the scored quantity on 2026-10-12
+    # (ExtentParams.debris_in_flood_extent = False), so the default run scores
+    # flood water only and says so. Both branches are asserted below, because
+    # what matters is that the recorded sentence always matches what was scored.
+    assert score.provenance["scored_quantity"].startswith(
+        "flood_affected" if ExtentParams().debris_in_flood_extent else "flood_extent")
     assert score.provenance["reference"]["scored_classes"] == ["Flooded area", "Not Applicable"]
 
 

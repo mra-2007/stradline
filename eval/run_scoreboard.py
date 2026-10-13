@@ -425,7 +425,11 @@ def score_with_scene(event: dict, scene: pipeline.PreparedScene, dp: DetectParam
 
     provenance["scored_s"] = round(time.time() - t0, 1)
     score = EventScore(event=str(event["name"]), kind=kind,
-                       params_hash=pipeline.params_hash(dp, rp, op, ep),
+                       # `extent`, not `ep`: when the caller passes None the
+                       # scoring used ExtentParams(), and the hash must say so.
+                       # Hashing the None instead would describe the baseline
+                       # while scoring whatever today's default happens to be.
+                       params_hash=pipeline.params_hash(dp, rp, op, extent),
                        metrics={k: metrics[k] for k in METRIC_COLUMNS if k in metrics},
                        provenance=provenance)
     if out_dir is not None:
@@ -444,7 +448,9 @@ def score_event(event: dict, dp: DetectParams, rp: RunParams, runs_root: Path | 
                 log=print) -> EventScore:
     """One event, one parameter set, from the cache. Errors are returned, not raised."""
     name = str(event["name"])
-    phash = pipeline.params_hash(dp, rp, op, ep)
+    # Resolved here for the same reason score_with_scene resolves it: the hash
+    # must describe the extent the scoring will use.
+    phash = pipeline.params_hash(dp, rp, op, ep if ep is not None else ExtentParams())
     if reuse and out_dir is None:
         cached = load_score(name, phash, runs_root)
         if reusable(cached):
@@ -556,6 +562,11 @@ def main(argv=None) -> int:
     ap.add_argument("--plan", default="gates", choices=["gates", "all"])
     ap.add_argument("--events", nargs="*")
     ap.add_argument("--coefficient", help="override the backscatter coefficient")
+    ap.add_argument("--no-optical", dest="optical", action="store_false", default=True,
+                    help="score the radar-only configuration instead of the shipped one. "
+                         "The DEFAULT is the shipped configuration, optical included: this "
+                         "script exists to score what config.py says, and since 2026-10-12 "
+                         "that includes OpticalParams and ExtentParams")
     ap.add_argument("--n-pre", type=int, default=DEV_N_PRE)
     ap.add_argument("--split", default="full", help="the `split` column value (default: full)")
     ap.add_argument("--no-write", action="store_true", help="print only, append no rows")
@@ -576,23 +587,30 @@ def main(argv=None) -> int:
     rp = dev_run_params(args.coefficient or RunParams.backscatter_coefficient, args.n_pre)
     if rp.resolution_m != con["resolution_m"]:
         rp = replace(rp, resolution_m=float(con["resolution_m"]))
+    # The SHIPPED configuration, straight from config.py - not a radar-only
+    # stand-in for it. ExtentParams is always passed, so the hash describes the
+    # scored quantity even when the shipped extent is the baseline.
+    op = OpticalParams() if args.optical else None
+    ep = ExtentParams()
     run_id = sb.new_run_id()
 
-    print(f"run_id {run_id}  params {pipeline.params_hash(dp, rp)}  "
+    print(f"run_id {run_id}  params {pipeline.params_hash(dp, rp, op, ep)}  "
           f"coefficient {rp.backscatter_coefficient}  n_pre {rp.n_pre}  "
           f"tolerance {con['boundary_tolerance_px']} px")
+    print(f"optical: {'OFF (--no-optical)' if op is None else op.fusion}   "
+          f"debris in flood extent: {ep.debris_in_flood_extent}")
     print(f"{len(planned)} event(s) in plan '{args.plan}'\n")
 
     scores: list[EventScore] = []
     for ev in planned:
         name = str(ev["name"])
         print(f"[{len(scores) + 1}/{len(planned)}] {name}")
-        out_dir = (args.runs_root / name / pipeline.params_hash(dp, rp)
+        out_dir = (args.runs_root / name / pipeline.params_hash(dp, rp, op, ep)
                    if args.write_rasters else None)
         scores.append(score_event(
             ev, dp, rp, args.runs_root, tolerance_px=int(con["boundary_tolerance_px"]),
             allow_download=args.allow_download, reuse=not args.no_reuse,
-            max_pixels=args.max_pixels, out_dir=out_dir,
+            max_pixels=args.max_pixels, out_dir=out_dir, op=op, ep=ep,
             log=lambda *a: print("     ", *a)))
         if not scores[-1].ok:
             print(f"      FAILED: {scores[-1].error}")

@@ -114,18 +114,31 @@ def test_the_shipped_default_is_the_one_that_was_measured():
             "no optical pass has been scored, so fusion must be off: shipping a fusion "
             "mode no measurement endorses is exactly what OPTICAL_ADOPTION forbids")
         return
-    adopted = optical_pass["adoption"]["keep_fusion"]
-    assert OpticalParams().fusion == (FUSION_UNION if adopted else FUSION_OFF), (
-        f"eval/chosen_params.json records keep_fusion={adopted}, but the shipped "
-        f"OpticalParams.fusion is {OpticalParams().fusion!r}")
-    if adopted:
-        point = optical_pass["chosen_configuration"]
-        for key, value in point.items():
-            if key.startswith("optical."):
-                field = key.split(".", 1)[1]
-                assert getattr(OpticalParams(), field) == value, (
-                    f"the optical pass adopted {field}={value} but config.py ships "
-                    f"{getattr(OpticalParams(), field)!r}")
+    # Two routes can endorse a configuration: the original adoption rule, and
+    # the Pareto-dominance rule declared on 2026-10-12 for the case where no
+    # point is feasible. Either way, what config.py SHIPS must be what some rule
+    # actually endorsed - that is the property, not which rule did it.
+    dominance = optical_pass.get("dominance") or {}
+    endorsed_point = (dominance.get("chosen")
+                      if dominance.get("chosen") is not None
+                      else (optical_pass.get("chosen_configuration")
+                            if optical_pass["adoption"]["keep_fusion"] else None))
+    if endorsed_point is None:
+        assert OpticalParams().fusion == FUSION_OFF, (
+            "no rule endorsed a fusion configuration, so fusion must be off: shipping "
+            "one no measurement endorses is what OPTICAL_ADOPTION forbids")
+        return
+
+    from strandline.config import ExtentParams
+
+    for key, value in endorsed_point.items():
+        section, _, field = key.partition(".")
+        shipped = {"optical": OpticalParams(), "extent": ExtentParams()}.get(section)
+        if shipped is None:
+            continue
+        assert getattr(shipped, field) == value, (
+            f"the pass adopted {key}={value} but config.py ships "
+            f"{getattr(shipped, field)!r}")
 
 
 def test_fusion_off_still_changes_no_pixel(scene):

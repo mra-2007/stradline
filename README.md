@@ -281,27 +281,34 @@ not real-world accuracy.
 **Measured on real data (6 independent mountain/valley flood references, leave-one-event-out,
 20 m boundary tolerance).** Primary quantity is flood-affected area = our flood classes ∪ debris,
 against each reference's flooded + debris/mass-movement classes. Every number below is a row in
-`eval/results/flood.csv` (`run_id=20261012T114247Z`, `split=loeo` for floods, `split=full` for
+`eval/results/flood.csv` (`run_id=20261012T165259Z`, `split=loeo` for floods, `split=full` for
 controls). Leave-one-event-out means the rows do **not** share one `params_hash`: four events were
-scored at `63a6d284bc4e`, Poza Honda at `297a77922b9f` and Larkana at `e5e341834c3d`, those two
-being the folds whose SAR `z_seed` differed — the per-fold hashes are listed in
-`eval/chosen_params.json` under `optical_pass.fusion_union`; method and caveats: `eval/chosen_params.json`,
+scored at `0550873e7ea6`, Poza Honda at `d46da9ccd649` and Larkana at `f08e2edf2c4c`, those two
+being the folds whose SAR `z_seed` differed — the per-fold hashes are in
+`eval/chosen_params.json`; method and caveats: `eval/chosen_params.json`,
 `docs/tuning_log.md`. Measured at `n_pre=3` (`DEV_N_PRE`, the dev download-cost setting), a thinner
 reference stack than the shipped default of 5.
 
-> **These numbers are Sentinel-1 + Sentinel-2 fused, and that is what a default run maps.**
-> `OpticalParams.fusion` became `union` on 2026-10-12, adopted by the leave-one-event-out optical
-> pass against the rule declared in `config.OPTICAL_ADOPTION` *before* the pass was run. Held out:
-> mean tolerant F1 **0.5134 → 0.5232**, no event worse by more than 0.0033, worst control 0.0022
-> against a 1% ceiling. The configuration is reproducible by this code and pinned by
-> `tests/test_params_hash_reproducible.py` and `tests/test_detect_optical_fusion.py`.
+> **These numbers are Sentinel-1 + Sentinel-2 fused, with debris OUTSIDE the flood extent, and
+> that is what a default run maps** (`params_hash 0550873e7ea6`). Adopted on 2026-10-12 by the
+> Pareto-dominance rule: in every one of the six leave-one-event-out folds it is at least as good
+> as the previous configuration on mean training tolerant F1 **and** on both false-flood fractions
+> of all four controls, strictly better on 24 of those quantities, and worse on none. The rule was
+> declared and committed before it was implemented, but **after** the stricter criterion found no
+> feasible point — that is unlike every other rule in this project and `docs/tuning_log.md` says
+> so plainly.
 >
-> **Read the gain before relying on it: it is concentrated in the wrong place.** +0.0548 of the
-> +0.0587 summed gain is one event — Larkana, a flat floodplain with a 100% clear pair and the
-> second-best radar score. In the steep gorges where the system actually fails, optical is
-> **zero or slightly negative** (−0.0023, −0.0033) and on four of the ten events cloud refused it
-> altogether. Fusing Sentinel-2 helps most where radar already worked; it does not fix the
-> measured failure. See `docs/tuning_log.md`, 2026-10-12.
+> **Debris is no longer part of the flood extent.** The debris layer is still written and must be
+> labelled *"possible debris, unverified"*; it is excluded from `flood_extent_ha`, from the scored
+> quantity, and **must not be consumed by the damage overlay or the cut-off analysis**. Why:
+> measured precision **0.0** against the only expert mass-movement reference in the dev set, and
+> 96% of all its dev-set pixels on a dry no-flood control.
+>
+> **The optical gain remains concentrated in the wrong place.** Most of it is one event — Larkana,
+> a flat floodplain with a 100% clear pair and the second-best radar score. In the steep gorges
+> where the system actually fails, optical adds little and on four of the ten events cloud refused
+> it altogether. Fusing Sentinel-2 helps most where radar already worked; it does not fix the
+> measured failure.
 
 ### Final per-event scores (`venv\Scripts\python.exe -m eval.check_gates`)
 
@@ -315,15 +322,15 @@ optical and the row is radar-only.
 
 | Event | Terrain | S2 | P | R | **F1** | IoU | P tol | R tol | **F1 tol** |
 |---|---|---|---|---|---|---|---|---|---|
-| bosnia_konjic_2024 | gorge, 21.8° mean slope | 88% | 0.038 | 0.038 | **0.038** | 0.019 | 0.066 | 0.098 | **0.079** |
-| bhutan_punakha_2024 | gorge, 24.4° | 54% | 0.061 | 0.091 | **0.073** | 0.038 | 0.096 | 0.147 | **0.116** |
+| bosnia_konjic_2024 | gorge, 21.8° mean slope | 88% | 0.039 | 0.038 | **0.038** | 0.019 | 0.067 | 0.098 | **0.080** |
+| bhutan_punakha_2024 | gorge, 24.4° | 54% | 0.081 | 0.091 | **0.085** | 0.045 | 0.126 | 0.147 | **0.136** |
 | ecuador_poza_honda_2025 | hill valley, 13.1° | — | 0.432 | 0.390 | **0.410** | 0.258 | 0.579 | 0.534 | **0.555** |
 | norway_selsverket_2023 | valley, 16.3° | 33% | 0.480 | 0.468 | **0.474** | 0.311 | 0.556 | 0.616 | **0.585** |
 | pakistan_larkana_2022 | irrigated plain, 0.3° | 100% | 0.790 | 0.843 | **0.815** | 0.688 | 0.862 | 0.918 | **0.889** |
 | norway_ringebu_2023 | broad valley, 9.9° | — | 0.769 | 0.699 | **0.732** | 0.577 | 0.923 | 0.907 | **0.915** |
-| **mean (6 events)** | | | **0.428** | **0.421** | **0.424** | **0.315** | **0.514** | **0.537** | **0.523** |
+| **mean (6 events)** | | | **0.432** | **0.421** | **0.426** | **0.316** | **0.519** | **0.537** | **0.527** |
 
-No-flood controls, false flood fraction: Punakha 0.0022, Konjic 0.0011, Ringebu 0.0014,
+No-flood controls, false flood fraction: Punakha 0.0001, Konjic 0.0011, Ringebu 0.0014,
 Poza Honda 0.0048. Coverage: 6/6 gate-eligible floods, 4 of 8 declared controls.
 
 > **The shipped configuration FAILS the project's own stricter control criterion.** Say this
@@ -332,8 +339,10 @@ Poza Honda 0.0048. Coverage: 6/6 gate-eligible floods, 4 of 8 declared controls.
 > there would be a miss we must be charged for, so narrowing it would be Rule 3.2). On a control
 > there is no reference to miss, so on a Himalayan AOI that is 95% terrain-excluded the same false
 > pixels are divided by twenty. Over the ground the detector could actually classify, the four
-> controls read **4.37%, 1.02%, 0.68% and 1.64%** against a declared 1% ceiling — so **three of
-> four fail it**. Recorded as `false_flood_fraction_analysed_area` in each control's score file:
+> controls read **0.28%, 1.00%, 0.68% and 1.64%** against a declared 1% ceiling — so **one of four
+> still fails it**, Poza Honda, and Konjic sits exactly on the line. Before the 2026-10-12
+> adoption three of four failed; taking debris out of the flood extent cut Punakha from 4.37% to
+> 0.28%. Recorded as `false_flood_fraction_analysed_area` in each control's score file:
 > reported, never gated, because the gates file is human-owned and keeps its declared metric.
 >
 > On 2026-10-12 that criterion was declared as an additional, stricter feasibility constraint and a
@@ -347,24 +356,23 @@ Poza Honda 0.0048. Coverage: 6/6 gate-eligible floods, 4 of 8 declared controls.
 > `eval/chosen_params_strict_control.json` and `docs/tuning_log.md`, 2026-10-12. Reproduce with
 > `python -m eval.tune --plan gates --optical --chosen-out eval/chosen_params_strict_control.json`.
 >
-> Measured along the way, and not adopted: taking debris **out** of the flood extent improves both
-> the objective (mean tolerant F1 0.5232 → 0.5266) and the controls (Bhutan 0.0437 → 0.0028, a
-> factor of 16), and `water_only` fusion ties it exactly. With the control constraint lifted as a
-> counterfactual, the declared per-fold objective selects a debris-OUT point **unanimously across
-> all six folds**. Acting on that needs a declared rule change, which belongs to a commit that
-> precedes the run — and it would still not make the configuration feasible, because Ecuador's
-> 1.64% is unchanged by every option on the grid.
+> That refusal was then resolved by a rule change the human declared and committed: the
+> **Pareto-dominance rule**, which adopted debris-OUT (mean tolerant F1 0.5231 → 0.5266, Punakha's
+> analysed-area control rate 0.0437 → 0.0028). It did **not** make the configuration feasible and
+> was never capable of it: Poza Honda's 1.64% is identical at all 42 configurations, because its
+> false pixels are Sentinel-1 flood water, optical is refused there and its debris count is zero.
+> **The stricter criterion remains failed on that control and that remains an open issue.**
 
 ### Gate status
 
 | Gate | Measured | Target | Status |
 |---|---|---|---|
-| `flood_mapping` mean precision, tolerant | 0.5137 | ≥ 0.90 | **FAIL** |
+| `flood_mapping` mean precision, tolerant | 0.5188 | ≥ 0.90 | **FAIL** |
 | `flood_mapping` mean recall, tolerant | 0.5366 | ≥ 0.90 | **FAIL** |
-| `flood_mapping` mean F1, tolerant | 0.5231 | ≥ 0.90 | **FAIL** |
-| `flood_mapping` worst single event, F1 tolerant | 0.0789 | ≥ 0.80 | **FAIL** |
-| `flood_mapping` mean F1, strict | 0.4237 | report | — |
-| `flood_mapping` mean IoU, strict | 0.3152 | report | — |
+| `flood_mapping` mean F1, tolerant | 0.5266 | ≥ 0.90 | **FAIL** |
+| `flood_mapping` worst single event, F1 tolerant | 0.0798 | ≥ 0.80 | **FAIL** |
+| `flood_mapping` mean F1, strict | 0.4258 | report | — |
+| `flood_mapping` mean IoU, strict | 0.3163 | report | — |
 | `no_flood_controls` max false flood | 0.0048 | ≤ 0.01 | **PASS** |
 
 **Module status: `flood_mapping` FAIL, `no_flood_controls` PASS.** By the definition of done in
@@ -374,9 +382,13 @@ and the evidence are fixed and committed, and the gate it misses is reported as 
 **Flood mapping is FROZEN** as of 2026-10-12. No further detection change. Everything built on top
 of it — the damage overlay, the cut-off analysis, the copilot, the dashboard and the sitrep — reads
 this map as it stands and must carry three things with every number it quotes: the measured
-accuracy above, the narrow-valley caveat, and the fact that `debris_in_flood_extent` is `True` in
-the shipped configuration, so the flood extent **includes a debris class whose measured precision
-against the only expert debris reference in the dev set is 0.0**.
+accuracy above, the narrow-valley caveat, and the **failed stricter control criterion** on Poza
+Honda (1.64% over analysed ground).
+
+`debris_in_flood_extent` is now `False`, so the flood extent is **flood water only**. The debris
+layer is still written and must be labelled *"possible debris, unverified"*; the damage overlay and
+the cut-off analysis **must not consume it** — its measured precision against the only expert
+debris reference in the dev set is 0.0.
 
 The detector runs in `rough_water` mode, chosen over the original `darkening` mode by
 leave-one-event-out: it wins on 5 of 6 held-out events, and `darkening` is in fact **infeasible** —

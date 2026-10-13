@@ -21,6 +21,8 @@ from shapely.geometry import box
 
 from strandline import catalog, ingest, optical, run
 from strandline.config import (
+    EXTENT_HASH_BASELINE,
+    ExtentParams,
     CLASS_FLOOD_HIGH,
     CLASS_FLOOD_MEDIUM,
     FLOOD_AFFECTED_CLASSES,
@@ -308,7 +310,20 @@ def test_no_optical_is_exactly_the_radar_only_configuration(tmp_path, monkeypatc
     report = json.loads((tmp_path / "run_report.json").read_text())
     assert report["optical"]["status"] == "disabled"
     assert "optical" not in report["parameters"]
-    assert report["parameters_hash"] == run.params_hash(DetectParams(), RP)
+    # Radar-only in SENSOR terms, but NOT the pre-extent configuration: the
+    # shipped ExtentParams narrows the scored quantity, so the hash carries the
+    # extent section and must differ from the hash published before that option
+    # existed. That is the point of EXTENT_HASH_BASELINE - a run that scores a
+    # different quantity never borrows an earlier hash.
+    assert report["parameters_hash"] == run.params_hash(
+        DetectParams(), RP, None, ExtentParams())
+    assert "optical" not in report["parameters"]
+    if ExtentParams() != EXTENT_HASH_BASELINE:
+        assert report["parameters_hash"] != run.params_hash(DetectParams(), RP), (
+            "a run scoring flood water only must not share the hash of the rows "
+            "published when debris was inside the flood extent")
+        assert report["parameters"]["extent"] == {
+            "debris_in_flood_extent": ExtentParams().debris_in_flood_extent}
 
 
 def test_a_warm_optical_cache_needs_no_login(tmp_path, monkeypatch):

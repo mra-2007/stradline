@@ -583,14 +583,21 @@ def test_the_extent_flag_reaches_the_materialised_params_and_the_hash():
     assert ep.flood_extent_classes() == (2, 3), "debris must be out of the extent"
 
 
-def test_the_default_extent_value_does_not_move_a_published_hash():
-    """Default in, nothing added to params_dict: every published hash survives."""
-    with_default = tune.combine(SAR, {"optical.fusion": FUSION_OFF,
-                                      "extent.debris_in_flood_extent": True})
+def test_the_baseline_extent_value_does_not_move_a_published_hash():
+    """Baseline in, nothing added to params_dict: every published hash survives.
+
+    The baseline is debris-IN, which every hash published before the option
+    existed was measured at - NOT the shipped default, which moved to debris-OUT
+    on 2026-10-12.
+    """
+    from strandline.config import EXTENT_HASH_BASELINE
+
+    baseline = EXTENT_HASH_BASELINE.debris_in_flood_extent
+    with_baseline = tune.combine(SAR, {"optical.fusion": FUSION_OFF,
+                                       "extent.debris_in_flood_extent": baseline})
     without_key = tune.combine(SAR, {"optical.fusion": FUSION_OFF})
-    assert tune.full_point_hash(with_default, N_PRE) == tune.full_point_hash(
+    assert tune.full_point_hash(with_baseline, N_PRE) == tune.full_point_hash(
         without_key, N_PRE)
-    assert tune.extent_of(without_key) is True
 
 
 def test_turning_debris_out_of_the_extent_is_its_own_configuration():
@@ -651,3 +658,183 @@ def test_the_frozen_sar_points_carry_only_the_sar_half():
     for fold, point in frozen.items():
         assert point, fold
         assert all(k.startswith(("detect.", "run.")) for k in point), (fold, point)
+
+
+# --- the Pareto-dominance rule (declared 2026-10-12, AFTER the refusal) ------
+#
+# SYNTHETIC. The rule has no free parameters, so what these tests pin is that
+# it cannot be made to trade one quantity for another.
+
+INC = {"optical.fusion": FUSION_UNION, "optical.mndwi_water": 0.0,
+       "optical.ndvi_drop_min": 0.2, "extent.debris_in_flood_extent": True}
+CAND = {"optical.fusion": FUSION_UNION, "optical.mndwi_water": 0.0,
+        "optical.ndvi_drop_min": 0.1, "extent.debris_in_flood_extent": False}
+SARS = {"a": SAR, "b": SAR, "c": SAR, "": SAR}
+
+
+def _dom_matrix(inc_f1, cand_f1, inc_ctrl, cand_ctrl) -> tune.Matrix:
+    """Floods a,b,c and one control, at the incumbent and one candidate.
+
+    `*_ctrl` are (gated, analysed) pairs. Every flood event gets the same F1 so
+    each fold's training mean equals it, which keeps the arithmetic obvious.
+    """
+    spec = {}
+    for event in ("a", "b", "c"):
+        spec[event] = (sb.KIND_FLOOD, {key(SAR, INC): {"f1_tol": inc_f1},
+                                       key(SAR, CAND): {"f1_tol": cand_f1}})
+    spec["ctrl"] = (sb.KIND_CONTROL, {
+        key(SAR, INC): {"ffr": inc_ctrl[0], "ffr_analysed": inc_ctrl[1]},
+        key(SAR, CAND): {"ffr": cand_ctrl[0], "ffr_analysed": cand_ctrl[1]}})
+    return matrix_of(spec)
+
+
+def test_the_incumbent_is_read_from_the_shipped_defaults_and_is_a_grid_point():
+    """So the comparison is against what the project actually ships."""
+    inc = tune.incumbent_point()
+    assert inc["optical.fusion"] == OpticalParams().fusion
+    assert inc["optical.ndvi_drop_min"] == OpticalParams().ndvi_drop_min
+    assert inc["extent.debris_in_flood_extent"] == ExtentParams().debris_in_flood_extent
+    assert any(p == inc for p in tune.optical_grid_points()), (
+        "the incumbent must be a point of the declared grid, or it cannot be compared")
+
+
+def test_a_candidate_better_everywhere_dominates():
+    m = _dom_matrix(0.50, 0.55, (0.0022, 0.0437), (0.0001, 0.0028))
+    out = tune.select_by_dominance(m, [INC, CAND], ["a", "b", "c"], ["ctrl"], SARS,
+                                   N_PRE, incumbent=INC)
+    assert out["chosen"] == CAND
+    assert out["comparisons"][tune.point_label(CAND)]["dominates"] is True
+
+
+def test_a_candidate_that_gains_f1_but_worsens_any_control_is_rejected():
+    """The trade the rule exists to forbid - and the mean would have hidden it."""
+    m = _dom_matrix(0.50, 0.90, (0.0022, 0.0437), (0.0022, 0.0440))
+    out = tune.select_by_dominance(m, [INC, CAND], ["a", "b", "c"], ["ctrl"], SARS,
+                                   N_PRE, incumbent=INC)
+    assert out["chosen"] is None
+    cmp = out["comparisons"][tune.point_label(CAND)]
+    assert cmp["dominates"] is False
+    assert any("analysed false flood" in w for w in cmp["worse_on"])
+
+
+def test_a_candidate_that_lowers_false_alarms_but_loses_f1_is_rejected():
+    """Symmetrically forbidden: no quantity may be traded for another."""
+    m = _dom_matrix(0.50, 0.49, (0.0022, 0.0437), (0.0000, 0.0000))
+    out = tune.select_by_dominance(m, [INC, CAND], ["a", "b", "c"], ["ctrl"], SARS,
+                                   N_PRE, incumbent=INC)
+    assert out["chosen"] is None
+    assert any("mean train F1" in w
+               for w in out["comparisons"][tune.point_label(CAND)]["worse_on"])
+
+
+def test_an_exact_tie_everywhere_is_not_strictly_better_and_is_not_adopted():
+    """"At least as good" is not enough; the rule needs one strict improvement."""
+    m = _dom_matrix(0.50, 0.50, (0.0022, 0.0437), (0.0022, 0.0437))
+    out = tune.select_by_dominance(m, [INC, CAND], ["a", "b", "c"], ["ctrl"], SARS,
+                                   N_PRE, incumbent=INC)
+    assert out["chosen"] is None
+    cmp = out["comparisons"][tune.point_label(CAND)]
+    assert cmp["worse_on"] == [] and cmp["strictly_better_count"] == 0
+
+
+def test_the_f1_comparison_uses_training_events_not_the_held_out_one():
+    """The correction /audit forced: never select on held-out scores.
+
+    Event `c` is the only one where the candidate is worse. In fold `c` - where
+    `c` is HELD OUT - the training mean over a and b favours the candidate, so a
+    held-out comparison would see nothing wrong; the training comparison in
+    folds `a` and `b`, which DO train on `c`, is what rejects it.
+    """
+    spec = {}
+    for event, (inc_f1, cand_f1) in {"a": (0.50, 0.60), "b": (0.50, 0.60),
+                                     "c": (0.50, 0.10)}.items():
+        spec[event] = (sb.KIND_FLOOD, {key(SAR, INC): {"f1_tol": inc_f1},
+                                       key(SAR, CAND): {"f1_tol": cand_f1}})
+    spec["ctrl"] = (sb.KIND_CONTROL, {key(SAR, INC): {"ffr": 0.001, "ffr_analysed": 0.004},
+                                      key(SAR, CAND): {"ffr": 0.001, "ffr_analysed": 0.004}})
+    m = matrix_of(spec)
+    out = tune.select_by_dominance(m, [INC, CAND], ["a", "b", "c"], ["ctrl"], SARS,
+                                   N_PRE, incumbent=INC)
+    assert out["chosen"] is None, "a fold that TRAINS on the bad event must reject it"
+    worse = out["comparisons"][tune.point_label(CAND)]["worse_on"]
+    assert any(w.startswith("a:") for w in worse) and any(w.startswith("b:") for w in worse)
+    assert not any(w.startswith("c:") for w in worse), (
+        "fold c trains on a and b only, where the candidate is better")
+
+
+def test_a_missing_score_makes_a_candidate_incomparable_not_dominant():
+    m = _dom_matrix(0.50, 0.55, (0.0022, 0.0437), (0.0001, 0.0028))
+    del m[("b", tune.full_point_hash(tune.combine(SAR, CAND), N_PRE))]
+    out = tune.select_by_dominance(m, [INC, CAND], ["a", "b", "c"], ["ctrl"], SARS,
+                                   N_PRE, incumbent=INC)
+    assert out["chosen"] is None
+    assert "incomparable" in out["comparisons"][tune.point_label(CAND)]
+
+
+def test_ties_are_broken_by_fewer_false_alarms():
+    """Two dominating candidates; the one with the lower analysed-area rate wins."""
+    other = {"optical.fusion": FUSION_WATER_ONLY, "optical.mndwi_water": 0.0,
+             "extent.debris_in_flood_extent": False}
+    spec = {}
+    for event in ("a", "b", "c"):
+        spec[event] = (sb.KIND_FLOOD, {key(SAR, INC): {"f1_tol": 0.50},
+                                       key(SAR, CAND): {"f1_tol": 0.55},
+                                       key(SAR, other): {"f1_tol": 0.55}})
+    spec["ctrl"] = (sb.KIND_CONTROL, {
+        key(SAR, INC): {"ffr": 0.0022, "ffr_analysed": 0.0437},
+        key(SAR, CAND): {"ffr": 0.0010, "ffr_analysed": 0.0100},
+        key(SAR, other): {"ffr": 0.0005, "ffr_analysed": 0.0050}})
+    out = tune.select_by_dominance(matrix_of(spec), [INC, CAND, other],
+                                   ["a", "b", "c"], ["ctrl"], SARS, N_PRE, incumbent=INC)
+    assert out["chosen"] == other, "the tie-break must prefer fewer false alarms"
+    assert len(out["dominating"]) == 2
+
+
+def test_the_rule_reports_that_it_makes_nothing_feasible():
+    """It must never be mistaken for passing the stricter criterion."""
+    m = _dom_matrix(0.50, 0.55, (0.0022, 0.0437), (0.0001, 0.0028))
+    out = tune.select_by_dominance(m, [INC, CAND], ["a", "b", "c"], ["ctrl"], SARS,
+                                   N_PRE, incumbent=INC)
+    assert "remains FAILED" in out["does_not_make_anything_feasible"]
+    assert "1.64%" in out["does_not_make_anything_feasible"]
+
+
+def test_no_production_path_lifts_the_control_ceiling():
+    """The hatch is for tests. An adoption path must never use it.
+
+    An earlier version of the dominance branch rebuilt a Selection per fold with
+    `select(..., analysed_ceiling=1.0)` purely to carry the chosen point, and so
+    used in production the escape hatch `select`'s own docstring reserves for
+    tests. /audit caught it. The rows are now read straight from the matrix,
+    because by that point the rule has already chosen and there is nothing left
+    to select.
+    """
+    import ast
+
+    # Parsed, not grepped: the first version of this test used a regex over the
+    # source with comments stripped, and matched the sentence in `select`'s own
+    # DOCSTRING that explains why the hatch exists. A docstring is not a call.
+    tree = ast.parse((ROOT / "eval" / "tune.py").read_text(encoding="utf-8"))
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for kw in node.keywords:
+            if kw.arg != "analysed_ceiling":
+                continue
+            value = kw.value
+            if isinstance(value, ast.Constant) and value.value in (1.0, 1, None):
+                offenders.append(getattr(node, "lineno", "?"))
+    assert not offenders, (
+        f"eval/tune.py lifts or disables the analysed-area control ceiling at "
+        f"line(s) {offenders}; that hatch is for tests only")
+
+
+def test_the_extent_default_is_reported_by_extent_of():
+    """`extent_of` answers 'what does this point say', defaulting to the SHIPPED
+    value - which is debris-OUT since 2026-10-12."""
+    from strandline.config import ExtentParams
+
+    assert tune.extent_of({}) is ExtentParams().debris_in_flood_extent
+    assert tune.extent_of({"extent.debris_in_flood_extent": True}) is True
+    assert tune.extent_of({"extent.debris_in_flood_extent": False}) is False

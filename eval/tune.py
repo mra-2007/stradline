@@ -801,6 +801,200 @@ def scene_with_optical(scene, read, op: OpticalParams | None):
     return replace(scene, optical_evidence=evidence, optical_params=op)
 
 
+# --- the Pareto-dominance rule (declared 2026-10-12, AFTER the refusal) -------
+#
+# docs/tuning_log.md carries the declaration and, more importantly, the caveat:
+# unlike every other rule here it was written after the numbers it judges
+# existed. Its defence is its SHAPE - Pareto dominance has no free parameters,
+# no threshold, no weighting between F1 and false alarms, and no event that can
+# be traded away - not an assurance of good faith.
+#
+# It fires ONLY after the ordinary feasible-or-nothing selection has failed, and
+# it can only ever move the project to a configuration that is better on every
+# measured axis. It does NOT make anything feasible.
+
+
+def incumbent_point(base_op: OpticalParams | None = None,
+                    base_ep: ExtentParams | None = None) -> dict:
+    """The configuration config.py SHIPS, as a grid point.
+
+    Read from the shipped defaults rather than written down, so the dominance
+    comparison is always against what the project actually ships and cannot
+    drift from it.
+    """
+    op = base_op or OpticalParams()
+    ep = base_ep or ExtentParams()
+    point = {"optical.fusion": op.fusion}
+    # Only the axes the declared grid searches, so the incumbent IS a grid point.
+    for key in OPTICAL_TUNE_GRIDS.get(op.fusion, {}):
+        point[key] = getattr(op, key.split(".", 1)[1])
+    for key in EXTENT_TUNE_GRID:
+        point[key] = getattr(ep, key.split(".", 1)[1])
+    return point
+
+
+def fold_objective(matrix: Matrix, point: dict, train: list[str],
+                   n_pre: int = DEV_N_PRE) -> float | None:
+    """Mean tolerant F1 over a fold's TRAINING events. None if any is missing.
+
+    Training, never held-out: choosing between candidates on held-out scores is
+    selection on held-out data, which is the mistake `/audit` caught on
+    2026-10-12 and which the declaration explicitly forbids.
+    """
+    phash = full_point_hash(point, n_pre)
+    values = []
+    for event in train:
+        score = matrix.get((event, phash))
+        if score is None or not score.ok or score.value(OBJECTIVE_METRIC) is None:
+            return None
+        values.append(score.value(OBJECTIVE_METRIC))
+    return (sum(values) / len(values)) if values else None
+
+
+def fold_control_fractions(matrix: Matrix, point: dict, controls: list[str],
+                           n_pre: int = DEV_N_PRE) -> dict | None:
+    """Both false-flood fractions for every control. None if any is missing."""
+    phash = full_point_hash(point, n_pre)
+    out: dict[str, dict] = {}
+    for control in controls:
+        score = matrix.get((control, phash))
+        if score is None or not score.ok:
+            return None
+        gated = score.value(CONTROL_METRIC)
+        analysed = _control_analysed(score)
+        if gated is None or analysed is None:
+            return None
+        out[control] = {"gated": gated, "analysed": analysed}
+    return out
+
+
+def compare_to_incumbent(matrix: Matrix, candidate: dict, incumbent: dict,
+                         flood_events: list[str], controls: list[str],
+                         sar_points: dict[str, dict], n_pre: int = DEV_N_PRE) -> dict:
+    """The declared per-fold comparison of one candidate against the incumbent.
+
+    Returns the full table - every fold, every quantity, both values - plus the
+    verdict, so the conclusion can be checked rather than taken. `dominates` is
+    True only when NO quantity is worse in ANY fold and at least one is strictly
+    better somewhere.
+    """
+    folds: dict[str, dict] = {}
+    worse: list[str] = []
+    better: list[str] = []
+    for held in flood_events:
+        if held not in sar_points:
+            return {"dominates": False, "incomparable": f"no SAR point for fold {held}",
+                    "folds": folds}
+        train = [e for e in flood_events if e != held]
+        sar = sar_points[held]
+        cand, inc = combine(sar, candidate), combine(sar, incumbent)
+
+        f_cand, f_inc = (fold_objective(matrix, cand, train, n_pre),
+                         fold_objective(matrix, inc, train, n_pre))
+        c_cand, c_inc = (fold_control_fractions(matrix, cand, controls, n_pre),
+                         fold_control_fractions(matrix, inc, controls, n_pre))
+        if f_cand is None or f_inc is None or c_cand is None or c_inc is None:
+            return {"dominates": False,
+                    "incomparable": f"a score is missing in fold {held}", "folds": folds}
+
+        row = {"train_f1_tolerant": {"candidate": round(f_cand, 6),
+                                     "incumbent": round(f_inc, 6)},
+               "controls": {}}
+        if f_cand < f_inc:
+            worse.append(f"{held}: mean train F1 {f_cand:.6f} < {f_inc:.6f}")
+        elif f_cand > f_inc:
+            better.append(f"{held}: mean train F1 {f_cand:.6f} > {f_inc:.6f}")
+        for control in controls:
+            pair = {"gated": {"candidate": c_cand[control]["gated"],
+                              "incumbent": c_inc[control]["gated"]},
+                    "analysed": {"candidate": c_cand[control]["analysed"],
+                                 "incumbent": c_inc[control]["analysed"]}}
+            row["controls"][control] = pair
+            for metric in ("gated", "analysed"):
+                a, b = pair[metric]["candidate"], pair[metric]["incumbent"]
+                if a > b:
+                    worse.append(f"{held}/{control}: {metric} false flood {a} > {b}")
+                elif a < b:
+                    better.append(f"{held}/{control}: {metric} false flood {a} < {b}")
+        folds[held] = row
+
+    return {"dominates": bool(not worse and better),
+            "worse_on": worse, "better_on": better[:12],
+            "strictly_better_count": len(better), "folds": folds}
+
+
+def dominance_tiebreak(matrix: Matrix, point: dict, controls: list[str],
+                       sar_points: dict[str, dict], n_pre: int = DEV_N_PRE) -> tuple:
+    """Fewer false alarms first, as declared. Lower is better on every element.
+
+    Worst analysed-area fraction, then worst gated fraction, then total
+    flood-affected pixels on the controls. Measured at the FINAL SAR point, the
+    one the shipped configuration uses.
+    """
+    sar = sar_points.get("") or next(iter(sar_points.values()))
+    fractions = fold_control_fractions(matrix, combine(sar, point), controls, n_pre) or {}
+    worst_analysed = max((v["analysed"] for v in fractions.values()), default=1.0)
+    worst_gated = max((v["gated"] for v in fractions.values()), default=1.0)
+    phash = full_point_hash(combine(sar, point), n_pre)
+    affected = 0.0
+    for control in controls:
+        score = matrix.get((control, phash))
+        if score is not None and score.ok:
+            affected += float(score.provenance.get("predicted_flood_affected_ha") or 0.0)
+    return (round(worst_analysed, 6), round(worst_gated, 6), round(affected, 2))
+
+
+def select_by_dominance(matrix: Matrix, points: list[dict], flood_events: list[str],
+                        controls: list[str], sar_points: dict[str, dict],
+                        n_pre: int = DEV_N_PRE,
+                        incumbent: dict | None = None) -> dict:
+    """Apply the declared Pareto-dominance rule. Returns the full reasoning.
+
+    The caller must have established that NO point is feasible under both
+    control ceilings; this rule exists only for that case and the report says so.
+    """
+    incumbent = incumbent_point() if incumbent is None else incumbent
+    comparisons = {point_label(p): compare_to_incumbent(
+        matrix, p, incumbent, flood_events, controls, sar_points, n_pre) for p in points}
+    dominating = [p for p in points if comparisons[point_label(p)]["dominates"]]
+
+    chosen = None
+    ties: list[dict] = []
+    if dominating:
+        ranked = sorted(dominating,
+                        key=lambda p: dominance_tiebreak(matrix, p, controls,
+                                                         sar_points, n_pre))
+        best_key = dominance_tiebreak(matrix, ranked[0], controls, sar_points, n_pre)
+        ties = [p for p in ranked
+                if dominance_tiebreak(matrix, p, controls, sar_points, n_pre) == best_key]
+        chosen = ties[0]          # grid order within an exact tie
+    return {
+        "rule": ("adopt the point that in EVERY leave-one-event-out fold is at least as "
+                 "good as the incumbent on mean tolerant F1 (over that fold's TRAINING "
+                 "events) and on every control's gated AND analysed-area false-flood "
+                 "fraction, and strictly better on at least one; ties go to fewer false "
+                 "alarms. DECLARED AFTER the stricter criterion found no feasible point "
+                 "(docs/tuning_log.md, 2026-10-12)."),
+        "fires_only_when": "no grid point passes both control ceilings",
+        "incumbent": incumbent,
+        "incumbent_is_a_grid_point": any(p == incumbent for p in points),
+        "candidates_considered": len(points),
+        "dominating": [dict(p) for p in dominating],
+        "tie_break": "worst analysed-area false flood, then worst gated, then total "
+                     "flood-affected ha on the controls, then grid order",
+        "tied_at_best": [dict(p) for p in ties],
+        "chosen": None if chosen is None else dict(chosen),
+        "chosen_params_hash": None if chosen is None else full_point_hash(chosen, n_pre),
+        "does_not_make_anything_feasible": (
+            "The stricter analysed-area criterion remains FAILED: "
+            "ecuador_poza_honda_control_2024 stays at 1.64% whatever is adopted, because "
+            "its false pixels are Sentinel-1 flood water and no grid point changes them. "
+            "This rule only moves the project to a configuration better on every measured "
+            "axis; it does not satisfy the criterion."),
+        "comparisons": comparisons,
+    }
+
+
 # --- the adoption decision ----------------------------------------------------
 
 def adoption_verdict(off: dict[str, float], on: dict[str, float],
@@ -1127,13 +1321,88 @@ def run_optical_pass(planned: list[dict], floods: list[str], controls: list[str]
     verdict = adoption_verdict(off_held, on_held, off_controls, on_controls, ceiling)
     print_verdict(verdict)
 
+    # --- the Pareto-dominance rule, only if nothing was feasible ------------
+    #
+    # "Feasible" means what `select` means by it: a point under BOTH control
+    # ceilings. The rule declared on 2026-10-12 fires only in that case, so the
+    # test is made here, from the selections just computed, rather than assumed.
+    all_points = [combine(sar_points.get("") or next(iter(sar_points.values())), p)
+                  for p in optical_points]
+    feasible_final = select(matrix, floods, controls, all_points, ceiling, args.n_pre,
+                            full_point_hash)
+    dominance = None
+    if feasible_final.ok:
+        print("\n  A point passes both control ceilings, so the Pareto-dominance rule is "
+              "NOT consulted:")
+        print(f"    {point_label(feasible_final.chosen.point)}")
+    else:
+        print("\n=== PARETO-DOMINANCE RULE (declared 2026-10-12, AFTER the refusal) ===")
+        print("  No point passes both control ceilings, so the declared fallback applies.")
+        print("  It compares every candidate with the SHIPPED configuration, per fold,")
+        print("  on mean TRAINING tolerant F1 and on both false-flood fractions of every")
+        print("  control. No quantity may be traded for another.\n")
+        dominance = select_by_dominance(matrix, optical_points, floods, controls,
+                                        sar_points, args.n_pre)
+        print(f"  incumbent: {point_label(dominance['incumbent'])}"
+              f"   (a declared grid point: {dominance['incumbent_is_a_grid_point']})")
+        for p in optical_points:
+            cmp = dominance["comparisons"][point_label(p)]
+            mark = "DOMINATES" if cmp["dominates"] else "no"
+            why = ""
+            if not cmp["dominates"]:
+                why = ("  " + (cmp.get("incomparable")
+                               or (cmp["worse_on"][0] if cmp["worse_on"]
+                                   else "no quantity strictly better")))
+            print(f"  [{mark:>9}] {point_label(p):<78}{why[:90]}")
+        if dominance["chosen"] is None:
+            print("\n  NOTHING DOMINATES the incumbent. The shipped configuration stands.")
+        else:
+            print(f"\n  ADOPT: {point_label(dominance['chosen'])}")
+            print(f"    strictly better on {dominance['comparisons'][point_label(dominance['chosen'])]['strictly_better_count']} "
+                  f"quantity/quantities, worse on none, in every fold")
+            print(f"    hash {dominance['chosen_params_hash']}")
+            if len(dominance["tied_at_best"]) > 1:
+                print(f"    {len(dominance['tied_at_best'])} candidate(s) tied on false "
+                      f"alarms; grid order decided")
+        print(f"\n  {dominance['does_not_make_anything_feasible']}")
+
     keep = verdict["keep_fusion"]
     chosen_sel = on_sel if keep else off_sel
     chosen_point = (final_on.chosen.point if keep and final_on is not None and final_on.ok
                     else off_point)
-    flood_scores = [matrix[(e, s.chosen.params_hash)] for e, s in chosen_sel.items()
-                    if s.ok and (e, s.chosen.params_hash) in matrix
-                    and matrix[(e, s.chosen.params_hash)].ok]
+    adopted_by = "the adoption rule (OPTICAL_ADOPTION)" if keep else "nothing (incumbent stands)"
+    if dominance is not None and dominance["chosen"] is not None:
+        # The dominance rule fired and found a winner: IT decides what is
+        # adopted and therefore which rows describe the published gate.
+        #
+        # The held-out scores are read STRAIGHT FROM THE MATRIX, not by
+        # reconstructing a Selection. An earlier version rebuilt one per fold
+        # with `select(..., analysed_ceiling=1.0)`, i.e. it used in production
+        # the very escape hatch the function's own docstring reserves for
+        # tests - caught by /audit. There is nothing left to select here: the
+        # rule has already chosen one point, and each fold's row is that
+        # point's score on the event that fold held out.
+        final_sar_point = sar_points.get("") or next(iter(sar_points.values()))
+        chosen_point = combine(final_sar_point, dominance["chosen"])
+        chosen_sel = None
+        dominance_scores = []
+        for held in floods:
+            if held not in sar_points:
+                continue
+            phash = full_point_hash(combine(sar_points[held], dominance["chosen"]),
+                                    args.n_pre)
+            score = matrix.get((held, phash))
+            if score is not None and score.ok:
+                dominance_scores.append(score)
+        adopted_by = "the Pareto-dominance rule (declared 2026-10-12, after the refusal)"
+    print(f"\n  adopted by: {adopted_by}")
+    if chosen_sel is None:
+        # The dominance rule chose; its per-fold held-out scores are the rows.
+        flood_scores = dominance_scores
+    else:
+        flood_scores = [matrix[(e, s.chosen.params_hash)] for e, s in chosen_sel.items()
+                        if s.ok and (e, s.chosen.params_hash) in matrix
+                        and matrix[(e, s.chosen.params_hash)].ok]
     control_scores = ([matrix[(c, full_point_hash(chosen_point, args.n_pre))]
                        for c in controls
                        if (c, full_point_hash(chosen_point, args.n_pre)) in matrix
@@ -1169,6 +1438,8 @@ def run_optical_pass(planned: list[dict], floods: list[str], controls: list[str]
         "held_out_f1_tolerant": {"off": off_held, "on": on_held},
         "controls_false_flood_fraction": {"off": off_controls, "on": on_controls},
         "adoption": verdict,
+        "dominance": dominance,
+        "adopted_by": adopted_by,
         "chosen_configuration": chosen_point,
         "chosen_params_hash": (full_point_hash(chosen_point, args.n_pre)
                                if chosen_point else None),
@@ -1411,12 +1682,17 @@ def main(argv=None) -> int:
         # The config edit a human has to make now includes the optical section,
         # but ONLY if the declared rule endorsed fusion. A pass that said no
         # must not leave a suggestion to turn it on.
+        dom_chosen = (optical_report.get("dominance") or {}).get("chosen")
         if (optical_report.get("status") == "scored"
-                and optical_report["adoption"]["keep_fusion"]
-                and optical_report.get("chosen_configuration") and final.ok):
-            _, _, op_final, ep_final = materialise_full(
+                and (dom_chosen is not None or optical_report["adoption"]["keep_fusion"])
+                and optical_report.get("chosen_configuration")):
+            dp_adopted, rp_adopted, op_final, ep_final = materialise_full(
                 optical_report["chosen_configuration"], args.n_pre)
-            diff = config_diff(dp_final, rp_final, op_final, ep_final)
+            # dp_final/rp_final are None when the radar pass found nothing
+            # feasible, which is exactly when the dominance rule fires. The
+            # adopted configuration carries its own SAR half, so use that.
+            diff = config_diff(dp_final or dp_adopted, rp_final or rp_adopted,
+                               op_final, ep_final)
 
     # --- artefacts -----------------------------------------------------------
     report = {
@@ -1468,7 +1744,9 @@ def main(argv=None) -> int:
         args.chosen_out.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
         print(f"\nwrote {_rel(args.chosen_out)}")
 
-    if final.ok:
+    # Printed whenever anything was adopted, which includes the dominance rule
+    # firing after the radar pass found nothing feasible.
+    if diff or final.ok:
         print_diff(diff)
 
     # Which configuration's rows become the gate numbers. Exactly ONE set is
@@ -1478,7 +1756,16 @@ def main(argv=None) -> int:
     adopted = "radar-only (optical not consulted)"
     flood_rows, control_rows = loeo_scores, control_scores
     if optical_report is not None and optical_report.get("status") == "scored":
-        if optical_report["adoption"]["keep_fusion"]:
+        dom = optical_report.get("dominance") or {}
+        if dom.get("chosen") is not None:
+            # The Pareto-dominance rule fired and found a winner, so IT decides
+            # what is adopted and therefore which rows describe the gate. It is
+            # reported by name, because it is the one rule here declared after
+            # the result (docs/tuning_log.md, 2026-10-12).
+            adopted = (f"{point_label(dom['chosen'])} (Pareto-dominance rule, declared "
+                       f"after the stricter criterion found no feasible point)")
+            flood_rows, control_rows = optical_scores, optical_controls
+        elif optical_report["adoption"]["keep_fusion"]:
             adopted = "optical fusion `union` (adoption rule: KEEP)"
             flood_rows, control_rows = optical_scores, optical_controls
         else:

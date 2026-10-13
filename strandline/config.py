@@ -357,14 +357,18 @@ class OpticalParams:
     # a loss well outside seasonal change over a few weeks - and 0.10/0.20
     # were SEARCHED around it by OPTICAL_TUNE_GRIDS.
     #
-    # 0.20 chosen on 2026-10-12 by the leave-one-event-out optical pass: the
-    # stricter of the two won on every one of the six folds, which is what
-    # should be expected - the deposit signature is the looser of the two
-    # optical channels, and the events where it fires hardest are the dry
-    # controls (15% of the Bhutan control AOI as candidate pixels before the
-    # terrain tests). The looser 0.10 cost the controls more than it bought the
-    # floods. Not hand-picked: see eval/chosen_params.json.
-    ndvi_drop_min: float = 0.20
+    # 0.10 since 2026-10-12, by the Pareto-dominance rule
+    # (eval/chosen_params.json, run_id 20261012T165259Z, hash 0550873e7ea6).
+    #
+    # It was 0.20 earlier the same day, chosen when debris was still part of the
+    # flood extent: the stricter value won on all six folds because the deposit
+    # channel's false positives counted against the score. With
+    # debris_in_flood_extent now False those pixels no longer reach the scored
+    # quantity at all, so the threshold no longer trades controls against
+    # floods and the looser value is simply better on the floods. The two
+    # changes belong together and were adopted together; splitting them would
+    # reinstate the trade.
+    ndvi_drop_min: float = 0.10
     # Fresh mud and boulder deposits are brighter in SWIR than the vegetation
     # or wet soil they bury. 0.03 reflectance is roughly three times the
     # radiometric uncertainty of an L2A SWIR band. Not searched.
@@ -459,15 +463,24 @@ def params_dict(detect: DetectParams, run: RunParams,
     the reverse of ReliabilityParams. ExtentParams changes no pixel of the class
     map either - debris is written as CLASS_DEBRIS whatever it says - but it DOES
     change the scored quantity, so two configurations that score differently must
-    not share a hash. It is therefore included, but ONLY WHEN IT DIFFERS FROM THE
-    DEFAULT: default in, nothing added, every published hash reproducible; any
-    other value, its own section and its own hash. Pinned by
+    not share a hash. It is therefore included, but ONLY WHEN IT DIFFERS FROM
+    `EXTENT_HASH_BASELINE`: baseline in, nothing added, every hash published
+    before the option existed stays reproducible; any other value, its own
+    section and its own hash.
+
+    The baseline is a FIXED CONSTANT and emphatically not `ExtentParams()`, the
+    live default. An earlier version compared against the live default, which
+    works until the day the default moves - and then a configuration that scores
+    a DIFFERENT quantity silently hashes like the rows already published, which
+    is the exact failure this whole arrangement exists to prevent. Keying off a
+    constant makes the published hashes depend on what was measured rather than
+    on what happens to be shipped today. Pinned by
     tests/test_params_hash_reproducible.py.
     """
     out = {"detect": asdict(detect), "run": asdict(run)}
     if optical is not None and optical.enabled:
         out["optical"] = asdict(optical)
-    if extent is not None and extent != ExtentParams():
+    if extent is not None and extent != EXTENT_HASH_BASELINE:
         out["extent"] = asdict(extent)
     return out
 
@@ -533,26 +546,48 @@ class ExtentParams:
     published stays reproducible.
     """
 
-    # True (the shipped default until measured otherwise) - debris is part of
-    # the flood extent and of the primary scored quantity, as decided on
-    # 2026-10-11.
+    # FALSE since 2026-10-12, adopted by the Pareto-dominance rule
+    # (eval/chosen_params.json, run_id 20261012T165259Z, hash 0550873e7ea6):
+    # in every one of the six leave-one-event-out folds, debris-OUT is at least
+    # as good as debris-IN on mean training tolerant F1 AND on both false-flood
+    # fractions of all four controls, and strictly better on 24 of those
+    # quantities. Nothing was traded.
     #
-    # False - debris stays an OUTPUT LAYER, written to flood_classes.tif and
-    # reported under DEBRIS_UNVERIFIED_LABEL, but it is not flood extent: not
+    # So: debris stays an OUTPUT LAYER, written to flood_classes.tif and
+    # reported under DEBRIS_UNVERIFIED_LABEL, but it is NOT flood extent - not
     # scored, not in flood-affected hectares, and NOT to be consumed by the
-    # damage overlay or the cut-off analysis. On the grid since 2026-10-12
-    # because the class-count audit measured the debris channel at precision
-    # 0.0 against the only expert mass-movement reference in the dev set.
+    # damage overlay or the cut-off analysis.
+    #
+    # Why, in one line: the debris channel's measured precision against the
+    # only expert mass-movement reference in the dev set is 0.0 (18 predicted,
+    # 0 correct, 582 missed), and 96% of all its dev-set pixels fell on a dry
+    # no-flood control.
+    #
+    # True remains available and remains the HASH BASELINE (see
+    # EXTENT_HASH_BASELINE): every params_hash published before this option
+    # existed was measured with debris inside the extent.
     #
     # The REFERENCE definition does not follow this flag: references are still
-    # scored as flooded + debris/mass-movement, so False makes the task harder
-    # (reference debris becomes an unreachable miss) and is allowed to lose on
-    # that basis.
-    debris_in_flood_extent: bool = True
+    # scored as flooded + debris/mass-movement, so False makes the task HARDER
+    # (reference debris becomes an unreachable miss) and won anyway.
+    debris_in_flood_extent: bool = False
 
     def flood_extent_classes(self) -> tuple[int, ...]:
         return (FLOOD_AFFECTED_CLASSES if self.debris_in_flood_extent
                 else FLOOD_EXTENT_WITHOUT_DEBRIS)
+
+
+# The extent configuration that EVERY params_hash published before this option
+# existed was measured at: debris inside the flood extent, as decided on
+# 2026-10-11. `params_dict` omits the `extent` section exactly when the
+# configuration equals this, so those hashes stay reproducible for good.
+#
+# It is deliberately a constant and NOT `ExtentParams()`. The shipped default
+# moved to debris-OUT on 2026-10-12 and may move again; the baseline must not
+# follow it, or a configuration scoring a different quantity would hash like the
+# rows already published. Changing this constant invalidates every published
+# hash and must never be done to make a diff smaller.
+EXTENT_HASH_BASELINE = ExtentParams(debris_in_flood_extent=True)
 
 
 # --- Dev-event scoring cost ---------------------------------------------------

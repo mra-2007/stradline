@@ -36,12 +36,28 @@ def _chosen() -> dict:
 
 
 def test_the_recorded_chosen_configuration_still_hashes_to_its_recorded_hash():
-    """The configuration the dev set was scored at must re-hash to its own key."""
+    """The configuration the dev set was scored at must re-hash to its own key.
+
+    `chosen_parameters` is null when the radar pass found no feasible point,
+    which is the state since the stricter control criterion was declared. The
+    adopted configuration is then recorded by the second pass instead, and that
+    is what must re-hash.
+    """
+    from eval import tune
+
     chosen = _chosen()
-    params = chosen["chosen_parameters"]
-    dp = DetectParams(**params["detect"])
-    rp = RunParams(**params["run"])
-    assert params_hash(dp, rp) == params["params_hash"]
+    params = chosen.get("chosen_parameters")
+    if params is not None:
+        dp = DetectParams(**params["detect"])
+        rp = RunParams(**params["run"])
+        assert params_hash(dp, rp) == params["params_hash"]
+        return
+
+    optical_pass = chosen.get("optical_pass") or {}
+    point = optical_pass.get("chosen_configuration")
+    assert point, ("neither chosen_parameters nor optical_pass.chosen_configuration is "
+                   "recorded, so nothing says what the published rows describe")
+    assert tune.full_point_hash(point, 3) == optical_pass["chosen_params_hash"]
 
 
 def test_radar_only_hashing_ignores_optical_entirely():
@@ -87,6 +103,23 @@ def _radar_reachable() -> dict[str, dict]:
     return {tune.point_hash(p): dict(p) for p in tune.grid_points()}
 
 
+def _extent_reachable() -> dict[str, dict]:
+    """Radar grid x the declared EXTENT grid, with optical not consulted.
+
+    That is what `eval.run_scoreboard --no-optical` and a `--no-optical` CLI run
+    produce once the shipped extent is not the hash baseline, so such a row is
+    traceable to declared values and belongs in the reachable set.
+    """
+    from eval import tune
+
+    out: dict[str, dict] = {}
+    for sar in tune.grid_points():
+        for extent in tune.extent_points():
+            point = tune.combine(sar, extent)
+            out[tune.full_point_hash(point)] = point
+    return out
+
+
 def _optical_reachable() -> dict[str, dict]:
     """Every params_hash a radar point CROSSED WITH an optical point produces.
 
@@ -114,10 +147,11 @@ def test_every_hash_in_the_results_csv_is_reproducible_from_a_declared_grid_poin
     emit - which is Rule 3.8 (reporting a number that cannot be traced).
     """
     radar, optical_too = _radar_reachable(), _optical_reachable()
+    extent_too = _extent_reachable()
     with FLOOD_CSV.open(encoding="utf-8") as f:
         hashes = {row["params_hash"] for row in csv.DictReader(f) if row.get("params_hash")}
     assert hashes, "no rows to check"
-    missing = sorted(hashes - set(radar) - set(optical_too))
+    missing = sorted(hashes - set(radar) - set(optical_too) - set(extent_too))
     assert not missing, (
         f"params_hash {missing} appears in eval/results/flood.csv but no point of the "
         f"declared radar grid, or of it crossed with the optical grid, reproduces it "
@@ -176,27 +210,37 @@ def test_an_optical_row_implies_a_recorded_keep_verdict():
     optical_rows = sorted(hashes - set(radar))
     if not optical_rows:
         return
-    adoption = (_chosen().get("optical_pass") or {}).get("adoption") or {}
-    assert adoption.get("keep_fusion") is True, (
+    optical_pass = (_chosen().get("optical_pass") or {})
+    adoption = optical_pass.get("adoption") or {}
+    dominance = optical_pass.get("dominance") or {}
+    endorsed = (adoption.get("keep_fusion") is True
+                or dominance.get("chosen") is not None)
+    assert endorsed, (
         f"rows {optical_rows} were written by a configuration that consulted Sentinel-2, "
-        f"but eval/chosen_params.json does not record an adoption verdict of KEEP. "
-        f"Either the rows or the verdict is wrong.")
+        f"but eval/chosen_params.json records neither an adoption verdict of KEEP nor a "
+        f"Pareto-dominance winner. Either the rows or the record is wrong.")
 
 
 # --- ExtentParams: changes the scored quantity, not the class map -------------
 
-def test_a_default_extent_hashes_exactly_as_no_extent_at_all():
-    """Default in, nothing added. Every published params_hash survives."""
-    from strandline.config import ExtentParams
+def test_the_baseline_extent_hashes_exactly_as_no_extent_at_all():
+    """Baseline in, nothing added. Every params_hash published survives.
+
+    The comparison is against EXTENT_HASH_BASELINE, never against
+    `ExtentParams()`: the shipped default moved to debris-OUT on 2026-10-12, and
+    a configuration that scores a different quantity must not share a hash with
+    the rows published before the option existed.
+    """
+    from strandline.config import EXTENT_HASH_BASELINE
 
     dp, rp = DetectParams(), RunParams()
     bare = params_hash(dp, rp)
     assert params_hash(dp, rp, None, None) == bare
-    assert params_hash(dp, rp, None, ExtentParams()) == bare
-    assert "extent" not in params_dict(dp, rp, None, ExtentParams())
+    assert params_hash(dp, rp, None, EXTENT_HASH_BASELINE) == bare
+    assert "extent" not in params_dict(dp, rp, None, EXTENT_HASH_BASELINE)
     # And with optical enabled, the same property holds on top of it.
     op = OpticalParams()
-    assert params_hash(dp, rp, op, ExtentParams()) == params_hash(dp, rp, op)
+    assert params_hash(dp, rp, op, EXTENT_HASH_BASELINE) == params_hash(dp, rp, op)
 
 
 def test_taking_debris_out_of_the_extent_is_a_different_configuration():
@@ -219,3 +263,41 @@ def test_no_extent_field_leaked_into_the_radar_dataclasses():
     assert not leaked, (
         f"{sorted(leaked)} belongs in ExtentParams: a field on DetectParams or "
         f"RunParams re-hashes every configuration already recorded in eval/results/")
+
+
+def test_the_extent_hash_baseline_is_a_constant_not_the_live_default():
+    """The published hashes must depend on what was MEASURED, not on what ships.
+
+    `params_dict` omits the `extent` section exactly when the configuration
+    equals `EXTENT_HASH_BASELINE`. If that comparison keyed off `ExtentParams()`
+    instead, then the day the shipped default moved - which it did, to
+    debris-OUT, on 2026-10-12 - a configuration scoring a DIFFERENT quantity
+    would silently hash like the rows already published. This test is the guard.
+    """
+    from strandline.config import EXTENT_HASH_BASELINE, ExtentParams
+
+    assert EXTENT_HASH_BASELINE.debris_in_flood_extent is True, (
+        "every hash published before this option existed was measured with debris "
+        "INSIDE the flood extent; moving this constant invalidates all of them")
+    dp, rp = DetectParams(), RunParams()
+    bare = params_hash(dp, rp)
+    assert params_hash(dp, rp, None, EXTENT_HASH_BASELINE) == bare
+    # The shipped default is NOT the baseline any more, and must not be treated as it.
+    if ExtentParams() != EXTENT_HASH_BASELINE:
+        assert params_hash(dp, rp, None, ExtentParams()) != bare, (
+            "the shipped default scores a different quantity from the published rows, "
+            "so it must not share their hash")
+        assert "extent" in params_dict(dp, rp, None, ExtentParams())
+
+
+def test_a_scorer_hashes_the_extent_it_actually_used():
+    """Passing None must not hash as the baseline while scoring the default."""
+    import inspect
+    from eval import run_scoreboard as rs
+
+    src = inspect.getsource(rs.score_with_scene)
+    assert "params_hash(dp, rp, op, extent)" in src, (
+        "score_with_scene must hash the RESOLVED extent, not the caller's None")
+    src = inspect.getsource(rs.score_event)
+    assert "ep if ep is not None else ExtentParams()" in src, (
+        "score_event must resolve the extent before hashing")

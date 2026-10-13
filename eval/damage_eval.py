@@ -41,6 +41,7 @@ accurate enough; they are not a separate success.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -139,6 +140,34 @@ def reference_extent_geometry(event: dict, grid, dmgp: DamageParams):
     return damage.extent_geometry(classes, grid, ExtentParams(), dmgp.buffer_px)
 
 
+def detail_path(event_name: str, params_hash: str, runs_root: Path | None = None) -> Path:
+    """Where one event's full damage evidence is persisted.
+
+    Rule 3.8: the results CSV carries only the two gated F1s, but README and
+    docs/open_items.md quote per-event counts ("ours flagged 7, the reference
+    flagged 1"), the OSM feature totals and the parameters. Before this
+    existed, those numbers lived nowhere on disk and the 2026-10-13 audit had
+    to re-run the scorer to confirm them. The file is named and keyed exactly
+    as `eval/run_scoreboard.score_path` names a flood score, so the two sit
+    side by side under the same params_hash.
+    """
+    return ((runs_root or EVAL_RUNS) / event_name / "scores"
+            / f"damage_{params_hash}.json")
+
+
+def save_detail(score: DamageScore, runs_root: Path | None = None) -> Path | None:
+    """Persist the evidence behind one event's two F1s. Returns the path."""
+    if score.error is not None or not score.detail:
+        return None
+    path = detail_path(score.event, score.params_hash, runs_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(
+        {"event": score.event, "params_hash": score.params_hash,
+         "building_f1": score.building_f1, "road_segment_f1": score.road_segment_f1,
+         **score.detail}, indent=2, default=str), encoding="utf-8")
+    return path
+
+
 def score_event(event: dict, params_hash: str, runs_root: Path,
                 osmp: OsmParams | None = None, dmgp: DamageParams | None = None,
                 allow_osm_download: bool = True, log=print) -> DamageScore:
@@ -226,14 +255,40 @@ def rows_for(scores: list[DamageScore], run_id: str) -> list[dict]:
             for s in scores if s.ok]
 
 
+def gate_plan_events(events: dict[str, dict] | None = None) -> list[str]:
+    """Every event the damage gate is supposed to be measured over."""
+    all_events = events if events is not None else sb.load_events()
+    return sorted(str(e["name"]) for e in select_events("gates", None, all_events)
+                  if sb.row_kind(e) == sb.KIND_FLOOD)
+
+
 def write_rows(scores: list[DamageScore], planned: list[dict], run_id: str,
-               results_dir: Path | None = None, log=print) -> int:
+               results_dir: Path | None = None, log=print,
+               gate_plan: list[str] | None = None) -> int:
     """Append rows only if EVERY planned event scored (as run_scoreboard does).
 
     A gate averaged over whichever events happened to work is Rule 3.2
     ("excluding hard pixels, areas or events"), so a partial set writes
     nothing and the gate stays NO DATA.
+
+    AND only if the plan is the whole gate plan. `damage_overlay` in the gates
+    file has `min_rows: 3` and no `where:` clause, so `check_gates` averages
+    every row of the latest run_id: a run narrowed with `--events a b c` would
+    become that latest run_id and the gate would silently be measured over a
+    three-event subset somebody chose. That is the same Rule 3.2 violation as a
+    partial result, arriving by a different door, and the 2026-10-13 audit
+    found it open. `gate_plan=[]` disables the check for a test that supplies
+    its own synthetic event names.
     """
+    expected = gate_plan_events() if gate_plan is None else gate_plan
+    if expected:
+        names = sorted(str(e["name"]) for e in planned)
+        if names != sorted(expected):
+            log(f"  NOT WRITING: this run covers {names}, but the damage gate is defined "
+                f"over {sorted(expected)}. A narrowed run would become the latest run_id "
+                f"and the gate would be measured over a subset chosen by hand (Rule 3.2). "
+                f"Re-run without --events, or use --no-write.")
+            return 0
     done = {s.event for s in scores if s.ok}
     missing = [str(e["name"]) for e in planned if str(e["name"]) not in done]
     if missing:
@@ -304,6 +359,10 @@ def main(argv=None) -> int:
                                   log=lambda *a: print("     ", *a)))
         if scores[-1].error:
             print(f"      FAILED: {scores[-1].error}")
+        else:
+            written = save_detail(scores[-1], args.runs_root)
+            if written is not None:
+                print(f"       evidence -> {written.relative_to(ROOT)}")
 
     print()
     print_table(scores)

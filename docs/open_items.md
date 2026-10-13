@@ -100,7 +100,16 @@ This **closes the untested reservoir hypothesis** carried as open item B in `doc
 
 ## The damage gate FAILS: measured, with the root cause (2026-10-13)
 
-`eval/results/damage.csv`, run `20261013T123135Z`, all six gate flood events scored:
+**Read this first: none of the numbers below is a measurement of real building or road damage.**
+Nothing was inspected. Both sides of every comparison are inferences from a flood polygon over the
+same pre-event OpenStreetMap snapshot, so what is measured is whether OUR flood extent leads to the
+same damage conclusions as an expert flood extent. A high score here would not license the claim
+"we find damaged buildings with F1 0.9x", and the scores below are failing anyway.
+
+`eval/results/damage.csv`, run `20261013T123135Z`, all six gate flood events scored. The per-event
+evidence behind every count quoted in this section — flagged sets, OSM feature totals, the OSM
+snapshot date and the parameters — is written to
+`runs/eval/<event>/scores/damage_<params_hash>.json` by `eval/damage_eval.py`:
 
 | gate | measured | target | status |
 |---|---|---|---|
@@ -154,6 +163,43 @@ Himalayan valley may be mapped as sparsely as rural Sindh was in 2022.
    set membership. This may be a better operational question, but `eval/gates.yaml` is human-owned
    and changing the metric after seeing the score is Rule 3.2. It can only be a human's declared
    decision, made before any re-score.
+
+## Audit leftovers, 2026-10-13 (`/audit` on `c6497c8` and `f2f2d3e`, verdict FAIL)
+
+Nine of the eleven findings were fixed in the follow-up commit. These are what remains.
+
+- **A. `CLAUDE.md` was modified inside `c6497c8` without being mentioned in its commit message**
+  (auditor finding 9, LOW). `git show c6497c8 -- CLAUDE.md` adds 23 lines, a "Working protocol"
+  section. `CLAUDE.md` is human-owned and hook-protected, so the text was the human's and was swept
+  in by a broad `git add -A` on my side. **Cannot be fixed now without rewriting published history,
+  which is worse than the defect.** The auditor's point stands and is the reason it is recorded
+  here: *"I could not verify from inside the repo who authored that text — which is exactly the
+  problem: the audit trail no longer distinguishes a rule the human wrote from one an agent
+  wrote."* For the record: I did not write it, and I cannot edit that file (the hook blocks it).
+  **To avoid repeating it:** stage explicitly rather than with `git add -A` when `CLAUDE.md`,
+  `eval/gates.yaml`, `tests/test_rules.py` or `.claude/` show as modified, or name them in the
+  message.
+
+- **B. The published damage rows carry `git_commit = c6497c8-dirty`.** The producing tree was not a
+  commit, so the exact code that made those six rows is not addressable by a hash. `eval/results/`
+  is append-only (Rule 3.5), so the rows stay as they are; a future re-score from a clean tree will
+  record a clean commit. The numbers themselves reproduce exactly — the auditor re-ran the scorer
+  independently and got all six to the digit, and so did the evidence-file regeneration.
+
+- **C. Three claims the auditor could not verify from inside the repo**, recorded so they are not
+  mistaken for checked facts: (1) the measurement that ohsome answers 403 on `/elements/geometry`
+  and 200 on `/elementsFullHistory/geometry` *from this network* — it is a live-network observation,
+  reproducible only by making the calls, and the cached files' clipped `@validFrom`/`@validTo` are
+  consistent with the full-history path having been used; (2) the authorship of the `CLAUDE.md` text
+  in item A; (3) whether anything under `runs/case_*` contains a comparative output — the guard hook
+  blocks listing that path, so neither the auditor nor I inspected it.
+
+- **D. The damage gate's subset exposure is only half-closed.** `eval/damage_eval.write_rows` now
+  refuses to append rows for anything narrower than the full gate plan (auditor finding 8), which
+  closes it from this side. But `damage_overlay` in `eval/gates.yaml` still has `min_rows: 3` and no
+  `where:` clause, so the gate itself would still average a three-row run_id if one ever reached the
+  file by another route. Raising `min_rows` to 6 or adding a `where:` clause is the **human's** call
+  — `eval/gates.yaml` is human-owned.
 
 ## Closed
 

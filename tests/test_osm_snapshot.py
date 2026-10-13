@@ -27,7 +27,7 @@ CAP = date.fromisoformat(OsmParams().latest_snapshot)
 
 @pytest.mark.parametrize("event", [
     date(2021, 7, 14), date(2023, 8, 4), date(2024, 10, 4), date(2025, 2, 26),
-    date(2026, 7, 27), date(2026, 7, 28), date(2026, 8, 26), date(2026, 10, 13),
+    date(2026, 7, 27), date(2026, 7, 28), date(2026, 9, 15), date(2026, 10, 13),
 ])
 def test_the_snapshot_is_always_strictly_before_the_event(event):
     chosen = osm.snapshot_date(event)
@@ -76,7 +76,10 @@ def test_the_buffer_grows_the_box_by_at_least_the_requested_distance():
     from pyproj import Geod
 
     geod = Geod(ellps="WGS84")
-    bbox = (85.10, 27.85, 85.45, 28.30)
+    # A neutral Himalayan-latitude box. Deliberately NOT the case-study bbox:
+    # new code has no reason to carry held-out constants around (Rule 4
+    # hygiene, 2026-10-13 audit).
+    bbox = (83.10, 28.40, 83.45, 28.85)
     w, s, e, n = osm.buffered_bbox(bbox, 15.0)
     assert (w, s, e, n) != bbox
     # North edge, east edge: the distance added must be >= 15 km everywhere.
@@ -328,3 +331,95 @@ def test_the_written_cache_is_byte_identical_across_runs(tmp_path):
     first = osm.cache_path(one, "roads", date(2024, 10, 3), (1, 2, 3, 4)).read_bytes()
     second = osm.cache_path(two, "roads", date(2024, 10, 3), (1, 2, 3, 4)).read_bytes()
     assert first == second
+
+
+def test_no_held_out_name_or_coordinate_is_used_as_a_fixture_here():
+    """Rule 4 hygiene: a test file need not carry case-study constants.
+
+    Not a leak test - nothing here reads a reference - but the audit of
+    2026-10-13 pointed out that new code was using the held-out bbox and event
+    date as convenient fixtures, and there is no reason for it.
+    """
+    import yaml
+
+    gates = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / "eval" / "gates.yaml").read_text(
+            encoding="utf-8"))
+    held = gates["heldout"]
+    src = Path(__file__).read_text(encoding="utf-8").lower()
+    for name in held["forbidden_names"]:
+        assert str(name).lower() not in src
+    for value in held["case_study_bbox"]:
+        assert str(value) not in src
+    assert str(held["event_date"]).replace("-", ", ") not in src
+
+
+# --- the Rule 1 guard on cached files -----------------------------------------
+
+def test_a_cache_file_holding_post_event_versions_is_refused(tmp_path):
+    """A cache file is addressed by its FILENAME and nothing else.
+
+    `eval/damage_eval.py` writes OSM into the same directory the pipeline
+    reads, so a mislabelled or hand-edited file there would hand post-event OSM
+    to a pipeline input. The 2026-10-13 audit found the only guard was the
+    filename; now the contents are checked on every read.
+    """
+    bbox, snap = (1, 2, 3, 4), date(2024, 10, 3)
+    path = osm.cache_path(tmp_path, "roads", snap, bbox)
+    path.write_text(json.dumps({"type": "FeatureCollection", "features": [
+        _feat("way/1", "2024-10-02T00:00:00Z", "2024-10-03T00:00:00Z"),
+        _feat("way/2", "2024-10-03T00:00:00Z", "2024-10-09T00:00:00Z"),  # after!
+    ]}), encoding="utf-8")
+    with pytest.raises(osm.OsmError) as err:
+        osm.load_layer("roads", bbox, snap, tmp_path, log=lambda *a: None)
+    message = str(err.value)
+    assert "Rule 1" in message
+    assert "way/2" in message
+    assert "Delete it and run again" in message
+
+
+def test_a_clean_cache_file_is_accepted_and_marked_verified(tmp_path):
+    bbox, snap = (1, 2, 3, 4), date(2024, 10, 3)
+    path = osm.cache_path(tmp_path, "roads", snap, bbox)
+    path.write_text(json.dumps({"type": "FeatureCollection", "features": [
+        _feat("way/1", "2024-10-02T00:00:00Z", "2024-10-03T00:00:00Z")]}),
+        encoding="utf-8")
+    _body, prov = osm.load_layer("roads", bbox, snap, tmp_path, log=lambda *a: None)
+    assert prov["cache_verified"] is True
+
+
+def test_the_guard_ignores_features_that_make_no_validity_claim(tmp_path):
+    """A snapshot-endpoint response has no @validTo; absence is not a violation."""
+    bbox, snap = (1, 2, 3, 4), date(2024, 10, 3)
+    path = osm.cache_path(tmp_path, "roads", snap, bbox)
+    path.write_text(json.dumps({"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {osm.OSM_ID: "way/1", "highway": "track"},
+         "geometry": {"type": "Point", "coordinates": [0, 0]}}]}), encoding="utf-8")
+    _body, prov = osm.load_layer("roads", bbox, snap, tmp_path, log=lambda *a: None)
+    assert prov["cache_verified"] is True
+    assert osm.post_event_features(_body["features"], snap) == []
+
+
+def test_an_id_less_version_that_ended_mid_window_is_dropped():
+    """It used to bypass the window filter entirely and reach the snapshot."""
+    ended_early = {"type": "Feature",
+                   "properties": {osm.VALID_FROM: "2024-10-02T00:00:00Z",
+                                  osm.VALID_TO: "2024-10-02T12:00:00Z"},
+                   "geometry": {"type": "Point", "coordinates": [0, 0]}}
+    survived = {"type": "Feature",
+                "properties": {osm.VALID_FROM: "2024-10-02T00:00:00Z",
+                               osm.VALID_TO: END},
+                "geometry": {"type": "Point", "coordinates": [1, 1]}}
+    out = osm.snapshot_features([ended_early, survived], END)
+    assert out == [survived]
+
+
+def test_the_snapshot_report_records_the_rule_1_cap_that_was_in_force(tmp_path):
+    """Without it, a reader of a run report cannot tell which cap applied."""
+    session = FakeSession({"v1/elements/geometry": _ok([_feat("way/1", "x", END)])})
+    snap = osm.load_snapshot((1, 2, 3, 4), date(2024, 10, 4), tmp_path,
+                             OsmParams(buffer_km=15.0), layers=["roads"],
+                             session=session, log=lambda *a: None)
+    report = snap.report()
+    assert report["parameters"]["latest_snapshot"] == OsmParams().latest_snapshot
+    assert report["parameters"]["buffer_km"] == 15.0

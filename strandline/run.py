@@ -62,9 +62,13 @@ from strandline.config import (
 #   disabled   the overlay was not asked for (--no-damage).
 #   refused    OpenStreetMap could not be read; the message says why and what to
 #              try. There is NO damage answer, and `damage_available` is false.
+#   failed     OSM was read but the overlay itself broke (geometry, GDAL, disk).
+#              The error type and message are recorded, the flood map and the
+#              report survive, and there is NO damage answer.
 #   used       the overlay ran; counts, lengths and the OSM snapshot are present.
 OSM_DISABLED = "disabled"
 OSM_REFUSED = "refused"
+OSM_FAILED = "failed"
 OSM_USED = "used"
 
 # DetectParams fields consumed before `classify`, i.e. baked into a prepared
@@ -474,6 +478,17 @@ def damage_stage(bbox, event_day: date, scene: PreparedScene,
     The distinction matters more here than anywhere else in the pipeline:
     "no buildings were flooded" and "we could not find out" look identical in a
     count and could not be more different to a rescuer.
+
+    The OVERLAY is inside the same contract, not only the OSM read. `assess`
+    and `write_layers` are geometry and disk work - GEOS topology, a GDAL or
+    geopandas import, a CRS transform, a full disk - and an escape from either
+    would propagate out of `write()` BEFORE run_report.json is written, so a
+    damage crash would destroy the flood map's entire provenance. That is the
+    opposite of what this stage is for, and the overlay is on by default, so it
+    is the live path. The 2026-10-13 audit found exactly that gap: the
+    docstring already said NEVER raises while only OsmError was caught.
+    `AssertionError` is re-raised, as in `optical_stage`, so a broken
+    invariant still fails loudly instead of being filed as a damage problem.
     """
     if osmp is None:
         return None, {"status": OSM_DISABLED,
@@ -485,9 +500,22 @@ def damage_stage(bbox, event_day: date, scene: PreparedScene,
         log(f"      OSM REFUSED: {err}")
         return None, {"status": OSM_REFUSED, "message": str(err),
                       "damage_available": False}
-    assessment = damage.assess(result.classes, scene.grid, snapshot.layers,
-                               dmgp if dmgp is not None else DamageParams(), ep, log=log)
-    damage.write_layers(out, assessment, log=log)
+    try:
+        assessment = damage.assess(result.classes, scene.grid, snapshot.layers,
+                                   dmgp if dmgp is not None else DamageParams(), ep, log=log)
+        damage.write_layers(out, assessment, log=log)
+    except AssertionError:
+        raise
+    except Exception as err:
+        log(f"      DAMAGE OVERLAY FAILED: {type(err).__name__}: {err}")
+        return None, {
+            "status": OSM_FAILED, "damage_available": False,
+            "error_type": type(err).__name__, "message": str(err),
+            "osm": snapshot.report(),
+            "note": ("the OSM snapshot was read but the overlay could not be computed. "
+                     "There is NO damage answer for this run; the flood map and this "
+                     "report are unaffected."),
+        }
     return assessment, {"status": OSM_USED, "damage_available": True,
                         "osm": snapshot.report(), **assessment.report()}
 

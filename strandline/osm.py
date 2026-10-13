@@ -63,11 +63,6 @@ from strandline.config import OSM_LAYERS, OsmParams
 # API error.
 OHSOME_HISTORY_START = date(2007, 10, 8)
 
-# Window length for the full-history fallback. One day is enough to contain the
-# snapshot instant while keeping the response small; the reduction below is
-# what actually picks the snapshot state, so this is a transfer-size choice.
-FULL_HISTORY_WINDOW_DAYS = 1
-
 # ohsome property names carrying element identity and version validity.
 OSM_ID = "@osmId"
 VALID_FROM = "@validFrom"
@@ -160,12 +155,16 @@ def snapshot_features(features: list[dict], window_end: str | None = None) -> li
     for feat in features:
         props = feat.get("properties") or {}
         oid = props.get(OSM_ID)
-        if oid is None:
-            anonymous.append(feat)
-            continue
+        # The window filter comes FIRST, before the id check. An id-less feature
+        # used to bypass it entirely, so a version that ended mid-window could
+        # have survived into a snapshot - a Rule 1 hole with no observed
+        # instance (every ohsome response carries @osmId) but no reason to keep.
         if window_end is not None and VALID_TO in props:
             if str(props[VALID_TO]) != str(window_end):
                 continue
+        if oid is None:
+            anonymous.append(feat)
+            continue
         current = best.get(oid)
         if current is None:
             best[oid] = feat
@@ -175,6 +174,31 @@ def snapshot_features(features: list[dict], window_end: str | None = None) -> li
             best[oid] = feat
     # Sorted by id so the written GeoJSON is byte-identical across runs (Rule 5).
     return anonymous + [best[k] for k in sorted(best)]
+
+
+def post_event_features(features: list[dict], snapshot: date) -> list[str]:
+    """Ids of any feature version still valid AFTER `snapshot`. Rule 1 guard.
+
+    Checked on every CACHE READ, because a cache file is addressed by its
+    filename and nothing else: a mislabelled, hand-edited or
+    wrong-snapshot file sitting in that directory would otherwise be handed
+    to the pipeline as pre-event OSM. `eval/damage_eval.py` writes into the
+    same directory the pipeline reads, which makes the guard worth having
+    even though no violation has been observed.
+
+    A version with `@validTo` after the snapshot instant means the element was
+    still live past the snapshot, i.e. the file was not clipped to a pre-event
+    state. Features with no `@validTo` carry no claim either way and are left
+    alone - the snapshot endpoint returns exactly those.
+    """
+    limit = f"{snapshot.isoformat()}T00:00:00Z"
+    bad: list[str] = []
+    for feat in features:
+        props = feat.get("properties") or {}
+        valid_to = props.get(VALID_TO)
+        if valid_to is not None and str(valid_to) > limit:
+            bad.append(f"{props.get(OSM_ID, '<no id>')} valid to {valid_to}")
+    return bad
 
 
 # --- talking to ohsome --------------------------------------------------------
@@ -192,7 +216,7 @@ class OsmRequest:
 def _attempts(snapshot: date, bbox, osm_filter: str, p: OsmParams) -> list[OsmRequest]:
     bboxes = ",".join(f"{float(v):.6f}" for v in bbox)
     instant = f"{snapshot.isoformat()}T00:00:00Z"
-    start = (snapshot - timedelta(days=FULL_HISTORY_WINDOW_DAYS)).isoformat()
+    start = (snapshot - timedelta(days=p.full_history_window_days)).isoformat()
     return [
         OsmRequest("elements/geometry", f"{p.base_url}/elements/geometry",
                    {"bboxes": bboxes, "filter": osm_filter,
@@ -295,12 +319,20 @@ def load_layer(layer: str, bbox, snapshot: date, cache: Path,
             raise OsmError(
                 f"cached OSM layer {path.name} cannot be read ({type(err).__name__}). "
                 f"Delete it and run again to re-download.") from err
+        stale = post_event_features(body.get("features") or [], snapshot)
+        if stale:
+            raise OsmError(
+                f"cached OSM layer {path.name} contains {len(stale)} feature version(s) "
+                f"valid AFTER the {snapshot} snapshot (first: {stale[0]}). A cache file is "
+                f"trusted on its filename, so a mislabelled or hand-edited file in this "
+                f"directory would put post-event OSM into a pipeline input (Rule 1). "
+                f"Delete it and run again to re-download.")
         log(f"      OSM {layer}: {len(body.get('features') or [])} feature(s) from cache "
             f"{path.name}")
         return body, {"layer": layer, "filter": OSM_LAYERS.get(layer),
                       "snapshot": snapshot.isoformat(), "endpoint": "cache",
                       "n_features": len(body.get("features") or []),
-                      "cache": path.name,
+                      "cache": path.name, "cache_verified": True,
                       "attribution": "© OpenStreetMap contributors"}
     if not allow_download:
         raise OsmError(
@@ -323,6 +355,7 @@ class OsmSnapshot:
     bbox_requested: tuple
     bbox_queried: tuple
     buffer_km: float
+    params: OsmParams = field(default_factory=OsmParams)
     layers: dict = field(default_factory=dict)       # layer -> GeoJSON dict
     provenance: dict = field(default_factory=dict)   # layer -> provenance dict
 
@@ -330,9 +363,17 @@ class OsmSnapshot:
         return {k: len(v.get("features") or []) for k, v in sorted(self.layers.items())}
 
     def report(self) -> dict:
-        """What goes into run_report.json under `osm`."""
+        """What goes into run_report.json under `osm`.
+
+        `parameters` includes `latest_snapshot`, the Rule 1 cap that was
+        actually in force. Without it a reader could not check from the report
+        alone which cap the snapshot was chosen under.
+        """
+        from dataclasses import asdict
+
         return {
             "snapshot": self.snapshot.isoformat(),
+            "parameters": asdict(self.params),
             "snapshot_rule": ("latest date strictly before the event date, capped at "
                               "OsmParams.latest_snapshot; OSM edits after the event are "
                               "never read (Rule 1)"),
@@ -355,7 +396,7 @@ def load_snapshot(bbox, event_day: date, cache: Path, params: OsmParams | None =
     wanted = list(layers) if layers else list(OSM_LAYERS)
     log(f"      OSM snapshot {snapshot} (event {event_day}), bbox + {p.buffer_km:g} km buffer")
     out = OsmSnapshot(snapshot=snapshot, bbox_requested=tuple(float(v) for v in bbox),
-                      bbox_queried=queried, buffer_km=p.buffer_km)
+                      bbox_queried=queried, buffer_km=p.buffer_km, params=p)
     for layer in wanted:
         body, prov = load_layer(layer, queried, snapshot, cache, p,
                                 allow_download=allow_download, session=session, log=log)

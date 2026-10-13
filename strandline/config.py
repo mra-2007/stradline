@@ -508,6 +508,12 @@ class OsmParams:
     # identically to every area.
     buffer_km: float = 15.0
 
+    # Window length for the full-history fallback, in days. One day contains
+    # the snapshot instant while keeping the response small; the reduction in
+    # osm.snapshot_features is what actually picks the snapshot state, so this
+    # is a transfer-size choice and not a detection one.
+    full_history_window_days: int = 1
+
     base_url: str = "https://api.ohsome.org/v1"
     timeout_s: float = 300.0
     max_retries: int = 2
@@ -524,6 +530,9 @@ class OsmParams:
             raise ValueError(f"buffer_km must not be negative, got {self.buffer_km!r}.")
         if self.timeout_s <= 0:
             raise ValueError(f"timeout_s must be positive, got {self.timeout_s!r}.")
+        if self.full_history_window_days < 1:
+            raise ValueError("full_history_window_days must be at least 1, got "
+                             f"{self.full_history_window_days!r}.")
         # Fails loudly here rather than at the first request.
         date.fromisoformat(self.latest_snapshot)
 

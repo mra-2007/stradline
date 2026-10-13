@@ -17,6 +17,7 @@ What is established:
 from __future__ import annotations
 
 import csv
+import json
 
 import geopandas as gpd
 import numpy as np
@@ -147,7 +148,7 @@ def test_a_partial_set_of_events_writes_nothing(tmp_path):
     scores = [_score("a"), _score("b"),
               damage_eval.DamageScore(event="c", params_hash="h", error="boom")]
     written = damage_eval.write_rows(scores, planned, "20260101T000000Z", tmp_path,
-                                     log=lambda *a: None)
+                                     log=lambda *a: None, gate_plan=[])
     assert written == 0
     assert not (tmp_path / "damage.csv").exists()
 
@@ -156,7 +157,7 @@ def test_a_complete_set_writes_one_row_per_event_in_the_declared_columns(tmp_pat
     planned = [{"name": "a"}, {"name": "b"}, {"name": "c"}]
     scores = [_score("a"), _score("b"), _score("c")]
     written = damage_eval.write_rows(scores, planned, "20260101T000000Z", tmp_path,
-                                     log=lambda *a: None)
+                                     log=lambda *a: None, gate_plan=[])
     assert written == 3
     rows = list(csv.DictReader((tmp_path / "damage.csv").read_text(encoding="utf-8")
                                .splitlines()))
@@ -176,9 +177,9 @@ def test_a_complete_set_writes_one_row_per_event_in_the_declared_columns(tmp_pat
 def test_the_results_file_is_append_only(tmp_path):
     planned = [{"name": "a"}]
     damage_eval.write_rows([_score("a")], planned, "20260101T000000Z", tmp_path,
-                           log=lambda *a: None)
+                           log=lambda *a: None, gate_plan=[])
     damage_eval.write_rows([_score("a", 0.5, 0.5)], planned, "20260102T000000Z", tmp_path,
-                           log=lambda *a: None)
+                           log=lambda *a: None, gate_plan=[])
     rows = list(csv.DictReader((tmp_path / "damage.csv").read_text(encoding="utf-8")
                                .splitlines()))
     assert len(rows) == 2, "an earlier row must never be overwritten (Rule 3.5)"
@@ -192,7 +193,7 @@ def _damage_gate(tmp_path, scores, names):
     results_dir = tmp_path / "eval" / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
     damage_eval.write_rows(scores, [{"name": n} for n in names], "20260101T000000Z",
-                           results_dir, log=lambda *a: None)
+                           results_dir, log=lambda *a: None, gate_plan=[])
     cfg = yaml.safe_load((ROOT / "eval" / "gates.yaml").read_text(encoding="utf-8"))
     report = check_gates.check(cfg, tmp_path, only="damage_overlay")
     return report, check_gates.module_status(report)["damage_overlay"]
@@ -227,3 +228,79 @@ def test_too_few_events_leaves_the_gate_at_no_data(tmp_path):
     names = ("a", "b")
     _report, status = _damage_gate(tmp_path, [_score(n) for n in names], names)
     assert status == "NO DATA"
+
+
+# --- the gate plan cannot be narrowed by hand ---------------------------------
+
+def test_the_gate_plan_is_every_gate_flood_event():
+    plan = damage_eval.gate_plan_events()
+    assert len(plan) == 6, plan
+    assert plan == sorted(plan)
+
+
+def test_a_run_narrowed_with_events_writes_nothing(tmp_path):
+    """Rule 3.2, the door the 2026-10-13 audit found open.
+
+    `damage_overlay` has no `where:` clause, so check_gates averages every row
+    of the latest run_id. A run over three hand-picked events would become that
+    run_id and the gate would read only those three.
+    """
+    plan = damage_eval.gate_plan_events()
+    subset = plan[:3]
+    written = damage_eval.write_rows([_score(n) for n in subset],
+                                     [{"name": n} for n in subset],
+                                     "20260101T000000Z", tmp_path, log=lambda *a: None)
+    assert written == 0
+    assert not (tmp_path / "damage.csv").exists()
+
+
+def test_the_full_gate_plan_writes_its_rows(tmp_path):
+    """The converse, so the guard cannot pass by rejecting everything."""
+    plan = damage_eval.gate_plan_events()
+    written = damage_eval.write_rows([_score(n) for n in plan],
+                                     [{"name": n} for n in plan],
+                                     "20260101T000000Z", tmp_path, log=lambda *a: None)
+    assert written == len(plan)
+
+
+def test_the_published_rows_cover_exactly_the_gate_plan():
+    """The rows actually committed must be the whole plan, not a subset."""
+    path = ROOT / "eval" / "results" / "damage.csv"
+    rows = list(csv.DictReader(path.read_text(encoding="utf-8").splitlines()))
+    latest = max(r["run_id"] for r in rows)
+    covered = sorted(r["event"] for r in rows if r["run_id"] == latest)
+    assert covered == damage_eval.gate_plan_events()
+
+
+# --- the evidence behind every published number is persisted ------------------
+
+def test_the_detail_file_sits_beside_the_flood_score_under_the_same_hash():
+    from eval import run_scoreboard as rs
+
+    flood = rs.score_path("an_event", "abc123abc123", ROOT / "runs" / "eval")
+    detail = damage_eval.detail_path("an_event", "abc123abc123", ROOT / "runs" / "eval")
+    assert detail.parent == flood.parent
+    assert "abc123abc123" in detail.name and detail.name.startswith("damage_")
+
+
+def test_the_evidence_quoted_in_the_docs_is_written_to_disk(tmp_path):
+    """Rule 3.8: the counts README and open_items.md quote must be traceable
+    without re-running the scorer, which is what the 2026-10-13 audit had to do.
+    """
+    score = damage_eval.DamageScore(
+        event="an_event", params_hash="h", building_f1=0.5, road_segment_f1=0.6,
+        detail={"counts": {"buildings_total": 65, "buildings_flagged_ours": 0,
+                           "buildings_flagged_reference": 9},
+                "osm": {"snapshot": "2022-08-25"}})
+    path = damage_eval.save_detail(score, tmp_path)
+    assert path is not None and path.exists()
+    body = json.loads(path.read_text(encoding="utf-8"))
+    assert body["building_f1"] == 0.5
+    assert body["counts"]["buildings_total"] == 65
+    assert body["counts"]["buildings_flagged_reference"] == 9
+    assert body["osm"]["snapshot"] == "2022-08-25"
+
+
+def test_a_failed_event_writes_no_evidence_file(tmp_path):
+    failed = damage_eval.DamageScore(event="e", params_hash="h", error="boom")
+    assert damage_eval.save_detail(failed, tmp_path) is None

@@ -78,9 +78,14 @@ DAMAGE_CAVEAT = (
 # --- the flood extent as a geometry -------------------------------------------
 
 def extent_mask(classes: np.ndarray, extent: ExtentParams | None = None,
-                buffer_px: int = 1) -> np.ndarray:
-    """The flood extent, grown by `buffer_px` pixels (8-connected dilation)."""
+                buffer_px: int | None = None) -> np.ndarray:
+    """The flood extent, grown by `buffer_px` pixels (8-connected dilation).
+
+    `buffer_px=None` resolves from `DamageParams()`, so this signature is not a
+    second home for the value (Rule 3.7): config.py declares it once.
+    """
     ep = extent if extent is not None else ExtentParams()
+    buffer_px = DamageParams().buffer_px if buffer_px is None else buffer_px
     mask = np.isin(classes, list(ep.flood_extent_classes()))
     if buffer_px > 0 and mask.any():
         mask = ndimage.binary_dilation(mask, EIGHT, iterations=buffer_px)
@@ -88,7 +93,7 @@ def extent_mask(classes: np.ndarray, extent: ExtentParams | None = None,
 
 
 def extent_geometry(classes: np.ndarray, grid, extent: ExtentParams | None = None,
-                    buffer_px: int = 1) -> BaseGeometry:
+                    buffer_px: int | None = None) -> BaseGeometry:
     """The buffered flood extent as one shapely geometry in the GRID's CRS.
 
     Projected metres, so every length this module reports is metres and no
@@ -132,7 +137,7 @@ def _points_of(geom) -> list[Point]:
     return []
 
 
-def split_at_junctions(gdf, min_segment_m: float = 5.0):
+def split_at_junctions(gdf, min_segment_m: float | None = None):
     """Split every line where another line of the same set meets it.
 
     Why at all: an OSM way is an editing unit, not a stretch of road. One way
@@ -148,6 +153,8 @@ def split_at_junctions(gdf, min_segment_m: float = 5.0):
     import geopandas as gpd
     from shapely import STRtree
 
+    # None resolves from config, so this signature declares no value (Rule 3.7).
+    min_segment_m = DamageParams().min_segment_m if min_segment_m is None else min_segment_m
     if len(gdf) == 0:
         out = gdf.copy()
         for col in ("segment_id", "segment_length_m"):
@@ -226,7 +233,7 @@ def cut_road_segments(segments, extent_geom: BaseGeometry):
 
 
 def bridges_likely_out(bridges, waterways, extent_geom: BaseGeometry,
-                       reach_m: float = 100.0):
+                       reach_m: float | None = None):
     """Bridge ways crossing a waterway whose nearby channel is in the extent.
 
     Returns a copy with `crossing_waterway`, `crossed_channel_flooded_m` and
@@ -235,6 +242,8 @@ def bridges_likely_out(bridges, waterways, extent_geom: BaseGeometry,
     import geopandas as gpd
     from shapely import STRtree
 
+    # None resolves from config, so this signature declares no value (Rule 3.7).
+    reach_m = DamageParams().bridge_reach_m if reach_m is None else reach_m
     empty = bridges.iloc[0:0].copy()
     for col in ("crossing_waterway", "crossed_channel_flooded_m", "status"):
         if col not in empty.columns:

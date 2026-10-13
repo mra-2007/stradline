@@ -512,3 +512,113 @@ def test_a_successful_stage_reports_the_snapshot_beside_the_counts(monkeypatch, 
     assert report["osm"]["snapshot"] == "2024-10-03"
     assert report["buildings"]["damaged"] == 1
     assert (tmp_path / "cut_roads.geojson").exists()
+
+
+def test_an_overlay_crash_is_recorded_and_the_run_report_still_gets_written(monkeypatch,
+                                                                           tmp_path):
+    """The gap the 2026-10-13 audit found: `damage_stage` claimed NEVER raises
+    while only OsmError was caught, so a GEOS/GDAL/disk error inside `assess`
+    escaped `write()` before run_report.json was written - destroying the flood
+    map's whole provenance over a damage problem.
+    """
+    from strandline import damage as damage_mod
+    from strandline import osm as osm_mod
+    from strandline import run as pipeline
+    from strandline.config import OsmParams
+
+    class FakeSnapshot:
+        layers = {}
+
+        def report(self):
+            return {"snapshot": "2024-10-03"}
+
+    monkeypatch.setattr(osm_mod, "load_snapshot", lambda *a, **k: FakeSnapshot())
+
+    def explode(*a, **k):
+        raise RuntimeError("TopologyException: side location conflict")
+
+    monkeypatch.setattr(damage_mod, "assess", explode)
+
+    class R:
+        classes = classes_with_strip()
+
+    assessment, report = pipeline.damage_stage(
+        (1, 2, 3, 4), __import__("datetime").date(2024, 10, 4), _Scene(), R(), tmp_path,
+        OsmParams(), DamageParams(), log=lambda *a: None)
+    assert assessment is None
+    assert report["status"] == pipeline.OSM_FAILED
+    assert report["damage_available"] is False
+    assert report["error_type"] == "RuntimeError"
+    assert "TopologyException" in report["message"]
+    # No count of any kind, so nothing downstream can read a zero out of it.
+    assert "buildings" not in report and "roads" not in report
+    # And the OSM snapshot that WAS read is still recorded.
+    assert report["osm"]["snapshot"] == "2024-10-03"
+
+
+def test_a_broken_invariant_still_fails_loudly_rather_than_being_filed_as_damage(monkeypatch,
+                                                                                tmp_path):
+    """AssertionError is re-raised, as in optical_stage: a bug in our own
+    reasoning must not be recorded as an OpenStreetMap problem."""
+    from strandline import damage as damage_mod
+    from strandline import osm as osm_mod
+    from strandline import run as pipeline
+    from strandline.config import OsmParams
+
+    class FakeSnapshot:
+        layers = {}
+
+        def report(self):
+            return {}
+
+    monkeypatch.setattr(osm_mod, "load_snapshot", lambda *a, **k: FakeSnapshot())
+
+    def assert_fail(*a, **k):
+        raise AssertionError("an invariant this code relies on is broken")
+
+    monkeypatch.setattr(damage_mod, "assess", assert_fail)
+
+    class R:
+        classes = classes_with_strip()
+
+    with pytest.raises(AssertionError):
+        pipeline.damage_stage((1, 2, 3, 4), __import__("datetime").date(2024, 10, 4),
+                              _Scene(), R(), tmp_path, OsmParams(), DamageParams(),
+                              log=lambda *a: None)
+
+
+def test_a_degenerate_splitter_keeps_the_road_whole_rather_than_losing_it():
+    """The `except (GEOSException, ValueError)` branch, which had no test.
+
+    Two ways overlapping along the same alignment give a LineString
+    intersection whose endpoints become splitters; repeated and collinear
+    splitters are what make shapely's `split` unhappy. Whatever happens, the
+    road must survive - keeping it whole can only make a segment longer and so
+    the cut count more conservative, never larger.
+    """
+    shared = [(0, 100), (500, 100)]
+    roads = gdf([LineString(shared), LineString(shared), LineString(list(reversed(shared)))],
+                **{"@osmId": ["way/a", "way/b", "way/c"]})
+    segments = damage.split_at_junctions(roads, min_segment_m=5.0)
+    assert set(segments["@osmId"]) == {"way/a", "way/b", "way/c"}, "a road was lost"
+    for osm_id in ("way/a", "way/b", "way/c"):
+        total = segments[segments["@osmId"] == osm_id]["segment_length_m"].sum()
+        assert total == pytest.approx(500.0, abs=1.0), osm_id
+
+
+def test_the_overlay_resolves_its_parameters_from_config_not_from_signatures():
+    """Rule 3.7: a signature default must not be a second home for a value."""
+    import inspect
+
+    from strandline.config import DamageParams
+
+    for func, arg in ((damage.extent_mask, "buffer_px"),
+                      (damage.extent_geometry, "buffer_px"),
+                      (damage.split_at_junctions, "min_segment_m"),
+                      (damage.bridges_likely_out, "reach_m")):
+        default = inspect.signature(func).parameters[arg].default
+        assert default is None, f"{func.__name__}({arg}=) declares a value of its own"
+    # And the resolved behaviour equals the configured value.
+    arr = classes_with_strip()
+    assert damage.extent_geometry(arr, GRID).equals(
+        damage.extent_geometry(arr, GRID, buffer_px=DamageParams().buffer_px))

@@ -259,7 +259,9 @@ terrain and from the positional accuracy of OSM geometry — the same 1 px the g
 its boundary tolerance. It is not a sensitivity dial and is never tuned on a score. Neither
 `OsmParams` nor `DamageParams` enters `params_hash`, for the same reason as `ReliabilityParams`:
 nothing in them changes a pixel of the flood class map, so folding them in would re-key every row
-already published. Both are recorded in full under `run_report.json → damage.parameters`.
+already published. `DamageParams` is recorded under `run_report.json → damage.parameters` and
+`OsmParams` under `damage.osm.parameters` — including `latest_snapshot`, so the Rule 1 cap that was
+actually in force is auditable from the report alone.
 
 Debris is consumed **only if it is part of the flood extent**: the overlay takes its classes from
 `ExtentParams.flood_extent_classes()`, which with the shipped default excludes class 4.
@@ -433,16 +435,25 @@ Poza Honda 0.0048. Coverage: 6/6 gate-eligible floods, 4 of 8 declared controls.
 | `damage_overlay` mean building F1 | 0.1808 | ≥ 0.90 | **FAIL** |
 | `damage_overlay` mean road segment F1 | 0.3995 | ≥ 0.90 | **FAIL** |
 
-Damage rows: `eval/results/damage.csv`, run `20261013T123135Z`, all six gate flood events.
+Damage rows: `eval/results/damage.csv`, run `20261013T123135Z`, all six gate flood events, with the
+per-event evidence behind each row in `runs/eval/<event>/scores/damage_<params_hash>.json`.
+
+**These two are not a measurement of real building damage.** Nothing was inspected; both sides of
+the comparison are inferences from a flood polygon over the same OpenStreetMap snapshot, so the
+numbers say whether our flood extent leads to the same damage conclusions as an expert extent —
+not that we find damaged buildings at that rate.
+
 **The damage overlay inherits the flood extent and the flood gate FAILS, so this gate could not
-pass:** road F1 tracks flood tolerant F1 with a Spearman rank correlation of 0.886, and even a
-perfect overlay on a perfect-within-reach extent is bounded by the flood oracle ceiling of 0.6718.
-Building F1 is lower still because set membership amplifies a localisation error — at Punakha our
-7 flagged buildings and the reference's 1 do not intersect at all. A third limit is in the data, not
-the code: Larkana has **65** buildings mapped in the pre-event OSM snapshot over its bbox plus
-buffer, against 17,718–76,814 elsewhere, so its building F1 is 0.0 despite one of the better flood
-maps in the set. Full per-event evidence, the three root causes and three options are in
-`docs/open_items.md`.
+pass:** road F1 tracks flood tolerant F1 with a Spearman rank correlation of 0.886 (n = 6 events,
+no significance claimed). The extent the overlay inherits is itself bounded at mean tolerant F1
+0.6718 (the flood oracle in `docs/open_items.md`); **no bound on the damage metric itself has been
+measured**, and set-F1 is not a monotone function of pixel F1, so that figure bounds the input and
+not this gate. Building F1 is lower still because set membership amplifies a localisation error —
+at Punakha our 7 flagged buildings and the reference's 1 do not intersect at all. A third limit is
+in the data, not the code: Larkana has **65** buildings mapped in the pre-event OSM snapshot over
+its bbox plus buffer, against 17,718–76,814 elsewhere, so its building F1 is 0.0 despite one of the
+better flood maps in the set. Full per-event evidence, the three root causes and three options are
+in `docs/open_items.md`.
 
 **Module status: `flood_mapping` FAIL, `no_flood_controls` PASS, `damage_overlay` FAIL.**
 By the definition of done in

@@ -22,7 +22,8 @@ import datetime as dt
 import pytest
 
 from strandline import ingest
-from strandline.config import BACKSCATTER_COEFFICIENTS, ELEVATION_MODELS, RunParams
+from strandline.config import (BACKSCATTER_COEFFICIENTS, ELEVATION_MODELS,
+                               OsmParams, RunParams)
 
 DAY = dt.date(2026, 8, 28)
 SIGMA = "sigma0-ellipsoid"
@@ -180,10 +181,13 @@ def test_cli_accepts_the_supported_coefficient_and_defaults_to_sigma0(monkeypatc
 
     captured = {}
 
-    def fake_run(bbox, event_day, out, rp, dp, dry_run, op=None):
+    def fake_run(bbox, event_day, out, rp, dp, dry_run, op=None, ep=None,
+                 osmp=None, dmgp=None):
         captured["coefficient"] = rp.backscatter_coefficient
         captured["elevation_model"] = rp.elevation_model
         captured["optical"] = op
+        captured["osm"] = osmp
+        captured["damage"] = dmgp
         return 0
 
     monkeypatch.setattr(run_module, "run", fake_run)
@@ -205,6 +209,18 @@ def test_cli_accepts_the_supported_coefficient_and_defaults_to_sigma0(monkeypatc
 
     run_module.main(argv + ["--optical-post-days", "30"])
     assert captured["optical"].max_post_latency_days == 30
+
+    # The damage overlay is ON by default, so a default run produces the
+    # damaged-building, cut-road and bridge layers Track B asks for.
+    run_module.main(argv)
+    assert captured["osm"] is not None and captured["damage"] is not None
+    assert captured["osm"].buffer_km == OsmParams.buffer_km
+
+    run_module.main(argv + ["--no-damage"])
+    assert captured["osm"] is None and captured["damage"] is None
+
+    run_module.main(argv + ["--osm-buffer-km", "25"])
+    assert captured["osm"].buffer_km == 25.0
 
 
 @pytest.mark.parametrize("bad", ["beta0", "gamma0-terrain"])

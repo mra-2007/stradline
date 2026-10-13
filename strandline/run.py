@@ -35,20 +35,37 @@ from pathlib import Path
 
 import numpy as np
 
-from strandline import catalog, detect, ingest, optical, outputs, reliability, terrain
+from strandline import (catalog, damage, detect, ingest, optical, osm, outputs,
+                        reliability, terrain)
 from strandline.config import (
     BACKSCATTER_COEFFICIENTS,
     CLASS_DEBRIS,
     CLASS_NAMES,
+    BRIDGE_UNVERIFIED_LABEL,
     OPTICAL_FUSION_MODES,
     DEBRIS_UNVERIFIED_LABEL,
+    DamageParams,
     DetectParams,
     ExtentParams,
     OpticalParams,
+    OsmParams,
     ReliabilityParams,
     RunParams,
     params_dict,
 )
+
+# What the damage stage did. One of these is ALWAYS in run_report.json under
+# `damage.status`, so a report can never be silent about whether a damage
+# answer exists - a count of zero and "we could not read OSM" must never look
+# the same.
+#
+#   disabled   the overlay was not asked for (--no-damage).
+#   refused    OpenStreetMap could not be read; the message says why and what to
+#              try. There is NO damage answer, and `damage_available` is false.
+#   used       the overlay ran; counts, lengths and the OSM snapshot are present.
+OSM_DISABLED = "disabled"
+OSM_REFUSED = "refused"
+OSM_USED = "used"
 
 # DetectParams fields consumed before `classify`, i.e. baked into a prepared
 # scene. A caller that varies one of these must prepare the scene again;
@@ -442,10 +459,44 @@ def params_hash(dp: DetectParams, rp: RunParams, op: OpticalParams | None = None
         json.dumps(params_dict(dp, rp, op, ep), sort_keys=True).encode()).hexdigest()[:12]
 
 
+def damage_stage(bbox, event_day: date, scene: PreparedScene,
+                 result: detect.DetectionResult, out: Path,
+                 osmp: OsmParams | None, dmgp: DamageParams | None,
+                 ep: ExtentParams | None = None, allow_download: bool = True,
+                 log=print) -> tuple[object | None, dict]:
+    """OSM snapshot + damage overlay. NEVER raises.
+
+    Same contract as `optical_stage`, for the same reason (Rule 5): a flood map
+    must not be lost because OpenStreetMap could not be read. Every failure -
+    an unreachable or blocked ohsome, an area too large for one query, a
+    corrupt cache - degrades the run to flood-only and is RECORDED with its
+    reason, so a reader sees a refusal rather than a damage report of zero.
+    The distinction matters more here than anywhere else in the pipeline:
+    "no buildings were flooded" and "we could not find out" look identical in a
+    count and could not be more different to a rescuer.
+    """
+    if osmp is None:
+        return None, {"status": OSM_DISABLED,
+                      "message": "the damage overlay was not requested (--no-damage)"}
+    try:
+        snapshot = osm.load_snapshot(bbox, event_day, out / "cache", osmp,
+                                     allow_download=allow_download, log=log)
+    except osm.OsmError as err:
+        log(f"      OSM REFUSED: {err}")
+        return None, {"status": OSM_REFUSED, "message": str(err),
+                      "damage_available": False}
+    assessment = damage.assess(result.classes, scene.grid, snapshot.layers,
+                               dmgp if dmgp is not None else DamageParams(), ep, log=log)
+    damage.write_layers(out, assessment, log=log)
+    return assessment, {"status": OSM_USED, "damage_available": True,
+                        "osm": snapshot.report(), **assessment.report()}
+
+
 def write(out: Path, scene: PreparedScene, result: detect.DetectionResult, bbox,
           event_day: date, rp: RunParams, dp: DetectParams, runtime_s: float,
           relp: ReliabilityParams | None = None, ep: ExtentParams | None = None,
-          log=print) -> dict:
+          osmp: OsmParams | None = None, dmgp: DamageParams | None = None,
+          allow_osm_download: bool = True, log=print) -> dict:
     grid, choice = scene.grid, scene.choice
     relp = relp if relp is not None else ReliabilityParams()
     rel = reliability.compute_reliability(
@@ -464,12 +515,22 @@ def write(out: Path, scene: PreparedScene, result: detect.DetectionResult, bbox,
                             f"post {choice.post.day}")
     report = build_report(scene, result, bbox, event_day, rp, dp, runtime_s, n_poly, rel=rel,
                           ep=ep)
+    # Last, and outside build_report: the overlay reads the classes that were
+    # just written and may refuse, and its parameters are deliberately NOT part
+    # of params_hash (config.params_dict), so it contributes a report section
+    # rather than a configuration. Always present, like `optical`, so no report
+    # is silent about whether a damage answer exists.
+    _assessment, damage_report = damage_stage(bbox, event_day, scene, result, out,
+                                              osmp, dmgp, ep,
+                                              allow_download=allow_osm_download, log=log)
+    report["damage"] = damage_report
     outputs.write_report(out / "run_report.json", report)
     return report
 
 
 def run(bbox, event_day: date, out: Path, rp: RunParams, dp: DetectParams, dry_run: bool,
-        op: OpticalParams | None = None, ep: ExtentParams | None = None) -> int:
+        op: OpticalParams | None = None, ep: ExtentParams | None = None,
+        osmp: OsmParams | None = None, dmgp: DamageParams | None = None) -> int:
     t_start = time.time()
     out.mkdir(parents=True, exist_ok=True)
     op = OpticalParams() if op is None else op
@@ -492,13 +553,24 @@ def run(bbox, event_day: date, out: Path, rp: RunParams, dp: DetectParams, dry_r
     except PipelineError as err:
         raise SystemExit(str(err)) from err
 
-    report = write(out, scene, result, bbox, event_day, rp, dp, time.time() - t_start, ep=ep)
+    report = write(out, scene, result, bbox, event_day, rp, dp, time.time() - t_start, ep=ep,
+                   osmp=osmp, dmgp=dmgp)
     print(json.dumps(report["areas_ha"], indent=2))
     optical_status = report["optical"]["status"]
     print(f"Sentinel-2 optical evidence: {optical_status}"
           + (f" ({report['optical'].get('message', '')})"
              if optical_status != OPTICAL_USED else
              f", fused: {report['optical']['fused_into_map']}"))
+    dmg = report["damage"]
+    if dmg["status"] == OSM_USED:
+        print(f"Damage overlay (OSM snapshot {dmg['osm']['snapshot']}): "
+              f"{dmg['buildings']['damaged']} of {dmg['buildings']['total']} building(s), "
+              f"{dmg['roads']['segments_cut']} road segment(s) cut "
+              f"({dmg['roads']['length_flooded_km']} km flooded), "
+              f"{dmg['bridges']['likely_out']} bridge(s) {BRIDGE_UNVERIFIED_LABEL}")
+    else:
+        print(f"Damage overlay: {dmg['status'].upper()} - NO damage answer for this run. "
+              f"{dmg.get('message', '')}")
     print(f"Done in {report['runtime_s']} s -> {out}")
     return 0
 
@@ -529,6 +601,13 @@ def main(argv=None) -> int:
                          "optical candidates are added to the map, subject to the same terrain "
                          "and drainage tests as radar. 'off': computed, written and reported, "
                          "but changes no pixel, so the map is the radar-only map")
+    ap.add_argument("--no-damage", dest="damage", action="store_false", default=True,
+                    help="skip the OpenStreetMap download and the damage overlay. The flood "
+                         "map is unaffected; run_report.json records the overlay as disabled")
+    ap.add_argument("--osm-buffer-km", type=float, default=OsmParams.buffer_km,
+                    help="context beyond the mapped area for OSM, in km (default: "
+                         "%(default)s). A settlement can be cut off by a bridge outside the "
+                         "flood bbox, so the overlay needs more ground than the map")
     args = ap.parse_args(argv)
 
     rp = replace(RunParams(), resolution_m=args.res, n_pre=args.n_pre,
@@ -537,8 +616,9 @@ def main(argv=None) -> int:
     op = replace(OpticalParams(), enabled=args.optical,
                  max_post_latency_days=args.optical_post_days,
                  fusion=args.optical_fusion)
+    osmp = replace(OsmParams(), buffer_km=args.osm_buffer_km) if args.damage else None
     return run(tuple(args.bbox), args.event_date, args.out, rp, DetectParams(), args.dry_run,
-               op=op)
+               op=op, osmp=osmp, dmgp=DamageParams() if args.damage else None)
 
 
 if __name__ == "__main__":

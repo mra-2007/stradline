@@ -98,6 +98,63 @@ water because inside the valley-floor zone it tests the magnitude of a change an
 This **closes the untested reservoir hypothesis** carried as open item B in `docs/tuning_log.md`
 (2026-10-12). Fix B above is the change aimed at it.
 
+## The damage gate FAILS: measured, with the root cause (2026-10-13)
+
+`eval/results/damage.csv`, run `20261013T123135Z`, all six gate flood events scored:
+
+| gate | measured | target | status |
+|---|---|---|---|
+| `mean(building_f1)` | **0.1808** | ≥ 0.90 | FAIL |
+| `mean(road_segment_f1)` | **0.3995** | ≥ 0.90 | FAIL |
+
+Per event, against each fold's flood score from `eval/results/flood.csv` run `20261012T165259Z`:
+
+| event | flood F1 tol | building F1 | road F1 | buildings in OSM | ours / ref flagged (buildings) |
+|---|---|---|---|---|---|
+| bhutan_punakha_2024 | 0.1356 | 0.0000 | 0.0000 | 45,554 | 7 / 1, no overlap |
+| bosnia_konjic_2024 | 0.0798 | 0.0392 | 0.1613 | 17,718 | 9 / 42 |
+| ecuador_poza_honda_2025 | 0.5553 | 0.3348 | 0.5268 | 76,814 | 63 / 158 |
+| norway_ringebu_2023 | 0.9151 | 0.6424 | 0.7117 | 46,654 | 182 / 285 |
+| norway_selsverket_2023 | 0.5845 | 0.0684 | 0.2915 | 22,815 | 16 / 101 |
+| pakistan_larkana_2022 | 0.8891 | 0.0000 | 0.7054 | **65** | 0 / 9 |
+
+**Root cause 1: the overlay inherits the flood extent, and the flood gate FAILS.** Road F1 tracks
+flood tolerant F1 with a Spearman rank correlation of **0.886** across the six events — the overlay
+is doing its job and faithfully transmitting the flood map's error. This is not a second, separate
+failure to fix: *no overlay change can beat the extent it is given*, and the oracle ceiling on the
+flood extent itself (Fix A above) is mean tolerant F1 0.6718, well under 0.90.
+
+**Root cause 2: set-F1 on sparse targets AMPLIFIES a localisation error.** Building F1 (0.1808) is
+far below flood F1 (0.5266) because a building is flagged only if the extent actually touches it:
+water displaced by 100 m still earns partial pixel credit but flags a completely different set of
+buildings. Bhutan is the clean demonstration — ours flags 7, the reference flags 1, and the
+intersection is **zero**, so F1 is 0.0 even though both sets are tiny and nearby. Roads are less
+affected because a long segment is easier to touch, which is why road F1 stays close to flood F1.
+
+**Root cause 3, and independent of the flood map: OSM building completeness.** Larkana has **65**
+buildings mapped in the pre-event OSM snapshot across its bbox plus the 15 km buffer, against
+17,718–76,814 for every other event. Its flood map is one of the best in the set (tolerant F1
+0.8891) and its road F1 is 0.7054, but building F1 is 0.0000 because there are almost no buildings
+to find. This limit is in the data, not in our code, and it matters directly for the case study: a
+Himalayan valley may be mapped as sparsely as rural Sindh was in 2022.
+
+**Options, for the human to choose.** None is implemented.
+
+1. **Fix the flood map first and re-score damage unchanged** (recommended). Root cause 1 dominates
+   and roots 2 and 3 cannot be separated from it while the extent is wrong. Cost: Fix A + Fix B
+   above (16–26 h estimated), then one re-run of `eval.damage_eval`, which needs no new OSM
+   download — the snapshots are cached per bbox and snapshot date.
+2. **Report OSM completeness beside every damage number, and keep the gate as it is.** Each row
+   would carry the mapped-feature count so a reader can see when a 0.0 means "we were wrong" and
+   when it means "there was nothing mapped". This is honest reporting and costs ~2 h, but it does
+   **not** move the gate, and dropping an event because OSM is thin there would be Rule 3.2
+   (excluding events) — so the completeness figure is published, never used to exclude.
+3. **Ask the human to change what the gate measures** — e.g. a length-weighted road metric and an
+   area-weighted building metric that give partial credit for a partly-correct extent, instead of
+   set membership. This may be a better operational question, but `eval/gates.yaml` is human-owned
+   and changing the metric after seeing the score is Rule 3.2. It can only be a human's declared
+   decision, made before any re-score.
+
 ## Closed
 
 - **Shipped `n_pre` did not match the scored `n_pre`** (closed 2026-10-13, this commit). A default

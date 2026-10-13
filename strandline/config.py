@@ -6,6 +6,7 @@ used into run_report.json, so any result can be reproduced.
 """
 
 from dataclasses import asdict, dataclass
+from datetime import date
 
 
 # Detection modes. Both stay available. The default is `rough_water`, adopted
@@ -458,6 +459,129 @@ class ReliabilityParams:
         if not self.min_valley_width_px > 0:
             raise ValueError(
                 f"min_valley_width_px must be positive, got {self.min_valley_width_px!r}.")
+
+
+# --- OpenStreetMap (ohsome) ---------------------------------------------------
+
+# The OSM layers the damage overlay and the cut-off analysis need, as ohsome
+# filter expressions. Declared here, once, so the pipeline and the evaluation
+# ask for exactly the same features and a reader can see what "a building" or
+# "a road" means in this system.
+#
+# `health` follows the two tagging schemes that coexist in OSM: the older
+# `amenity=*` and the `healthcare=*` scheme. `health_post` appears under both,
+# which is why both are listed rather than one being assumed canonical.
+OSM_LAYERS = {
+    "buildings": "building=* and geometry:polygon",
+    "roads": "highway=* and geometry:line",
+    "bridges": "bridge=* and geometry:line",
+    "waterways": "waterway=* and geometry:line",
+    "places": ("place in (city, town, village, hamlet, suburb, neighbourhood, "
+               "isolated_dwelling, farm) and (geometry:point or geometry:polygon)"),
+    "health": ("(amenity in (hospital, clinic, doctors, health_post) or "
+               "healthcare in (hospital, clinic, doctor, health_post, centre)) and "
+               "(geometry:point or geometry:polygon)"),
+}
+
+
+@dataclass(frozen=True)
+class OsmParams:
+    """Which OSM snapshot to read, over what area, from where.
+
+    NOT in params_hash, for the ReliabilityParams reason: no field here can
+    change a pixel of the flood class map. The snapshot date DOES change the
+    damage overlay, so it is recorded in run_report.json under `osm`, which is
+    where a reader must be able to see which OSM the answer was built from.
+    """
+
+    # Rule 1: the OSM snapshot must predate the event, so no post-event mapper
+    # response can leak into a pipeline input. The ohsome instance's own
+    # temporal extent ends at 2026-07-27T09:00Z (its /metadata endpoint, read
+    # 2026-10-13), which is the same date CLAUDE.md records as the latest
+    # available snapshot, so a date after this cannot be served anyway.
+    latest_snapshot: str = "2026-07-27"
+
+    # Context beyond the mapped area, because a settlement is cut off by a road
+    # or bridge that may lie outside the flood bbox, and a route out of the area
+    # leaves it by definition. 15 km is a declared operational choice - roughly
+    # a half-day walk out of a valley - not a tuned value, and it is applied
+    # identically to every area.
+    buffer_km: float = 15.0
+
+    base_url: str = "https://api.ohsome.org/v1"
+    timeout_s: float = 300.0
+    max_retries: int = 2
+    retry_backoff_s: float = 5.0
+
+    # ohsome's WAF answers 403 to an unidentified client, so a User-Agent is
+    # required rather than polite. It names the project and that this is an
+    # educational prototype.
+    user_agent: str = ("strandline/0.1 (IIT Mandi Multimodal AI Hackathon 2026, "
+                       "educational prototype; OpenStreetMap via ohsome)")
+
+    def __post_init__(self) -> None:
+        if self.buffer_km < 0:
+            raise ValueError(f"buffer_km must not be negative, got {self.buffer_km!r}.")
+        if self.timeout_s <= 0:
+            raise ValueError(f"timeout_s must be positive, got {self.timeout_s!r}.")
+        # Fails loudly here rather than at the first request.
+        date.fromisoformat(self.latest_snapshot)
+
+
+# --- Damage overlay -----------------------------------------------------------
+
+# The wording every "likely out" bridge carries, in every output. A bridge is
+# never confirmed destroyed from radar and a DEM: what is established is that
+# the channel it crosses was flooded, which is a reason to check it, not a
+# finding that it is gone.
+BRIDGE_UNVERIFIED_LABEL = "likely out, unverified"
+
+
+@dataclass(frozen=True)
+class DamageParams:
+    """How the flood extent is intersected with OSM features.
+
+    NOT in params_hash, for the same reason as ReliabilityParams: nothing here
+    changes a pixel of the flood class map. Every value is recorded in
+    run_report.json under `damage.parameters`.
+    """
+
+    # How far the flood extent is grown before asking whether a feature touches
+    # it, in PIXELS of the analysis grid (1 px = 20 m at the shipped 20 m
+    # resolution, so it follows resolution_m rather than fixing a metre value).
+    #
+    # Set from GEOLOCATION ACCURACY and never from a score. Two errors stack
+    # between a flood pixel and an OSM footprint: Sentinel-1 IW GRDH
+    # orthorectification residual over terrain, and the positional accuracy of
+    # OSM geometry itself, which for buildings traced from consumer imagery is
+    # commonly several metres. One 20 m cell is the smallest tolerance the
+    # analysis grid can express and is the same 1 px the gates file declares as
+    # its boundary tolerance, so the overlay is as forgiving as the scoring is
+    # and no more. It is NOT a sensitivity dial: raising it would flag more
+    # buildings and must not be done to move a number.
+    buffer_px: int = 1
+
+    # A bridge is judged on the channel it crosses, within this distance of the
+    # crossing point, rather than on the whole waterway: a river can be in flood
+    # a kilometre downstream and say nothing about this crossing. 100 m is about
+    # five analysis cells, enough to cover a crossing and its immediate
+    # approaches at 20 m. Declared, not tuned.
+    bridge_reach_m: float = 100.0
+
+    # Road fragments shorter than this are dropped after junction splitting.
+    # Node-splitting a network produces slivers where ways meet at slightly
+    # different coordinates; counting those as "segments" would inflate both the
+    # cut count and the total. 5 m is well below any real road segment and well
+    # above a coordinate-rounding sliver.
+    min_segment_m: float = 5.0
+
+    def __post_init__(self) -> None:
+        if self.buffer_px < 0:
+            raise ValueError(f"buffer_px must not be negative, got {self.buffer_px!r}.")
+        if self.bridge_reach_m <= 0:
+            raise ValueError(f"bridge_reach_m must be positive, got {self.bridge_reach_m!r}.")
+        if self.min_segment_m < 0:
+            raise ValueError(f"min_segment_m must not be negative, got {self.min_segment_m!r}.")
 
 
 def params_dict(detect: DetectParams, run: RunParams,

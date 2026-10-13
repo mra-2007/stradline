@@ -81,8 +81,16 @@ No-go if downloads keep failing or no usable same-track pair exists.
 | `reliability_narrow_valley.geojson` | the code-2 zone as polygons, each carrying the caveat sentence |
 | `flood_source.tif` | uint8 per-pixel sensor provenance: 0 not flood-affected, 1 Sentinel-1 only, 2 Sentinel-2 only, 3 both sensors agree |
 | `quicklook.png` | before, after, change and classification panels |
-| `run_report.json` | provenance: scenes, track, dates, every parameter, areas, runtime, attribution, `reliability.narrow_valley` and the `optical` block (Sentinel-2 status, fusion mode, whether it was fused into the map, dates, cloud cover, clear fraction, how much of the area optical covered) |
-| `cache\` | downloaded rasters, reused on every rerun |
+| `damaged_buildings.geojson` | OSM building footprints the mapped water reached (footprint intersects the extent buffered by one pixel) |
+| `cut_roads.geojson` | road segments, split at junctions, with a part inside the buffered extent; each carries `segment_length_m`, `flooded_length_m` and `flooded_fraction` |
+| `bridges_out.geojson` | bridge ways crossing a waterway whose nearby channel is flooded, each labelled *"likely out, unverified"* |
+| `run_report.json` | provenance: scenes, track, dates, every parameter, areas, runtime, attribution, `reliability.narrow_valley`, the `optical` block (Sentinel-2 status, fusion mode, whether it was fused into the map, dates, cloud cover, clear fraction, how much of the area optical covered) and the `damage` block (status, the OSM snapshot date and buffer, feature counts per layer, damaged/cut/bridge counts and lengths) |
+| `cache\` | downloaded rasters and OSM layers, reused on every rerun |
+
+The three damage layers are written **even when empty**, because a missing file cannot distinguish
+"nothing was damaged" from "the overlay did not run". If OpenStreetMap cannot be read, the flood map
+is still produced and `run_report.json → damage.status` is `refused` with the reason — never a
+damage count of zero.
 
 | Code | Meaning |
 |---|---|
@@ -94,7 +102,8 @@ No-go if downloads keep failing or no usable same-track pair exists.
 | 5 | permanent water |
 | 6 | not analysed (steep or high terrain) |
 
-**Flood extent vs what is merely mapped.** `ExtentParams.debris_in_flood_extent` (default `True`)
+**Flood extent vs what is merely mapped.** `ExtentParams.debris_in_flood_extent` (default `False`
+since 2026-10-12, adopted by the Pareto-dominance rule in `eval/chosen_params.json`)
 decides whether class 4 counts as flood *extent*. Debris is written to `flood_classes.tif` either
 way — the flag changes no pixel of the class map — but with `False` it is reported as
 *"possible debris, unverified"*, excluded from `flood_extent_ha`, excluded from the scored
@@ -212,6 +221,49 @@ the hash says what the run asked for, `optical.status` says what it got — `use
 dev events, `refused` on 4 where the clear pair fell below 20%. See `docs/tuning_log.md`,
 2026-10-12, for the pass, the adoption rule and the caveat on where the gain comes from.
 
+## Method (OpenStreetMap and the damage overlay)
+
+**The snapshot is the whole point.** After a flood, mappers trace the damage — buildings get flood
+tags, washed-out bridges get deleted, humanitarian campaigns redraw whole valleys. A "current" OSM
+download of a flood area therefore contains somebody else's damage assessment, and using it as a
+pipeline input would be reading the answer. So `strandline/osm.py` never asks for today's OSM. It
+asks for **the latest date strictly before the event date, capped at `OsmParams.latest_snapshot`
+(2026-07-27)**, which is what the ohsome instance's own `/metadata` temporal extent ends at. That
+date is cached under, and written into `run_report.json → damage.osm.snapshot`, so every count can
+be traced to the OSM it came from. Rule 1.
+
+Layers (`config.OSM_LAYERS`, as ohsome filter expressions): buildings, roads with their `highway`
+type, bridges, waterways, places, and health facilities under both tagging schemes
+(`amenity` and `healthcare`, including `health_post`). The area queried is the flood bbox plus
+`OsmParams.buffer_km` = 15 km, because a settlement can be cut off by a bridge outside the mapped
+box and a route out of a valley leaves it by definition.
+
+**Which endpoint.** ohsome's snapshot extraction `/elements/geometry` is the natural fit, but
+measured on 2026-10-13 from this network it answers **403** at the WAF while `/metadata`, the
+aggregation endpoints and `/elementsFullHistory/geometry` all answer 200. Both paths are therefore
+tried in order and the one that answered is recorded in the report. The full-history response is
+reduced to the snapshot instant here — per OSM id the version with the latest `@validFrom`, kept
+only where `@validTo` reaches the window end — so an element edited inside the window is not
+double-counted and one deleted inside it is not resurrected.
+
+**The overlay** (`strandline/damage.py`), against the pipeline's own flood extent:
+
+| Rule | Definition |
+|---|---|
+| building damaged | footprint **intersects** the extent buffered by `DamageParams.buffer_px` = 1 px (20 m). Intersection, not centroid-inside: a 20 m cell clipping a footprint corner is water reaching the building. |
+| road segment cut | roads are split at every junction first, so a segment is a stretch that can be routed around rather than an OSM editing unit; cut when a **part of it** is inside the buffered extent (intersection length > 0), not when it merely touches the boundary. `flooded_length_m` is reported per segment, because "240 m of this 8 km road is under water" and "this road is cut" are different facts. |
+| bridge likely out, unverified | a bridge way crossing a waterway whose channel, **within `DamageParams.bridge_reach_m` = 100 m of the crossing**, lies inside the extent. The reach matters: a river in flood ten kilometres downstream says nothing about this crossing. |
+
+The 20 m buffer is a **geolocation tolerance**, set from Sentinel-1 orthorectification residual over
+terrain and from the positional accuracy of OSM geometry — the same 1 px the gates file declares as
+its boundary tolerance. It is not a sensitivity dial and is never tuned on a score. Neither
+`OsmParams` nor `DamageParams` enters `params_hash`, for the same reason as `ReliabilityParams`:
+nothing in them changes a pixel of the flood class map, so folding them in would re-key every row
+already published. Both are recorded in full under `run_report.json → damage.parameters`.
+
+Debris is consumed **only if it is part of the flood extent**: the overlay takes its classes from
+`ExtentParams.flood_extent_classes()`, which with the shipped default excludes class 4.
+
 ## Scoring the dev set (checking only, never an input)
 
 Three steps. Nothing here is ever a pipeline input: references are read only by `validation/` and
@@ -246,6 +298,7 @@ venv\Scripts\python.exe -m eval.check_gates
 | `eval/run_scoreboard.py` | Runs the pipeline per event from the cache and scores floods against their reference using each event's `reference_classes`; controls on `false_flood_fraction`. Appends rows to `eval/results/flood.csv`. |
 | `eval/tune.py` | Leave-one-event-out over the grid in `config.py::TUNE_GRIDS`: maximise mean tolerant F1 on the OTHER events subject to every control ≤ 1% false flood, then score the left-out event (`split=loeo`). With `--optical`, a **second** leave-one-event-out pass over `OPTICAL_TUNE_GRIDS`, crossing each fold's own SAR point with every optical point, then the adoption rule in `config.OPTICAL_ADOPTION` — declared before the pass, and rows are appended only if it says KEEP. Before the verdict is trusted it checks that fusion `off` reproduces the radar-only numbers exactly (30/30 on the current dev set). Writes `eval/chosen_params.json` and a diff against `config.py` — it never edits `config.py`. |
 | `validation/compare.py` | The metric definitions, used by both the scoreboard and the CLI below, so a manual check and a gate row cannot disagree. |
+| `eval/damage_eval.py` | Runs the damage overlay TWICE per gate flood event over the same pre-event OSM snapshot - once with our flood extent, once with the reference extent (same `reference_classes` as flood scoring) - and compares the two flagged sets as sets of OSM features. Appends `building_f1` and `road_segment_f1` to `eval/results/damage.csv`. **It is not a measurement of real building damage:** nothing was inspected, both sides are inferences from a flood polygon, and the result inherits the flood map's accuracy. |
 | `eval/diagnose_errors.py` | Takes the error map apart, per event: every missed reference pixel attributed to one cause (not analysed / no change signal / a named rule), every false alarm attributed to a terrain position and the rule that admitted it, boundary offset and a ±5 px shift scan, acquisition facts, and an oracle upper bound per error source. Writes `docs/accuracy_diagnosis.md` plus `docs/accuracy_diagnosis.json`, its provenance. Changes no code and no parameter, appends no results row, and re-renders from the JSON with `--from-json`. |
 
 Things these scripts refuse to do, by design:
@@ -377,8 +430,22 @@ Poza Honda 0.0048. Coverage: 6/6 gate-eligible floods, 4 of 8 declared controls.
 | `flood_mapping` mean F1, strict | 0.4258 | report | — |
 | `flood_mapping` mean IoU, strict | 0.3163 | report | — |
 | `no_flood_controls` max false flood | 0.0048 | ≤ 0.01 | **PASS** |
+| `damage_overlay` mean building F1 | 0.1808 | ≥ 0.90 | **FAIL** |
+| `damage_overlay` mean road segment F1 | 0.3995 | ≥ 0.90 | **FAIL** |
 
-**Module status: `flood_mapping` FAIL, `no_flood_controls` PASS.** By the definition of done in
+Damage rows: `eval/results/damage.csv`, run `20261013T123135Z`, all six gate flood events.
+**The damage overlay inherits the flood extent and the flood gate FAILS, so this gate could not
+pass:** road F1 tracks flood tolerant F1 with a Spearman rank correlation of 0.886, and even a
+perfect overlay on a perfect-within-reach extent is bounded by the flood oracle ceiling of 0.6718.
+Building F1 is lower still because set membership amplifies a localisation error — at Punakha our
+7 flagged buildings and the reference's 1 do not intersect at all. A third limit is in the data, not
+the code: Larkana has **65** buildings mapped in the pre-event OSM snapshot over its bbox plus
+buffer, against 17,718–76,814 elsewhere, so its building F1 is 0.0 despite one of the better flood
+maps in the set. Full per-event evidence, the three root causes and three options are in
+`docs/open_items.md`.
+
+**Module status: `flood_mapping` FAIL, `no_flood_controls` PASS, `damage_overlay` FAIL.**
+By the definition of done in
 CLAUDE.md, flood mapping is **not done**. It is finalised, not passing: the method, the parameters
 and the evidence are fixed and committed, and the gate it misses is reported as missed.
 

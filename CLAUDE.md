@@ -29,12 +29,13 @@ satellite data. IIT Mandi Multimodal AI Hackathon 2026, Track B "Mapping Flood D
 
 ## Repo map
 
-- `strandline/`: the pipeline (catalog, ingest, detect, terrain, outputs, run; later optical, osm, damage, network, flowpath)
+- `strandline/`: the pipeline (catalog, ingest, detect, terrain, reliability, optical, outputs, run, osm, damage, network; later flowpath)
 - `validation/`: scoring against reference maps. CHECKING ONLY.
 - `eval/`: dev events, scoreboard, leave-one-event-out tuning, gates
-- `copilot/`, `api/`, `web/`: added later
+- `copilot/`, `api/`, `web/`: being added
 - `reference/satquery-ai-main/`: our earlier project, read-only (see reuse map below)
 - `tests/`: `tests/test_rules.py` is human-owned and encodes these rules
+- `docs/open_items.md`: known gaps, one line each; `docs/tuning_log.md`: decisions (append only)
 
 ## Rule 1: data (breaking this disqualifies the team)
 
@@ -55,10 +56,12 @@ satellite data. IIT Mandi Multimodal AI Hackathon 2026, Track B "Mapping Flood D
   tolerance) ≥ 0.90 averaged over dev events, worst event ≥ 0.80; no-flood controls ≤ 1% false
   flood; damage road and building F1 ≥ 0.90; cut-off settlement F1 ≥ 0.90; copilot 0 invented
   numbers and ≥ 95% correct on ≥ 150 questions; live drills ≥ 90% success; 100% reproducible.
-- A module is DONE only when its gates show PASS. NO DATA means not done.
+- A gate counts as PASS only when its measured value meets the target. NO DATA means not measured.
+- A module is complete when it is built, tested, measured by its gate and committed. A failing gate
+  is reported honestly (measured value, target, main cause with evidence); do not loop on it.
+  Improvement attempts happen only when a prompt asks for them.
 - Strict (zero-tolerance) scores are always reported next to the tolerant ones.
-- If a gate still fails after honest effort, STOP and report: measured value, target, root cause
-  with evidence (error maps, per-event rows) and 2–3 options. Never fake, hide or round up.
+- Never fake, hide or round up a number.
 
 ## Rule 3: no metric gaming (any one of these is an automatic FAIL)
 
@@ -85,26 +88,57 @@ overlap `heldout.exclusion_bbox` in `eval/gates.yaml` (tested).
 
 ## Rule 5: engineering
 
-- Big change: plan first. Then small steps, tests after every change, a test for every bug fixed.
+- Big change: plan first. Then small steps, a test for every new function and every bug fixed.
 - Deterministic: fixed seeds; the same inputs give byte-identical outputs.
 - Every run writes provenance to `run_report.json`: scenes, dates, parameters, parameters hash, runtime.
 - Cache every download by bbox + date + stage. Test on small areas first; respect free-tier quotas.
 - Live robustness: every failure gives a clear message (what failed, why, what to try). A refusal
   is better than a silent wrong map.
-- Commit after every green step: `<module>: <what changed> | gates: <status>`.
+- Commit only files you changed for the task (no blind `git add -A`), message
+  `<module>: <what changed> | gates: <status>`.
 
 ## Rule 6: honesty
 
 Never claim accuracy that was not measured. Label synthetic tests as synthetic. When unsure, say so.
 When blocked, stop and ask. The 15% honesty criterion is judged in Q&A: every number must be explainable.
 
-## Definition of done (every module)
+## Process rules (human-owned)
 
-1. Tests pass (the Stop hook enforces this).
-2. The module's gates PASS (`/gate`).
-3. The accuracy-auditor returns PASS (`/audit`).
-4. README updated: how to run it and the measured numbers, with their source file.
-5. Committed.
+- Never stop processes with taskkill /IM; stop only by PID.
+- Never start, stop or restart eval.fetch_dev_data; the human runs it, and --estimate is its only
+  no-network mode.
+
+## Working protocol (applies to every prompt)
+
+Scope
+- Flood detection is frozen: do not edit strandline/detect.py, terrain.py, reliability.py, optical.py,
+  the detection or optical parameters in config.py, or eval/chosen_params.json unless the prompt says
+  "flood-mapping change".
+- Build only what the prompt asks. No refactors, renames or extras outside the task.
+
+Start
+- Begin with a numbered plan of at most 6 steps with rough minutes each, then work without waiting
+  for approval unless a rule blocks you. Print "Step k/n done" after each step.
+- Read only the files the task needs; Grep before Read. Never read docs/tuning_log.md or
+  eval/results/*.csv in full; grep or tail them.
+
+Long jobs
+- Never run a command expected to take more than 10 minutes (downloads, drills, re-scoring every
+  event, Monte Carlo over all events). Print the exact Windows cmd command for the human
+  (venv\Scripts\python.exe ...) and stop; continue when the human says it finished.
+- No polling loops, no sleep-and-check loops. No background agents unless the prompt asks for /audit.
+
+Testing
+- While iterating, run only the new or affected tests; run the full suite once before committing.
+
+Finish (every module)
+1. /gate once; report it as printed. If a gate fails, give value, target and main cause once.
+2. Do not run /audit unless the prompt explicitly asks for it. When asked: one audit, apply its
+   findings once, re-run the tests, no second round. Known gaps go to docs/open_items.md, one line each.
+3. Update only this module's README section: how to run it and the measured numbers with their source file.
+4. Commit.
+5. Final message, at most 10 lines: what was built, gate numbers, open items, commit hash, and the
+   next command for the human if any.
 
 ## Formats the tests and gates depend on
 
@@ -141,27 +175,4 @@ Results CSVs: see the comment block at the end of `eval/gates.yaml`. Every row h
 - A verifier checks every number in the final text, including Devanagari digits, against the
   evidence. Any unmatched number means the answer is rejected and regenerated or refused.
 - English and Nepali. Works offline with the keyword fallback. Every answer carries its trace.
-- Never stop processes with taskkill /IM; stop only by PID. Never start, stop or restart eval.fetch_dev_data; the human runs it, and --estimate is its only no-network mode.
-## Working protocol (human-owned; applies to every prompt)
-
-Scope
-- Flood detection is frozen: do not edit strandline/detect.py, terrain.py, reliability.py, optical.py, the detection or optical parameters in config.py, or eval/chosen_params.json unless the prompt says "flood-mapping change".
-- Build only what the prompt asks. No refactors, renames or extras outside the task.
-
-Start
-- Begin with a numbered plan of at most 6 steps with rough minutes each, then work without waiting for approval unless a rule blocks you. Print "Step k/n done" after each step.
-- Read only the files the task needs; Grep before Read. Never read docs/tuning_log.md or eval/results/*.csv in full; grep or tail them.
-
-Long jobs
-- Never run a command expected to take more than 10 minutes (downloads, drills, re-scoring every event). Print the exact Windows cmd command for the human (venv\Scripts\python.exe ...) and stop; continue when the human says it finished.
-- No polling loops. No background agents except the one end-of-module audit.
-
-Testing
-- New code gets focused tests (synthetic inputs, known answers). While iterating run only the new tests; run the full suite once before committing.
-
-Finish (every module)
-1. /gate once; report it as printed. If a gate fails, give value, target and main cause once. At most one improvement attempt, and only if the prompt asks for it.
-2. /audit once. Apply its findings once, re-run the tests. No second audit round. Leftovers go to docs/open_items.md, one line each.
-3. Update only this module's README section: how to run it and the measured numbers with their source file.
-4. Commit: "<module>: <what> | gates: <status>".
-5. Final message, at most 10 lines: what was built, gate numbers, open items, commit hash, and the next command for the human if any.
+- The API key lives in `.env` (never committed).

@@ -61,6 +61,7 @@ from scipy.sparse.csgraph import connected_components, dijkstra
 from scipy.spatial import cKDTree
 
 from strandline.config import (
+    CUTOFF_TARGETS as TARGETS,
     CLASS_FLOOD_HIGH,
     CLASS_FLOOD_MEDIUM,
     CLASS_NO_CHANGE,
@@ -83,13 +84,13 @@ from strandline.config import (
     TOWN_PLACE_TYPES,
     VEHICLE_HIGHWAY_TYPES,
     DamageParams,
+    DetectParams,
     ExtentParams,
     MonteCarloParams,
     NetworkParams,
 )
 
 EIGHT = np.ones((3, 3), dtype=bool)
-TARGETS = ("health", "town")
 
 CUTOFF_CAVEAT = (
     "Cut-off status is computed from this run's own flood extent and a pre-event "
@@ -164,29 +165,33 @@ def highway_types(kind: str) -> tuple:
     raise NetworkError(f"unknown graph kind {kind!r}; declared kinds are {GRAPH_KINDS}")
 
 
-def _sample_pixels(geom, grid, step_m: float) -> np.ndarray:
-    """Flat raster indices the line passes through, sampled every `step_m`.
+def _sample_pixels(geom, grid, step_m: float | None = None) -> np.ndarray:
+    """EVERY flat raster index the line touches. Supercover, not sampling.
 
-    Half-pixel sampling cannot skip a cell a straight segment crosses, because
-    a cell is at least `res` across in both directions. Out-of-raster samples
-    are dropped: a road outside the mapped area cannot be flooded by this map.
+    This was point sampling along the line at half-pixel spacing, with a
+    docstring claiming that could not skip a crossed cell. The claim was false
+    and the 2026-10-13 audit measured it: a segment can clip a cell for an
+    arbitrarily short chord near a corner, and 6,471 of 20,000 random 20-80 m
+    segments skipped at least one cell they genuinely crossed. The consequence
+    was real - an edge whose only contact with the flood was a thin clip was
+    called dry, so severed edges and cut-off settlements were under-counted,
+    and `cut_roads.geojson` (a true geometry intersection) could disagree with
+    this module about the same road.
+
+    `rasterize(..., all_touched=True)` is the supercover of the line: every
+    cell the geometry enters, with no sampling parameter to get wrong. It is
+    exactly the set `damage.cut_road_segments` would find intersecting, which
+    is what makes the two modules agree by construction rather than by luck.
+
+    `step_m` is accepted and ignored, so a caller written against the sampling
+    version cannot silently change the answer.
     """
-    length = float(geom.length)
-    n = max(int(np.ceil(length / step_m)) + 1, 2)
-    distances = np.linspace(0.0, length, n)
-    xs = np.empty(n)
-    ys = np.empty(n)
-    for i, d in enumerate(distances):
-        point = geom.interpolate(d)
-        xs[i], ys[i] = point.x, point.y
-    # The inverse transform applied explicitly: `affine * (array, array)` works
-    # but is deprecated, and this runs once per edge.
-    inv = ~grid.transform
-    cols = np.floor(inv.a * xs + inv.b * ys + inv.c).astype(np.int64)
-    rows = np.floor(inv.d * xs + inv.e * ys + inv.f).astype(np.int64)
-    inside = (rows >= 0) & (rows < grid.height) & (cols >= 0) & (cols < grid.width)
-    flat = rows[inside] * grid.width + cols[inside]
-    return np.unique(flat)
+    from rasterio.features import rasterize
+
+    window = rasterize([(geom, 1)], out_shape=(grid.height, grid.width),
+                       transform=grid.transform, fill=0, dtype="uint8",
+                       all_touched=True)
+    return np.flatnonzero(window.ravel()).astype(np.int64)
 
 
 def build_graph(segments, grid, kind: str, params: NetworkParams | None = None) -> RoadGraph:
@@ -211,8 +216,6 @@ def build_graph(segments, grid, kind: str, params: NetworkParams | None = None) 
     bridges: list[bool] = []
     ids: list = []
     pixel_chunks: list[np.ndarray] = []
-    step = float(grid.res) / 2.0
-
     def node_key(x: float, y: float) -> tuple[int, int]:
         snap = np_.node_snap_m
         return (int(round(x / snap)), int(round(y / snap)))
@@ -245,7 +248,7 @@ def build_graph(segments, grid, kind: str, params: NetworkParams | None = None) 
             value = row["bridge"] if bridge_col else None
             bridges.append(bool(value is not None and str(value) not in ("nan", "no", "")))
             ids.append(row["segment_id"] if "segment_id" in chosen.columns else f"edge/{i}")
-            pixel_chunks.append(_sample_pixels(part, grid, step))
+            pixel_chunks.append(_sample_pixels(part, grid))
 
     offsets = np.zeros(len(pixel_chunks) + 1, dtype=np.int64)
     if pixel_chunks:
@@ -265,11 +268,31 @@ def build_graph(segments, grid, kind: str, params: NetworkParams | None = None) 
 
 
 def _matrix(graph: RoadGraph, removed: np.ndarray):
-    """A symmetric sparse weight matrix with `removed` edges left out."""
+    """A symmetric sparse weight matrix with `removed` edges left out.
+
+    Parallel edges are reduced to the SHORTEST, not summed. `coo_matrix.tocsr`
+    adds duplicate (u, v) entries, so two ways between the same junction pair -
+    a dual carriageway, a service loop, a duplicated digitisation, all common
+    in OSM and made commoner by `node_snap_m` collapsing near-coincident
+    endpoints - produced a weight of 100 + 300 = 400 m where the real distance
+    is 100 m. Reachability was unaffected, but a route length could be
+    overstated and a `reachable` settlement mislabelled `detour`. Measured and
+    fixed after the 2026-10-13 audit.
+    """
     keep = ~removed
     u, v = graph.edge_u[keep], graph.edge_v[keep]
     w = graph.edge_len[keep]
     n = max(graph.n_nodes, 1)
+    if len(w):
+        # One entry per undirected node pair, carrying its minimum length.
+        lo = np.minimum(u, v)
+        hi = np.maximum(u, v)
+        order = np.lexsort((w, hi, lo))
+        lo, hi, w = lo[order], hi[order], w[order]
+        first = np.ones(len(w), dtype=bool)
+        first[1:] = (lo[1:] != lo[:-1]) | (hi[1:] != hi[:-1])
+        lo, hi, w = lo[first], hi[first], w[first]
+        u, v = lo, hi
     return coo_matrix((np.concatenate([w, w]),
                        (np.concatenate([u, v]), np.concatenate([v, u]))),
                       shape=(n, n)).tocsr()
@@ -469,7 +492,8 @@ def flood_flat_mask(classes: np.ndarray, grid, extent: ExtentParams | None = Non
 def perturbed_flat_mask(classes: np.ndarray, z_combined: np.ndarray,
                         reliability: np.ndarray | None, z_seed: float,
                         z_delta: float, buffer_px: int, narrow_flooded: np.ndarray | None,
-                        extent: ExtentParams | None = None) -> np.ndarray:
+                        extent: ExtentParams | None = None,
+                        z_grow: float | None = None) -> np.ndarray:
     """One ensemble member's flood extent, as a flat boolean raster.
 
     ANCHORED on the extent the detector actually produced, and moved only where
@@ -477,10 +501,12 @@ def perturbed_flat_mask(classes: np.ndarray, z_combined: np.ndarray,
 
       looser threshold (z_delta < 0)  the extent GROWS to include analysed,
                                      non-permanent ground whose |z| clears the
-                                     lowered threshold;
+                                     lowered SEED threshold;
       stricter threshold (z_delta > 0)  the extent SHRINKS to the pixels of
                                      itself whose |z| still clears the raised
-                                     threshold.
+                                     GROWTH threshold - because growth, not
+                                     seeding, is what admitted the weakest
+                                     pixels in the extent.
 
     Anchoring matters: re-deriving an extent from the change score alone would
     throw away the magnitude gate, the hysteresis, the minimum mapping unit and
@@ -494,6 +520,7 @@ def perturbed_flat_mask(classes: np.ndarray, z_combined: np.ndarray,
     """
     from strandline import damage
 
+    z_grow = DetectParams().z_grow if z_grow is None else z_grow
     base = damage.extent_mask(classes, extent, buffer_px=0)
     if z_delta < 0:
         # Ground the detector analysed and did not call permanent water: the
@@ -503,8 +530,15 @@ def perturbed_flat_mask(classes: np.ndarray, z_combined: np.ndarray,
             louder = candidate & (np.abs(z_combined) >= (z_seed + z_delta))
         mask = base | np.nan_to_num(louder, nan=False).astype(bool)
     elif z_delta > 0:
+        # Against z_GROW, not z_seed. The detector admits a pixel either as a
+        # seed (|z| >= z_seed) or by hysteresis growth from one (|z| >= z_grow),
+        # so the threshold that actually let a base pixel in is the lower of the
+        # two. Comparing against z_seed + delta deleted EVERY grown pixel at
+        # once for any positive delta - a one-sided erosion of ~1.5-2.0 z, not
+        # the +-0.5 z the parameter claims, biasing every published probability
+        # low. Measured by the 2026-10-13 audit.
         with np.errstate(invalid="ignore"):
-            survives = np.abs(z_combined) >= (z_seed + z_delta)
+            survives = np.abs(z_combined) >= (z_grow + z_delta)
         mask = base & np.nan_to_num(survives, nan=False).astype(bool)
     else:
         mask = base.copy()
@@ -574,9 +608,27 @@ class CutoffResult:
     def gate_status(self) -> list:
         return self.status[(CUTOFF_GATE_GRAPH, CUTOFF_GATE_TARGET, CUTOFF_GATE_SCENARIO)]
 
+    def cut_off_indices(self) -> list:
+        """Positions of the cut-off settlements. THE identity for comparison.
+
+        Positions, not names: OSM place names are not unique, and `names` even
+        manufactures duplicates by falling back to "unnamed <place>" for every
+        untagged node. The 2026-10-13 audit measured 15 settlements sharing one
+        name in the Larkana area and 33 collapsed names at Poza Honda, and
+        comparing name SETS silently merged them - which can only turn
+        disagreement into agreement, i.e. it flattered us. Both sides of
+        `eval/cutoff_eval.py` share one `Settlements` object, so a position is
+        an exact, collision-free identity.
+        """
+        return [i for i, s in enumerate(self.gate_status()) if s == STATUS_CUT_OFF]
+
     def cut_off_names(self) -> list:
-        return [n for n, s in zip(self.settlements.names, self.gate_status())
-                if s == STATUS_CUT_OFF]
+        """The same settlements, for DISPLAY only. May contain duplicates."""
+        return [self.settlements.names[i] for i in self.cut_off_indices()]
+
+    def label(self, i: int) -> str:
+        """A human-readable, collision-free label for one settlement."""
+        return f"{i}:{self.settlements.names[i]}"
 
     def report(self) -> dict:
         from collections import Counter
@@ -624,7 +676,7 @@ class CutoffResult:
 
 
 def assess(classes: np.ndarray, z_combined: np.ndarray, reliability: np.ndarray | None,
-           grid, osm_layers: dict, z_seed: float,
+           grid, osm_layers: dict, z_seed: float, z_grow: float | None = None,
            np_: NetworkParams | None = None, mc: MonteCarloParams | None = None,
            dmgp: DamageParams | None = None, extent: ExtentParams | None = None,
            bridges_out_ids: set | None = None, log=print) -> CutoffResult:
@@ -634,6 +686,7 @@ def assess(classes: np.ndarray, z_combined: np.ndarray, reliability: np.ndarray 
     np_ = np_ if np_ is not None else NetworkParams()
     mc = mc if mc is not None else MonteCarloParams()
     dmgp = dmgp if dmgp is not None else DamageParams()
+    z_grow = DetectParams().z_grow if z_grow is None else z_grow
     crs = grid.crs
 
     roads = osm_mod.to_geodataframe(osm_layers.get("roads") or {}, crs)
@@ -715,14 +768,15 @@ def assess(classes: np.ndarray, z_combined: np.ndarray, reliability: np.ndarray 
 
     probability, ensemble = monte_carlo(
         classes, z_combined, reliability, grid, graphs, attached, target_nodes,
-        bridge_out_edge, z_seed, np_, mc, extent, log=log)
+        bridge_out_edge, z_seed, np_, mc, extent, z_grow=z_grow,
+        dmgp_buffer_px=dmgp.buffer_px, log=log)
 
     result = CutoffResult(
         settlements=settlements, graphs=graphs, attached=attached, status=status,
         before_m=before_m, after_m=after_m, probability=probability, n_runs=mc.n_runs,
         target_nodes=target_nodes,
         params={"network": asdict(np_), "monte_carlo": asdict(mc),
-                "damage": asdict(dmgp), "z_seed": z_seed},
+                "damage": asdict(dmgp), "z_seed": z_seed, "z_grow": z_grow},
         targets_found={"health_facilities": int(len(health_xy)),
                        "towns": int(len(town_xy)),
                        "health_reachable_on_vehicle_graph":
@@ -742,6 +796,7 @@ def assess(classes: np.ndarray, z_combined: np.ndarray, reliability: np.ndarray 
 def monte_carlo(classes, z_combined, reliability, grid, graphs, attached, target_nodes,
                 bridge_out_edge, z_seed: float, np_: NetworkParams,
                 mc: MonteCarloParams, extent: ExtentParams | None = None,
+                z_grow: float | None = None, dmgp_buffer_px: int = 1,
                 log=print) -> tuple[np.ndarray, dict]:
     """Share of perturbed runs in which each settlement is cut off.
 
@@ -771,15 +826,24 @@ def monte_carlo(classes, z_combined, reliability, grid, graphs, attached, target
     cut = np.zeros(n_settlements, dtype=np.int64)
     usable = 0
     deltas, buffers = [], []
-    for _ in range(mc.n_runs):
-        delta = float(rng.uniform(lo, hi))
-        buffer_px = int(choices[int(rng.integers(len(choices)))])
+    base_buffer = int(dmgp_buffer_px)
+    for member in range(mc.n_runs):
+        # Member 0 is the UNPERTURBED run: the extent the detector actually
+        # produced, at the shipped buffer. `rng.uniform` is continuous, so
+        # without this the ensemble would contain the real answer with
+        # probability zero while the documentation claimed it did. Measured by
+        # the 2026-10-13 audit.
+        if member == 0:
+            delta, buffer_px = 0.0, base_buffer
+        else:
+            delta = float(rng.uniform(lo, hi))
+            buffer_px = int(choices[int(rng.integers(len(choices)))])
         flips = None
         if n_narrow:
             flips = np.zeros(narrow.shape, dtype=bool)
             flips[narrow] = rng.random(n_narrow) < mc.narrow_valley_flood_probability
         mask = perturbed_flat_mask(classes, z_combined, reliability, z_seed, delta,
-                                   buffer_px, flips, extent)
+                                   buffer_px, flips, extent, z_grow=z_grow)
         flooded = graph.flooded_edges(mask)
         removed = _removed(graph, flooded, scenario, bridge_out_edge[kind])
         after = distance_to_nearest(graph, sources, removed)
@@ -795,6 +859,9 @@ def monte_carlo(classes, z_combined, reliability, grid, graphs, attached, target
         "z_seed_used": z_seed,
         "z_seed_delta_range": [lo, hi],
         "z_seed_delta_mean_drawn": round(float(np.mean(deltas)), 4) if deltas else None,
+        "z_grow_used": z_grow,
+        "unperturbed_member_included": True,
+        "stricter_threshold_compares_against": "z_grow + delta",
         "buffer_px_choices": choices,
         "buffer_px_mean_drawn": round(float(np.mean(buffers)), 4) if buffers else None,
         "narrow_valley_pixels": n_narrow,

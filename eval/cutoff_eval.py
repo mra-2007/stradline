@@ -54,6 +54,7 @@ from eval.damage_eval import gate_plan_events, set_metrics
 from eval.diagnose_errors import latest_loeo, params_from_score
 from eval.fetch_dev_data import EVAL_RUNS, select_events
 from strandline import damage, network, osm
+from validation import compare
 from strandline.config import (
     CUTOFF_GATE_GRAPH,
     CUTOFF_GATE_SCENARIO,
@@ -106,18 +107,34 @@ def save_detail(score: CutoffScore, runs_root: Path | None = None) -> Path | Non
 
 
 def cut_off_set(result, statuses) -> set:
-    """Settlement names cut off, by the gated definition, given a status list."""
-    return {name for name, s in zip(result.settlements.names, statuses)
-            if s == STATUS_CUT_OFF}
+    """Positions of the cut-off settlements. THE identity for the metric.
+
+    Positions, not names. OSM place names are not unique, and `names` even
+    manufactures duplicates by falling back to "unnamed <place>" for every
+    untagged node: the 2026-10-13 audit measured 15 settlements sharing one
+    name in the Larkana area and 33 collapsed names at Poza Honda. Comparing
+    name SETS silently merged them, which can only turn disagreement into
+    agreement - so it flattered us, and it did: Larkana's single true positive
+    was the name "unnamed hamlet", shared by 15 distinct place nodes.
+
+    Both sides share ONE `Settlements` object, built once from our own run, so
+    position i is the same settlement on both sides by construction.
+    """
+    return {i for i, s in enumerate(statuses) if s == STATUS_CUT_OFF}
 
 
-def _statuses_for_extent(result, graph, flat_mask, bridge_out, np_: NetworkParams,
-                         sources) -> list:
-    """Re-run just the routing for one extent, reusing the built graph."""
+def labels(result, indices) -> list:
+    """Human-readable labels for a set of positions. Display only."""
+    return [result.label(i) for i in sorted(indices)]
+
+
+def _routes_for_extent(graph, flat_mask, bridge_out, sources
+                       ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(before, after, removed) for ONE extent, reusing an already-built graph."""
     flooded = graph.flooded_edges(flat_mask)
     removed = network._removed(graph, flooded, CUTOFF_GATE_SCENARIO, bridge_out)
-    none_removed = np.zeros(graph.n_edges, dtype=bool)
-    before = network.distance_to_nearest(graph, sources, none_removed)
+    before = network.distance_to_nearest(graph, sources,
+                                         np.zeros(graph.n_edges, dtype=bool))
     after = network.distance_to_nearest(graph, sources, removed)
     return before, after, removed
 
@@ -153,9 +170,9 @@ def score_event(event: dict, params_hash: str, runs_root: Path,
         # OUR side: the full analysis, which also builds the graphs and the
         # settlements both sides share.
         ours = network.assess(result.classes, result.z_combined, None, grid,
-                              snapshot.layers, z_seed=dp.z_seed, np_=np_, mc=mc,
-                              dmgp=dmgp, extent=ep, log=log)
-        our_set = set(ours.cut_off_names())
+                              snapshot.layers, z_seed=dp.z_seed, z_grow=dp.z_grow,
+                              np_=np_, mc=mc, dmgp=dmgp, extent=ep, log=log)
+        our_set = set(ours.cut_off_indices())
 
         # REFERENCE side: the same graph, the same settlements, the same
         # scenario - only the extent differs. Rasterised through the identical
@@ -172,8 +189,8 @@ def score_event(event: dict, params_hash: str, runs_root: Path,
         # result rather than recomputed: if the two sides could disagree about
         # where the clinics are, part of the F1 would be an artefact of that.
         sources = ours.target_nodes[(CUTOFF_GATE_GRAPH, CUTOFF_GATE_TARGET)]
-        before, after, _removed_edges = _statuses_for_extent(
-            ours, graph, ref_mask, np.zeros(graph.n_edges, dtype=bool), np_, sources)
+        before, after, _removed_edges = _routes_for_extent(
+            graph, ref_mask, np.zeros(graph.n_edges, dtype=bool), sources)
         ref_statuses = network.statuses(before, after, ours.attached[CUTOFF_GATE_GRAPH],
                                         np_.detour_factor)
         ref_set = cut_off_set(ours, ref_statuses)
@@ -192,9 +209,15 @@ def score_event(event: dict, params_hash: str, runs_root: Path,
                                  "destination": CUTOFF_GATE_TARGET,
                                  "scenario": CUTOFF_GATE_SCENARIO},
             "settlements": ours.settlements.report(),
-            "cut_off_ours": sorted(our_set),
-            "cut_off_reference": sorted(ref_set),
+            "cut_off_ours": labels(ours, our_set),
+            "cut_off_reference": labels(ours, ref_set),
+            "cut_off_identity": ("sets are compared by SETTLEMENT POSITION, not by name: "
+                                 "OSM place names are not unique and the labels below may "
+                                 "repeat. Each label is '<position>:<name>'."),
             "metrics": metrics,
+            "reference_credit": compare.REFERENCE_CREDIT,
+            "status_counts": ours.report()["status_counts"],
+            "destinations": ours.targets_found,
             "osm_completeness": {
                 "settlements": len(ours.settlements),
                 "settlements_from_osm_place_nodes":
@@ -330,6 +353,15 @@ def main(argv=None) -> int:
                                   log=lambda *a: print("     ", *a)))
         if scores[-1].error:
             print(f"      FAILED: {scores[-1].error}")
+        elif args.no_write:
+            # --no-write must not rewrite the evidence behind a PUBLISHED row.
+            # An exploratory run (say --mc-runs 1) would otherwise overwrite the
+            # file README.md cites as that row's source, leaving the CSV intact
+            # and the evidence describing a different configuration. Found by
+            # the 2026-10-13 audit, which declined to re-run an event for
+            # exactly this reason.
+            print("       --no-write: evidence file NOT written (it would overwrite the "
+                  "evidence behind a published row)")
         else:
             written = save_detail(scores[-1], args.runs_root)
             if written is not None:

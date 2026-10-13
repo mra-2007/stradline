@@ -218,6 +218,7 @@ def score_event(event: dict, params_hash: str, runs_root: Path,
             "ours": ours.report(),
             "buildings": buildings,
             "roads": roads,
+            "reference_credit": compare.REFERENCE_CREDIT,
             "counts": {
                 "buildings_total": ours.buildings_total,
                 "buildings_flagged_ours": len(b_ours),

@@ -10,7 +10,6 @@ from __future__ import annotations
 import csv
 import json
 
-import pytest
 import yaml
 
 from eval import cutoff_eval
@@ -41,12 +40,44 @@ def test_the_gated_definition_matches_the_one_in_config():
 
 
 def test_the_cut_off_set_uses_only_the_cut_off_status():
-    class R:
-        class settlements:
-            names = ["a", "b", "c"]
+    out = cutoff_eval.cut_off_set(None,
+                                  [STATUS_CUT_OFF, STATUS_REACHABLE, STATUS_CUT_OFF])
+    assert out == {0, 2}, "the set must be POSITIONS, not names"
 
-    out = cutoff_eval.cut_off_set(R, [STATUS_CUT_OFF, STATUS_REACHABLE, STATUS_CUT_OFF])
-    assert out == {"a", "c"}
+
+def test_two_settlements_sharing_a_name_are_never_merged():
+    """Rule 3: the metric must not be flattered by a name collision.
+
+    Comparing NAME sets made this bug invisible: with two settlements both
+    called "unnamed hamlet", one cut off on our side and the other on the
+    reference's, the name sets are identical and F1 comes out 1.0 while the two
+    sides in fact agree about nothing. The 2026-10-13 audit measured 15
+    settlements sharing one name in the Larkana area, and that collision was
+    active in the published row.
+    """
+    ours = [STATUS_CUT_OFF, STATUS_REACHABLE]
+    reference = [STATUS_REACHABLE, STATUS_CUT_OFF]
+    our_set = cutoff_eval.cut_off_set(None, ours)
+    ref_set = cutoff_eval.cut_off_set(None, reference)
+    assert our_set == {0} and ref_set == {1}
+    assert cutoff_eval.set_metrics(our_set, ref_set)["f1"] == 0.0
+
+    # What the old name-based comparison would have produced, for contrast.
+    names = ["unnamed hamlet", "unnamed hamlet"]
+    by_name_ours = {names[i] for i in our_set}
+    by_name_ref = {names[i] for i in ref_set}
+    assert by_name_ours == by_name_ref
+    assert cutoff_eval.set_metrics(by_name_ours, by_name_ref)["f1"] == 1.0
+
+
+def test_labels_are_collision_free_and_carry_the_position():
+    class R:
+        def label(self, i):
+            return f"{i}:unnamed hamlet"
+
+    out = cutoff_eval.labels(R(), {2, 0})
+    assert out == ["0:unnamed hamlet", "2:unnamed hamlet"]
+    assert len(set(out)) == 2
 
 
 # --- rows and the CSV contract ------------------------------------------------

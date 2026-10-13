@@ -655,6 +655,11 @@ SCENARIOS = (SCENARIO_BRIDGES_INTACT, SCENARIO_BRIDGES_FAILED)
 # village is cut off FROM; bridges intact, because it is the conservative
 # scenario and the failed-bridge one is a what-if reported beside it. Every
 # other combination is still computed and written out.
+# Where a settlement is routed TO. Declared here beside the other three
+# vocabularies (GRAPH_KINDS, SETTLEMENT_STATUSES, SCENARIOS) rather than in
+# network.py, so no tunable or vocabulary has a second home (Rule 3.7).
+CUTOFF_TARGETS = ("health", "town")
+
 CUTOFF_GATE_GRAPH = GRAPH_VEHICLE
 CUTOFF_GATE_TARGET = "health"
 CUTOFF_GATE_SCENARIO = SCENARIO_BRIDGES_INTACT

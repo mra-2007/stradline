@@ -548,3 +548,103 @@ def test_implausible_network_parameters_are_refused(kwargs):
 def test_implausible_ensemble_parameters_are_refused(kwargs):
     with pytest.raises(ValueError):
         MonteCarloParams(**kwargs)
+
+
+# --- identity, parallel edges, and the ensemble's two corrected behaviours ----
+
+def test_cut_off_identity_is_position_not_name():
+    """OSM place names are not unique; `names` even manufactures duplicates.
+
+    Two settlements both called "unnamed hamlet" must stay two settlements, or
+    a comparison of name sets would merge them - which can only turn
+    disagreement into agreement. Measured by the 2026-10-13 audit: 15 place
+    nodes share one name in the Larkana area.
+    """
+    collide = fc([Point(200, 1800), Point(1800, 1800)],
+                 [{"@osmId": "node/a", "place": "hamlet"},
+                  {"@osmId": "node/b", "place": "hamlet"}])
+    result = run(links=(1000,), places=collide)
+    assert result.settlements.names == ["unnamed hamlet", "unnamed hamlet"]
+    assert result.cut_off_indices() == [0, 1]
+    assert len(set(result.cut_off_indices())) == 2
+    assert len(set(result.cut_off_names())) == 1, "names collapse; indices must not"
+    assert result.label(0) != result.label(1)
+
+
+def test_parallel_edges_take_the_shortest_not_their_sum():
+    """`coo_matrix.tocsr` ADDS duplicate entries, so two ways between the same
+    junction pair gave 100 + 300 = 400 m where the distance is 100 m. Common in
+    OSM (dual carriageways, service loops) and made commoner by node snapping.
+    Found by the 2026-10-13 audit.
+    """
+    graph = network.RoadGraph(
+        kind="x", nodes=np.array([[0.0, 0.0], [100.0, 0.0]]),
+        edge_u=np.array([0, 0]), edge_v=np.array([1, 1]),
+        edge_len=np.array([100.0, 300.0]), edge_is_bridge=np.zeros(2, dtype=bool),
+        edge_segment_id=["a", "b"], edge_pixels=np.zeros(0, dtype=np.int64),
+        edge_pixel_offsets=np.zeros(3, dtype=np.int64))
+    dist = network.distance_to_nearest(graph, np.array([0]), np.zeros(2, dtype=bool))
+    assert dist[1] == pytest.approx(100.0)
+
+
+def test_a_stricter_threshold_does_not_erase_the_hysteresis_grown_band():
+    """The detector admits pixels down to z_grow, not z_seed.
+
+    Comparing a stricter ensemble threshold against `z_seed + delta` deleted
+    every grown pixel at once for ANY positive delta - a one-sided erosion of
+    ~1.5-2.0 z rather than the +-0.5 z the parameter claims, biasing every
+    published probability low. Measured by the 2026-10-13 audit; the comparison
+    is now against `z_grow + delta`.
+    """
+    classes = classes_with_strip()
+    z = np.where(classes == CLASS_FLOOD_MEDIUM, 2.0, 0.0)   # a grown band: z < z_seed
+    base = network.perturbed_flat_mask(classes, z, None, 3.0, 0.0, 0, None,
+                                       z_grow=1.5)
+    assert base.sum() > 0, "the fixture must have an extent to erode"
+    stricter = network.perturbed_flat_mask(classes, z, None, 3.0, 0.1, 0, None,
+                                           z_grow=1.5)
+    assert stricter.sum() == base.sum(), "a +0.1 z step erased a grown band"
+    # Far enough and it does shrink, which is what the perturbation is for.
+    gone = network.perturbed_flat_mask(classes, z, None, 3.0, 0.6, 0, None, z_grow=1.5)
+    assert gone.sum() == 0
+
+
+def test_the_ensemble_contains_the_unperturbed_run():
+    """`rng.uniform` is continuous, so without an explicit member the ensemble
+    contained the real answer with probability zero - while the documentation
+    claimed it contained it. Member 0 is now the unperturbed extent."""
+    result = run(mc=MonteCarloParams(n_runs=1))
+    assert result.ensemble["unperturbed_member_included"] is True
+    assert result.ensemble["z_seed_delta_mean_drawn"] == 0.0
+    assert result.ensemble["buffer_px_mean_drawn"] == float(DamageParams().buffer_px)
+    # With one member, the probability is exactly the deterministic status.
+    gate = result.gate_status()
+    for i, status in enumerate(gate):
+        assert result.probability[i] == (1.0 if status == STATUS_CUT_OFF else 0.0)
+
+
+def test_every_pixel_an_edge_touches_is_counted_not_merely_sampled():
+    """Half-pixel point sampling skipped cells a segment genuinely crossed
+    (6,471 of 20,000 random short segments, per the 2026-10-13 audit), so a
+    road clipping the flood thinly was called dry. The rasterisation is now a
+    supercover and must agree with a geometry intersection exactly.
+    """
+    from shapely.geometry import box as shbox
+
+    rng = np.random.default_rng(0)
+    for _ in range(40):
+        p0 = rng.uniform(100, 1900, size=2)
+        p1 = p0 + rng.uniform(-80, 80, size=2)
+        line = LineString([tuple(p0), tuple(p1)])
+        if line.length <= 0:
+            continue
+        flat = network._sample_pixels(line, GRID)
+        got = {(int(f) // N, int(f) % N) for f in flat}
+        truth = set()
+        for row in range(N):
+            for col in range(N):
+                cell = shbox(col * RES, (N - row - 1) * RES,
+                             (col + 1) * RES, (N - row) * RES)
+                if line.intersects(cell) and not line.touches(cell):
+                    truth.add((row, col))
+        assert truth <= got, f"missed {sorted(truth - got)} for {line.wkt}"

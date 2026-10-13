@@ -530,7 +530,8 @@ def cutoff_stage(scene: PreparedScene, result: detect.DetectionResult,
                  rel_codes, out: Path, snapshot, assessment,
                  dp: DetectParams, npar: NetworkParams | None,
                  mc: MonteCarloParams | None, dmgp: DamageParams | None,
-                 ep: ExtentParams | None = None, log=print) -> tuple[object | None, dict]:
+                 ep: ExtentParams | None = None, osm_message: str | None = None,
+                 log=print) -> tuple[object | None, dict]:
     """Who is cut off. NEVER raises, for the `damage_stage` reasons.
 
     Needs the OSM snapshot the damage stage already read, so it runs after it
@@ -538,10 +539,16 @@ def cutoff_stage(scene: PreparedScene, result: detect.DetectionResult,
     never as "nobody is cut off".
     """
     if snapshot is None:
-        return None, {"status": OSM_DISABLED,
-                      "message": ("no OpenStreetMap snapshot for this run, so no road "
-                                  "network and no cut-off answer. This is NOT a finding "
-                                  "that nobody is isolated.")}
+        # WHY there is no snapshot matters to whoever reads this: "the user
+        # passed --no-damage" and "ohsome refused us" are different facts and
+        # used to arrive as the same `disabled`. The reason is passed in.
+        return None, {
+            "status": OSM_REFUSED if osm_message else OSM_DISABLED,
+            "cutoff_available": False,
+            "message": (f"no OpenStreetMap snapshot for this run, so no road network and "
+                        f"no cut-off answer. This is NOT a finding that nobody is "
+                        f"isolated. Reason: {osm_message}" if osm_message else
+                        "the cut-off analysis was not requested (--no-damage)")}
     bridges_out = None
     if assessment is not None:
         layer = assessment.layers.get("bridges_out")
@@ -550,7 +557,7 @@ def cutoff_stage(scene: PreparedScene, result: detect.DetectionResult,
     try:
         cutoff = network.assess(
             result.classes, result.z_combined, rel_codes, scene.grid, snapshot.layers,
-            z_seed=dp.z_seed, np_=npar, mc=mc, dmgp=dmgp, extent=ep,
+            z_seed=dp.z_seed, z_grow=dp.z_grow, np_=npar, mc=mc, dmgp=dmgp, extent=ep,
             bridges_out_ids=bridges_out, log=log)
         network.write_layers(out, cutoff, scene.grid, log=log)
     except network.NetworkError as err:
@@ -616,7 +623,10 @@ def write(out: Path, scene: PreparedScene, result: detect.DetectionResult, bbox,
         assessment = None
     _cutoff, cutoff_report = cutoff_stage(
         scene, result, rel.codes if rel is not None else None, out, snapshot,
-        assessment, dp, npar, mc, dmgp, ep, log=log)
+        assessment, dp, npar, mc, dmgp, ep,
+        osm_message=(report["damage"].get("message")
+                     if report["damage"].get("status") == OSM_REFUSED else None),
+        log=log)
     report["cutoff"] = cutoff_report
     outputs.write_report(out / "run_report.json", report)
     return report

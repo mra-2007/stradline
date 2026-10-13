@@ -307,9 +307,13 @@ written to `settlements.geojson`.
 **The probability** is 200 perturbed runs at a fixed seed: the cached change-score threshold moved
 by ±0.5 z (one `std_floor_db` of z-score), the road buffer drawn from 0/1/2 px, and every
 low-confidence narrow-valley pixel counted as flooded on a coin flip. Each member is **anchored on
-the extent the detector actually produced** and moved only where the change score justifies it, so
-at zero perturbation it reproduces the real map exactly — an ensemble that did not contain the real
-answer could not say how stable the real answer is.
+the extent the detector actually produced** and moved only where the change score justifies it, and
+**member 0 is the unperturbed run**, so the ensemble demonstrably contains the real answer rather
+than containing it with probability zero (`rng.uniform` is continuous — a 2026-10-13 audit finding).
+A *stricter* threshold is compared against `z_grow + delta`, not `z_seed + delta`, because hysteresis
+growth is what admitted the weakest pixels in the extent; comparing against the seed deleted every
+grown pixel at once for any positive delta, which was a one-sided erosion of ~1.5–2.0 z rather than
+the ±0.5 z the parameter claims, and biased every probability low.
 
 > **The probability is a SENSITIVITY measure, not a calibrated chance.** It is the share of the
 > ensemble in which a settlement comes out cut off. Nothing here has been validated against observed
@@ -489,7 +493,7 @@ Poza Honda 0.0048. Coverage: 6/6 gate-eligible floods, 4 of 8 declared controls.
 | `no_flood_controls` max false flood | 0.0048 | ≤ 0.01 | **PASS** |
 | `damage_overlay` mean building F1 | 0.1808 | ≥ 0.90 | **FAIL** |
 | `damage_overlay` mean road segment F1 | 0.3995 | ≥ 0.90 | **FAIL** |
-| `cutoff_analysis` mean settlement F1 | 0.3134 | ≥ 0.90 | **FAIL** |
+| `cutoff_analysis` mean settlement F1 | 0.3683 | ≥ 0.90 | **FAIL** |
 | `cutoff_analysis` worst single event | 0.0000 | ≥ 0.80 | **FAIL** |
 
 Damage rows: `eval/results/damage.csv`, run `20261013T123135Z`, all six gate flood events, with the
@@ -512,18 +516,26 @@ its bbox plus buffer, against 17,718–76,814 elsewhere, so its building F1 is 0
 better flood maps in the set. Full per-event evidence, the three root causes and three options are
 in `docs/open_items.md`.
 
-Cut-off rows: `eval/results/cutoff.csv`, run `20261013T152246Z`, all six gate flood events, with
+Cut-off rows: `eval/results/cutoff.csv`, run `20261013T165631Z`, all six gate flood events, with
 per-event evidence in `runs/eval/<event>/scores/cutoff_<params_hash>.json`. **Like the damage
 numbers, these are not a measurement of whether anybody was really cut off** — nobody was visited,
 and both sides are inferences from a flood polygon over the same OSM road network.
 
-**The cut-off analysis inherits the flood extent most tightly of all:** settlement F1 tracks flood
-tolerant F1 at Spearman **0.93** (n = 6). Ringebu, the best flood map, scores 0.8421; the two gorge
-events score exactly 0.0000. Two further causes are in `docs/open_items.md`: set-F1 over cut-off sets
-of 0–22 settlements out of 424–1102 is brutally high-variance (at Punakha we name 5 and the reference
-names 7 with **zero** overlap), and **severing a road is stricter than overlapping it** — Ecuador has
-a mid-range flood map and cuts off nobody against the reference's 14, because a fragmented extent can
-leave a dry path through every crossing.
+An earlier run (`20261013T152246Z`, superseded and kept, since `eval/results/` is append-only)
+published 0.3134 using a metric that compared settlement **names**. Names are not unique — 15 OSM
+place nodes share `"unnamed hamlet"` in the Larkana area — so the 2026-10-13 audit required the
+comparison to be by settlement **position**. That correction moved the mean **up**, to 0.3683,
+because the name collapse had been shrinking *both* sides' sets; `docs/open_items.md` sets out why
+the correction was forced by an argument independent of its direction.
+
+**The cut-off analysis inherits the flood extent:** settlement F1 tracks flood tolerant F1 at
+Spearman **0.8804** (n = 6, p = 0.021). Ringebu and Larkana, the two best flood maps, give the two
+best cut-off scores (0.9000 and 0.9474); the two gorge events score exactly 0.0000. Two further
+causes are in `docs/open_items.md`: set-F1 over cut-off sets of 0–22 settlements out of 47–1102 is
+high-variance in both directions (at Punakha we name 5 and the reference names 7 with **zero**
+overlap), and **severing a road is stricter than overlapping it** — Ecuador has a mid-range flood map
+and cuts off nobody against the reference's 14, because a fragmented extent can leave a dry path
+through every crossing.
 
 **Module status: `flood_mapping` FAIL, `no_flood_controls` PASS, `damage_overlay` FAIL,
 `cutoff_analysis` FAIL.** By the definition of done in

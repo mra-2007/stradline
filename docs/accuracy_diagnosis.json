@@ -1,0 +1,2022 @@
+{
+  "run_id": "20261012T165259Z",
+  "tolerance_px": 1,
+  "config_mismatches": [
+    {
+      "key": "detect.z_seed",
+      "shipped_default": 3.0,
+      "scored": [
+        {
+          "value": 2.5,
+          "events": [
+            "ecuador_poza_honda_2025"
+          ]
+        },
+        {
+          "value": 3.5,
+          "events": [
+            "pakistan_larkana_2022"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "run.n_pre",
+      "shipped_default": 5,
+      "scored": [
+        {
+          "value": 3,
+          "events": [
+            "bhutan_punakha_2024",
+            "bhutan_punakha_control_2024",
+            "bosnia_konjic_2024",
+            "bosnia_konjic_control_2024",
+            "ecuador_poza_honda_2025",
+            "ecuador_poza_honda_control_2024",
+            "norway_ringebu_2023",
+            "norway_ringebu_control_2023",
+            "norway_selsverket_2023",
+            "pakistan_larkana_2022"
+          ]
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "event": "bhutan_punakha_2024",
+      "kind": "flood",
+      "params_hash": "0550873e7ea6",
+      "facts": {
+        "bbox": [
+          89.55,
+          27.4,
+          89.95,
+          27.7
+        ],
+        "event_date": "2024-08-10",
+        "mode": "rough_water",
+        "grid": "2013 x 1707 px at 20 m, EPSG:32645",
+        "post_day": "2024-08-11",
+        "post_latency_days": 1,
+        "track": "150 DESCENDING",
+        "n_pre": 3,
+        "pre_days": [
+          "2024-05-31",
+          "2024-06-12",
+          "2024-06-24"
+        ],
+        "domain_pixels": 3436190,
+        "analysed_pixels": 173875,
+        "analysed_fraction": 0.0506,
+        "water_threshold_db": -15.0,
+        "water_threshold_clamped": "high",
+        "optical": {
+          "status": "used",
+          "fusion": "union",
+          "clear_fraction_pair": 0.5371,
+          "post_day": "2024-08-16",
+          "post_latency_days": 6,
+          "message": null
+        },
+        "predicted_flood_ha": 35.28,
+        "permanent_water_ha": 181.84,
+        "river_width": {
+          "status": "measured",
+          "pixels": 4546,
+          "axis_pixels": 1676,
+          "median_width_px": 2.0,
+          "p10_width_px": 2.0,
+          "p90_width_px": 6.0
+        },
+        "reference_sensor": "JAXA ALOS-2 PALSAR-2, L-band SAR, acquired 2024-08-15 05:59 UTC (+5 d). INDEPENDENT of our Sentinel-1 C-band input.",
+        "reference_source": "Sentinel Asia emergency observation FL-2024-000140-BTN (flood and landslide in Bhutan, 10 Aug 2024, requested by NCHM Bhutan). Activation: https://sentinel-asia.org/EO/2024/article20240810BT.html",
+        "orbits": {
+          "directions_with_a_usable_pair": [
+            "ASCENDING",
+            "DESCENDING"
+          ],
+          "by_direction": {
+            "ASCENDING": {
+              "usable": true,
+              "n_tracks": 1,
+              "best": {
+                "relative_orbit": 114,
+                "post_day": "2024-08-21",
+                "post_latency_days": 11,
+                "n_pre": 3
+              },
+              "why": [
+                "track 114 ASCENDING: post 2024-08-21 (+11 d), 3 pre images 2024-07-16..2024-08-09 -> OK"
+              ]
+            },
+            "DESCENDING": {
+              "usable": true,
+              "n_tracks": 2,
+              "best": {
+                "relative_orbit": 150,
+                "post_day": "2024-08-11",
+                "post_latency_days": 1,
+                "n_pre": 3
+              },
+              "why": [
+                "track 48 DESCENDING: no full-coverage post-event image within 12 days -> skipped",
+                "track 150 DESCENDING: post 2024-08-11 (+1 d), 3 pre images 2024-05-31..2024-06-24 -> OK"
+              ]
+            }
+          }
+        }
+      },
+      "misses": {
+        "reference_pixels": 783,
+        "reference_ha": 31.32,
+        "missed_pixels": 712,
+        "by_cause": {
+          "not analysed: no data": 0,
+          "not analysed: terrain excluded": 115,
+          "rule: already permanent water": 94,
+          "rule: debris, not flood extent": 0,
+          "rule: HAND/slope above the water zone": 182,
+          "no change signal (|z| < z_seed in both polarisations)": 224,
+          "rule: magnitude or polarisation-agreement gate": 93,
+          "rule: hysteresis, no connected seed": 0,
+          "rule: minimum mapping unit": 4,
+          "rule: drainage connection": 0,
+          "unexplained": 0
+        },
+        "by_cause_share": {
+          "not analysed: no data": 0.0,
+          "not analysed: terrain excluded": 0.1615,
+          "rule: already permanent water": 0.132,
+          "rule: debris, not flood extent": 0.0,
+          "rule: HAND/slope above the water zone": 0.2556,
+          "no change signal (|z| < z_seed in both polarisations)": 0.3146,
+          "rule: magnitude or polarisation-agreement gate": 0.1306,
+          "rule: hysteresis, no connected seed": 0.0,
+          "rule: minimum mapping unit": 0.0056,
+          "rule: drainage connection": 0.0,
+          "unexplained": 0.0
+        },
+        "subdiagnostics": {
+          "no_signal_pixels": 224,
+          "no_signal_but_a_coherent_growable_change": 1,
+          "no_signal_and_no_qualifying_change_at_all": 223,
+          "gate_pixels": 93,
+          "gate_blocked_by_vh_alone": 17,
+          "gate_blocked_by_vv_alone": 21,
+          "gate_blocked_by_both_too_small": 54,
+          "gate_blocked_by_sign_disagreement": 0,
+          "gate_blocked_by_weak_z_only": 1
+        }
+      },
+      "false_alarms": {
+        "total_pixels": 811,
+        "by_place": {
+          "permanent-water shore": 194,
+          "channel corridor": 282,
+          "flat ground away from the channel": 255,
+          "sloping ground": 80,
+          "other analysed ground": 0
+        },
+        "by_place_share": {
+          "permanent-water shore": 0.2392,
+          "channel corridor": 0.3477,
+          "flat ground away from the channel": 0.3144,
+          "sloping ground": 0.0986,
+          "other analysed ground": 0.0
+        },
+        "rules": {
+          "pixels": 811,
+          "sar_only": 532,
+          "optical_contributed": 279,
+          "high_confidence": 409,
+          "debris_class": 0,
+          "brightened": 215,
+          "darkened": 596
+        }
+      },
+      "boundary": {
+        "tp": 71,
+        "fp": 811,
+        "fn": 712,
+        "fp_within_1px": 0.0358,
+        "fp_within_3px": 0.0999,
+        "fp_beyond_3px": 0.9001,
+        "fn_within_1px": 0.0478,
+        "fn_within_3px": 0.1039,
+        "fn_beyond_3px": 0.8961,
+        "errors_within_1px_of_a_correct_detection": 0.0414,
+        "errors_within_3px_of_a_correct_detection": 0.1018
+      },
+      "shift": {
+        "f1_at_zero_shift": 0.0853,
+        "best": {
+          "dy": -2,
+          "dx": -2,
+          "f1": 0.1057
+        },
+        "gain_from_best_shift": 0.0204
+      },
+      "bounds": {
+        "baseline_f1_tolerant": 0.1356,
+        "if_fixed": {
+          "recover not analysed: terrain excluded": {
+            "pixels": 115,
+            "f1_tolerant": 0.2578,
+            "gain": 0.1222
+          },
+          "recover rule: already permanent water": {
+            "pixels": 94,
+            "f1_tolerant": 0.2565,
+            "gain": 0.1209
+          },
+          "recover rule: HAND/slope above the water zone": {
+            "pixels": 182,
+            "f1_tolerant": 0.327,
+            "gain": 0.1914
+          },
+          "recover no change signal (|z| < z_seed in both polarisations)": {
+            "pixels": 224,
+            "f1_tolerant": 0.3917,
+            "gain": 0.2561
+          },
+          "recover rule: magnitude or polarisation-agreement gate": {
+            "pixels": 93,
+            "f1_tolerant": 0.2731,
+            "gain": 0.1375
+          },
+          "recover rule: minimum mapping unit": {
+            "pixels": 4,
+            "f1_tolerant": 0.1442,
+            "gain": 0.0086
+          },
+          "remove false alarms: permanent-water shore": {
+            "pixels": 194,
+            "f1_tolerant": 0.1469,
+            "gain": 0.0113
+          },
+          "remove false alarms: channel corridor": {
+            "pixels": 282,
+            "f1_tolerant": 0.1569,
+            "gain": 0.0213
+          },
+          "remove false alarms: flat ground away from the channel": {
+            "pixels": 255,
+            "f1_tolerant": 0.1515,
+            "gain": 0.0159
+          },
+          "remove false alarms: sloping ground": {
+            "pixels": 80,
+            "f1_tolerant": 0.137,
+            "gain": 0.0014
+          }
+        }
+      },
+      "metrics": {
+        "precision": 0.0805,
+        "recall": 0.0907,
+        "f1": 0.0853,
+        "iou": 0.0445,
+        "precision_tolerant": 0.1259,
+        "recall_tolerant": 0.1469,
+        "f1_tolerant": 0.1356
+      },
+      "error": null
+    },
+    {
+      "event": "bosnia_konjic_2024",
+      "kind": "flood",
+      "params_hash": "0550873e7ea6",
+      "facts": {
+        "bbox": [
+          17.676,
+          43.6366,
+          17.9802,
+          43.7437
+        ],
+        "event_date": "2024-10-04",
+        "mode": "rough_water",
+        "grid": "1247 x 638 px at 20 m, EPSG:32633",
+        "post_day": "2024-10-05",
+        "post_latency_days": 1,
+        "track": "73 ASCENDING",
+        "n_pre": 3,
+        "pre_days": [
+          "2024-08-30",
+          "2024-09-11",
+          "2024-09-23"
+        ],
+        "domain_pixels": 795567,
+        "analysed_pixels": 87516,
+        "analysed_fraction": 0.11,
+        "water_threshold_db": -15.0,
+        "water_threshold_clamped": "high",
+        "optical": {
+          "status": "used",
+          "fusion": "union",
+          "clear_fraction_pair": 0.8806,
+          "post_day": "2024-10-23",
+          "post_latency_days": 19,
+          "message": null
+        },
+        "predicted_flood_ha": 41.56,
+        "permanent_water_ha": 962.76,
+        "river_width": {
+          "status": "measured",
+          "pixels": 24069,
+          "axis_pixels": 3854,
+          "median_width_px": 7.21,
+          "p10_width_px": 2.0,
+          "p90_width_px": 22.09
+        },
+        "reference_sensor": "SPOT-6/7, optical, acquired 2024-10-07 09:34 UTC (+3.4 d). INDEPENDENT of our Sentinel-1 input.",
+        "reference_source": "Copernicus EMS EMSR770 AOI01 Konjic, delineation monitoring 1. Activation: https://mapping.emergency.copernicus.eu/activations/EMSR770/",
+        "orbits": {
+          "directions_with_a_usable_pair": [
+            "ASCENDING",
+            "DESCENDING"
+          ],
+          "by_direction": {
+            "ASCENDING": {
+              "usable": true,
+              "n_tracks": 2,
+              "best": {
+                "relative_orbit": 73,
+                "post_day": "2024-10-05",
+                "post_latency_days": 1,
+                "n_pre": 3
+              },
+              "why": [
+                "track 73 ASCENDING: post 2024-10-05 (+1 d), 3 pre images 2024-08-30..2024-09-23 -> OK",
+                "track 146 ASCENDING: no full-coverage post-event image within 12 days -> skipped"
+              ]
+            },
+            "DESCENDING": {
+              "usable": true,
+              "n_tracks": 2,
+              "best": {
+                "relative_orbit": 51,
+                "post_day": "2024-10-16",
+                "post_latency_days": 12,
+                "n_pre": 3
+              },
+              "why": [
+                "track 51 DESCENDING: post 2024-10-16 (+12 d), 3 pre images 2024-08-29..2024-09-22 -> OK",
+                "track 124 DESCENDING: no full-coverage post-event image within 12 days -> skipped"
+              ]
+            }
+          }
+        }
+      },
+      "misses": {
+        "reference_pixels": 1064,
+        "reference_ha": 42.56,
+        "missed_pixels": 1024,
+        "by_cause": {
+          "not analysed: no data": 0,
+          "not analysed: terrain excluded": 98,
+          "rule: already permanent water": 0,
+          "rule: debris, not flood extent": 0,
+          "rule: HAND/slope above the water zone": 117,
+          "no change signal (|z| < z_seed in both polarisations)": 428,
+          "rule: magnitude or polarisation-agreement gate": 362,
+          "rule: hysteresis, no connected seed": 0,
+          "rule: minimum mapping unit": 15,
+          "rule: drainage connection": 4,
+          "unexplained": 0
+        },
+        "by_cause_share": {
+          "not analysed: no data": 0.0,
+          "not analysed: terrain excluded": 0.0957,
+          "rule: already permanent water": 0.0,
+          "rule: debris, not flood extent": 0.0,
+          "rule: HAND/slope above the water zone": 0.1143,
+          "no change signal (|z| < z_seed in both polarisations)": 0.418,
+          "rule: magnitude or polarisation-agreement gate": 0.3535,
+          "rule: hysteresis, no connected seed": 0.0,
+          "rule: minimum mapping unit": 0.0146,
+          "rule: drainage connection": 0.0039,
+          "unexplained": 0.0
+        },
+        "subdiagnostics": {
+          "no_signal_pixels": 428,
+          "no_signal_but_a_coherent_growable_change": 0,
+          "no_signal_and_no_qualifying_change_at_all": 428,
+          "gate_pixels": 362,
+          "gate_blocked_by_vh_alone": 89,
+          "gate_blocked_by_vv_alone": 71,
+          "gate_blocked_by_both_too_small": 200,
+          "gate_blocked_by_sign_disagreement": 1,
+          "gate_blocked_by_weak_z_only": 1
+        }
+      },
+      "false_alarms": {
+        "total_pixels": 999,
+        "by_place": {
+          "permanent-water shore": 411,
+          "channel corridor": 159,
+          "flat ground away from the channel": 377,
+          "sloping ground": 52,
+          "other analysed ground": 0
+        },
+        "by_place_share": {
+          "permanent-water shore": 0.4114,
+          "channel corridor": 0.1592,
+          "flat ground away from the channel": 0.3774,
+          "sloping ground": 0.0521,
+          "other analysed ground": 0.0
+        },
+        "rules": {
+          "pixels": 999,
+          "sar_only": 809,
+          "optical_contributed": 190,
+          "high_confidence": 7,
+          "debris_class": 0,
+          "brightened": 953,
+          "darkened": 46
+        }
+      },
+      "boundary": {
+        "tp": 40,
+        "fp": 999,
+        "fn": 1024,
+        "fp_within_1px": 0.014,
+        "fp_within_3px": 0.042,
+        "fp_beyond_3px": 0.958,
+        "fn_within_1px": 0.0391,
+        "fn_within_3px": 0.1123,
+        "fn_beyond_3px": 0.8877,
+        "errors_within_1px_of_a_correct_detection": 0.0267,
+        "errors_within_3px_of_a_correct_detection": 0.0776
+      },
+      "shift": {
+        "f1_at_zero_shift": 0.038,
+        "best": {
+          "dy": 1,
+          "dx": 3,
+          "f1": 0.0562
+        },
+        "gain_from_best_shift": 0.0182
+      },
+      "bounds": {
+        "baseline_f1_tolerant": 0.0798,
+        "if_fixed": {
+          "recover not analysed: terrain excluded": {
+            "pixels": 98,
+            "f1_tolerant": 0.1697,
+            "gain": 0.0899
+          },
+          "recover rule: HAND/slope above the water zone": {
+            "pixels": 117,
+            "f1_tolerant": 0.2036,
+            "gain": 0.1238
+          },
+          "recover no change signal (|z| < z_seed in both polarisations)": {
+            "pixels": 428,
+            "f1_tolerant": 0.4663,
+            "gain": 0.3865
+          },
+          "recover rule: magnitude or polarisation-agreement gate": {
+            "pixels": 362,
+            "f1_tolerant": 0.4313,
+            "gain": 0.3515
+          },
+          "recover rule: minimum mapping unit": {
+            "pixels": 15,
+            "f1_tolerant": 0.1105,
+            "gain": 0.0307
+          },
+          "recover rule: drainage connection": {
+            "pixels": 4,
+            "f1_tolerant": 0.0856,
+            "gain": 0.0058
+          },
+          "remove false alarms: permanent-water shore": {
+            "pixels": 411,
+            "f1_tolerant": 0.1041,
+            "gain": 0.0243
+          },
+          "remove false alarms: channel corridor": {
+            "pixels": 159,
+            "f1_tolerant": 0.0674,
+            "gain": -0.0124
+          },
+          "remove false alarms: flat ground away from the channel": {
+            "pixels": 377,
+            "f1_tolerant": 0.0963,
+            "gain": 0.0165
+          },
+          "remove false alarms: sloping ground": {
+            "pixels": 52,
+            "f1_tolerant": 0.0815,
+            "gain": 0.0017
+          }
+        }
+      },
+      "metrics": {
+        "precision": 0.0385,
+        "recall": 0.0376,
+        "f1": 0.038,
+        "iou": 0.0194,
+        "precision_tolerant": 0.0674,
+        "recall_tolerant": 0.0977,
+        "f1_tolerant": 0.0798
+      },
+      "error": null
+    },
+    {
+      "event": "ecuador_poza_honda_2025",
+      "kind": "flood",
+      "params_hash": "d46da9ccd649",
+      "facts": {
+        "bbox": [
+          -80.4543,
+          -1.2269,
+          -80.1045,
+          -1.077
+        ],
+        "event_date": "2025-02-26",
+        "mode": "rough_water",
+        "grid": "1947 x 830 px at 20 m, EPSG:32717",
+        "post_day": "2025-03-06",
+        "post_latency_days": 8,
+        "track": "18 ASCENDING",
+        "n_pre": 3,
+        "pre_days": [
+          "2025-01-29",
+          "2025-02-10",
+          "2025-02-22"
+        ],
+        "domain_pixels": 1616008,
+        "analysed_pixels": 475631,
+        "analysed_fraction": 0.2943,
+        "water_threshold_db": -15.0,
+        "water_threshold_clamped": "high",
+        "optical": {
+          "status": "refused",
+          "fusion": "union",
+          "clear_fraction_pair": null,
+          "post_day": null,
+          "post_latency_days": null,
+          "message": "only 17.1% of the area is clear on BOTH Sentinel-2 dates (33.2% pre, 42.9% post), below the 20% minimum. Refusing to use optical evidence from so little of the area; the run continues with radar only."
+        },
+        "predicted_flood_ha": 178.56,
+        "permanent_water_ha": 115.04,
+        "river_width": {
+          "status": "measured",
+          "pixels": 2876,
+          "axis_pixels": 621,
+          "median_width_px": 4.47,
+          "p10_width_px": 2.0,
+          "p90_width_px": 15.62
+        },
+        "reference_sensor": "COSMO-SkyMed Second Generation, X-band SAR (Italian), acquired +4 d. INDEPENDENT of our Sentinel-1 C-band input.",
+        "reference_source": "Copernicus EMS EMSR789 AOI05 Poza Honda dam, delineation product v1 (riverine flood and landslides, western Ecuador, 26 Feb 2025). Activation: https://mapping.emergency.copernicus.eu/activations/EMSR789/",
+        "orbits": {
+          "directions_with_a_usable_pair": [
+            "ASCENDING",
+            "DESCENDING"
+          ],
+          "by_direction": {
+            "ASCENDING": {
+              "usable": true,
+              "n_tracks": 2,
+              "best": {
+                "relative_orbit": 18,
+                "post_day": "2025-03-06",
+                "post_latency_days": 8,
+                "n_pre": 3
+              },
+              "why": [
+                "track 18 ASCENDING: post 2025-03-06 (+8 d), 3 pre images 2025-01-29..2025-02-22 -> OK",
+                "track 91 ASCENDING: no full-coverage post-event image within 12 days -> skipped"
+              ]
+            },
+            "DESCENDING": {
+              "usable": true,
+              "n_tracks": 1,
+              "best": {
+                "relative_orbit": 40,
+                "post_day": "2025-03-08",
+                "post_latency_days": 10,
+                "n_pre": 3
+              },
+              "why": [
+                "track 40 DESCENDING: post 2025-03-08 (+10 d), 3 pre images 2025-01-31..2025-02-24 -> OK"
+              ]
+            }
+          }
+        }
+      },
+      "misses": {
+        "reference_pixels": 4941,
+        "reference_ha": 197.64,
+        "missed_pixels": 3012,
+        "by_cause": {
+          "not analysed: no data": 0,
+          "not analysed: terrain excluded": 8,
+          "rule: already permanent water": 1,
+          "rule: debris, not flood extent": 0,
+          "rule: HAND/slope above the water zone": 19,
+          "no change signal (|z| < z_seed in both polarisations)": 1157,
+          "rule: magnitude or polarisation-agreement gate": 1243,
+          "rule: hysteresis, no connected seed": 0,
+          "rule: minimum mapping unit": 35,
+          "rule: drainage connection": 549,
+          "unexplained": 0
+        },
+        "by_cause_share": {
+          "not analysed: no data": 0.0,
+          "not analysed: terrain excluded": 0.0027,
+          "rule: already permanent water": 0.0003,
+          "rule: debris, not flood extent": 0.0,
+          "rule: HAND/slope above the water zone": 0.0063,
+          "no change signal (|z| < z_seed in both polarisations)": 0.3841,
+          "rule: magnitude or polarisation-agreement gate": 0.4127,
+          "rule: hysteresis, no connected seed": 0.0,
+          "rule: minimum mapping unit": 0.0116,
+          "rule: drainage connection": 0.1823,
+          "unexplained": 0.0
+        },
+        "subdiagnostics": {
+          "no_signal_pixels": 1157,
+          "no_signal_but_a_coherent_growable_change": 92,
+          "no_signal_and_no_qualifying_change_at_all": 1065,
+          "gate_pixels": 1243,
+          "gate_blocked_by_vh_alone": 354,
+          "gate_blocked_by_vv_alone": 331,
+          "gate_blocked_by_both_too_small": 421,
+          "gate_blocked_by_sign_disagreement": 1,
+          "gate_blocked_by_weak_z_only": 136
+        }
+      },
+      "false_alarms": {
+        "total_pixels": 2535,
+        "by_place": {
+          "permanent-water shore": 286,
+          "channel corridor": 1185,
+          "flat ground away from the channel": 1003,
+          "sloping ground": 61,
+          "other analysed ground": 0
+        },
+        "by_place_share": {
+          "permanent-water shore": 0.1128,
+          "channel corridor": 0.4675,
+          "flat ground away from the channel": 0.3957,
+          "sloping ground": 0.0241,
+          "other analysed ground": 0.0
+        },
+        "rules": {
+          "pixels": 2535,
+          "sar_only": 2535,
+          "optical_contributed": 0,
+          "high_confidence": 713,
+          "debris_class": 0,
+          "brightened": 381,
+          "darkened": 2154
+        }
+      },
+      "boundary": {
+        "tp": 1929,
+        "fp": 2535,
+        "fn": 3012,
+        "fp_within_1px": 0.2043,
+        "fp_within_3px": 0.2923,
+        "fp_beyond_3px": 0.7077,
+        "fn_within_1px": 0.171,
+        "fn_within_3px": 0.2898,
+        "fn_beyond_3px": 0.7102,
+        "errors_within_1px_of_a_correct_detection": 0.1862,
+        "errors_within_3px_of_a_correct_detection": 0.291
+      },
+      "shift": {
+        "f1_at_zero_shift": 0.4102,
+        "best": {
+          "dy": 0,
+          "dx": 1,
+          "f1": 0.4494
+        },
+        "gain_from_best_shift": 0.0392
+      },
+      "bounds": {
+        "baseline_f1_tolerant": 0.5553,
+        "if_fixed": {
+          "recover not analysed: terrain excluded": {
+            "pixels": 8,
+            "f1_tolerant": 0.557,
+            "gain": 0.0017
+          },
+          "recover rule: already permanent water": {
+            "pixels": 1,
+            "f1_tolerant": 0.5559,
+            "gain": 0.0006
+          },
+          "recover rule: HAND/slope above the water zone": {
+            "pixels": 19,
+            "f1_tolerant": 0.5595,
+            "gain": 0.0042
+          },
+          "recover no change signal (|z| < z_seed in both polarisations)": {
+            "pixels": 1157,
+            "f1_tolerant": 0.7378,
+            "gain": 0.1825
+          },
+          "recover rule: magnitude or polarisation-agreement gate": {
+            "pixels": 1243,
+            "f1_tolerant": 0.7666,
+            "gain": 0.2113
+          },
+          "recover rule: minimum mapping unit": {
+            "pixels": 35,
+            "f1_tolerant": 0.5705,
+            "gain": 0.0152
+          },
+          "recover rule: drainage connection": {
+            "pixels": 549,
+            "f1_tolerant": 0.6729,
+            "gain": 0.1176
+          },
+          "remove false alarms: permanent-water shore": {
+            "pixels": 286,
+            "f1_tolerant": 0.5729,
+            "gain": 0.0176
+          },
+          "remove false alarms: channel corridor": {
+            "pixels": 1185,
+            "f1_tolerant": 0.594,
+            "gain": 0.0387
+          },
+          "remove false alarms: flat ground away from the channel": {
+            "pixels": 1003,
+            "f1_tolerant": 0.5897,
+            "gain": 0.0344
+          },
+          "remove false alarms: sloping ground": {
+            "pixels": 61,
+            "f1_tolerant": 0.5564,
+            "gain": 0.0011
+          }
+        }
+      },
+      "metrics": {
+        "precision": 0.4321,
+        "recall": 0.3904,
+        "f1": 0.4102,
+        "iou": 0.258,
+        "precision_tolerant": 0.5789,
+        "recall_tolerant": 0.5335,
+        "f1_tolerant": 0.5553
+      },
+      "error": null
+    },
+    {
+      "event": "norway_ringebu_2023",
+      "kind": "flood",
+      "params_hash": "0550873e7ea6",
+      "facts": {
+        "bbox": [
+          9.8425,
+          61.4071,
+          10.2306,
+          61.5871
+        ],
+        "event_date": "2023-08-08",
+        "mode": "rough_water",
+        "grid": "1050 x 1020 px at 20 m, EPSG:32632",
+        "post_day": "2023-08-10",
+        "post_latency_days": 2,
+        "track": "37 DESCENDING",
+        "n_pre": 3,
+        "pre_days": [
+          "2023-07-05",
+          "2023-07-17",
+          "2023-07-29"
+        ],
+        "domain_pixels": 1070979,
+        "analysed_pixels": 227598,
+        "analysed_fraction": 0.2125,
+        "water_threshold_db": -15.0,
+        "water_threshold_clamped": "high",
+        "optical": {
+          "status": "refused",
+          "fusion": "union",
+          "clear_fraction_pair": null,
+          "post_day": null,
+          "post_latency_days": null,
+          "message": "only 19.5% of the area is clear on BOTH Sentinel-2 dates (80.0% pre, 29.9% post), below the 20% minimum. Refusing to use optical evidence from so little of the area; the run continues with radar only."
+        },
+        "predicted_flood_ha": 785.16,
+        "permanent_water_ha": 1345.6,
+        "river_width": {
+          "status": "measured",
+          "pixels": 33640,
+          "axis_pixels": 5495,
+          "median_width_px": 6.32,
+          "p10_width_px": 2.0,
+          "p90_width_px": 17.09
+        },
+        "reference_sensor": "RADARSAT-2, C-band SAR (Canadian), acquired +1 d. INDEPENDENT of our input: a different satellite with its own orbit, incidence angle and processing, even though it shares Sentinel-1's band.",
+        "reference_source": "Copernicus EMS EMSR683 AOI03 Ringebu, delineation product v2 (storm Hans, Norway, 7-8 Aug 2023). Activation: https://mapping.emergency.copernicus.eu/activations/EMSR683/",
+        "orbits": {
+          "directions_with_a_usable_pair": [
+            "ASCENDING",
+            "DESCENDING"
+          ],
+          "by_direction": {
+            "ASCENDING": {
+              "usable": true,
+              "n_tracks": 3,
+              "best": {
+                "relative_orbit": 44,
+                "post_day": "2023-08-10",
+                "post_latency_days": 2,
+                "n_pre": 3
+              },
+              "why": [
+                "track 44 ASCENDING: post 2023-08-10 (+2 d), 3 pre images 2023-07-05..2023-07-29 -> OK",
+                "track 73 ASCENDING: no full-coverage post-event image within 12 days -> skipped",
+                "track 146 ASCENDING: post 2023-08-17 (+9 d), 3 pre images 2023-07-12..2023-08-05 -> OK"
+              ]
+            },
+            "DESCENDING": {
+              "usable": true,
+              "n_tracks": 2,
+              "best": {
+                "relative_orbit": 37,
+                "post_day": "2023-08-10",
+                "post_latency_days": 2,
+                "n_pre": 3
+              },
+              "why": [
+                "track 37 DESCENDING: post 2023-08-10 (+2 d), 3 pre images 2023-07-05..2023-07-29 -> OK",
+                "track 139 DESCENDING: post 2023-08-17 (+9 d), 3 pre images 2023-07-12..2023-08-05 -> OK"
+              ]
+            }
+          }
+        }
+      },
+      "misses": {
+        "reference_pixels": 21586,
+        "reference_ha": 863.44,
+        "missed_pixels": 6502,
+        "by_cause": {
+          "not analysed: no data": 0,
+          "not analysed: terrain excluded": 77,
+          "rule: already permanent water": 174,
+          "rule: debris, not flood extent": 0,
+          "rule: HAND/slope above the water zone": 299,
+          "no change signal (|z| < z_seed in both polarisations)": 2073,
+          "rule: magnitude or polarisation-agreement gate": 3678,
+          "rule: hysteresis, no connected seed": 0,
+          "rule: minimum mapping unit": 61,
+          "rule: drainage connection": 140,
+          "unexplained": 0
+        },
+        "by_cause_share": {
+          "not analysed: no data": 0.0,
+          "not analysed: terrain excluded": 0.0118,
+          "rule: already permanent water": 0.0268,
+          "rule: debris, not flood extent": 0.0,
+          "rule: HAND/slope above the water zone": 0.046,
+          "no change signal (|z| < z_seed in both polarisations)": 0.3188,
+          "rule: magnitude or polarisation-agreement gate": 0.5657,
+          "rule: hysteresis, no connected seed": 0.0,
+          "rule: minimum mapping unit": 0.0094,
+          "rule: drainage connection": 0.0215,
+          "unexplained": 0.0
+        },
+        "subdiagnostics": {
+          "no_signal_pixels": 2073,
+          "no_signal_but_a_coherent_growable_change": 19,
+          "no_signal_and_no_qualifying_change_at_all": 2054,
+          "gate_pixels": 3678,
+          "gate_blocked_by_vh_alone": 1388,
+          "gate_blocked_by_vv_alone": 1715,
+          "gate_blocked_by_both_too_small": 503,
+          "gate_blocked_by_sign_disagreement": 45,
+          "gate_blocked_by_weak_z_only": 27
+        }
+      },
+      "false_alarms": {
+        "total_pixels": 4545,
+        "by_place": {
+          "permanent-water shore": 1392,
+          "channel corridor": 382,
+          "flat ground away from the channel": 2552,
+          "sloping ground": 219,
+          "other analysed ground": 0
+        },
+        "by_place_share": {
+          "permanent-water shore": 0.3063,
+          "channel corridor": 0.084,
+          "flat ground away from the channel": 0.5615,
+          "sloping ground": 0.0482,
+          "other analysed ground": 0.0
+        },
+        "rules": {
+          "pixels": 4545,
+          "sar_only": 4545,
+          "optical_contributed": 0,
+          "high_confidence": 2901,
+          "debris_class": 0,
+          "brightened": 58,
+          "darkened": 4487
+        }
+      },
+      "boundary": {
+        "tp": 15084,
+        "fp": 4545,
+        "fn": 6502,
+        "fp_within_1px": 0.5102,
+        "fp_within_3px": 0.7773,
+        "fp_beyond_3px": 0.2227,
+        "fn_within_1px": 0.5421,
+        "fn_within_3px": 0.8031,
+        "fn_beyond_3px": 0.1969,
+        "errors_within_1px_of_a_correct_detection": 0.529,
+        "errors_within_3px_of_a_correct_detection": 0.7925
+      },
+      "shift": {
+        "f1_at_zero_shift": 0.732,
+        "best": {
+          "dy": 0,
+          "dx": -1,
+          "f1": 0.7537
+        },
+        "gain_from_best_shift": 0.0217
+      },
+      "bounds": {
+        "baseline_f1_tolerant": 0.9151,
+        "if_fixed": {
+          "recover not analysed: terrain excluded": {
+            "pixels": 77,
+            "f1_tolerant": 0.9182,
+            "gain": 0.0031
+          },
+          "recover rule: already permanent water": {
+            "pixels": 174,
+            "f1_tolerant": 0.9206,
+            "gain": 0.0055
+          },
+          "recover rule: HAND/slope above the water zone": {
+            "pixels": 299,
+            "f1_tolerant": 0.9241,
+            "gain": 0.009
+          },
+          "recover no change signal (|z| < z_seed in both polarisations)": {
+            "pixels": 2073,
+            "f1_tolerant": 0.9485,
+            "gain": 0.0334
+          },
+          "recover rule: magnitude or polarisation-agreement gate": {
+            "pixels": 3678,
+            "f1_tolerant": 0.9512,
+            "gain": 0.0361
+          },
+          "recover rule: minimum mapping unit": {
+            "pixels": 61,
+            "f1_tolerant": 0.9197,
+            "gain": 0.0046
+          },
+          "recover rule: drainage connection": {
+            "pixels": 140,
+            "f1_tolerant": 0.9208,
+            "gain": 0.0057
+          },
+          "remove false alarms: permanent-water shore": {
+            "pixels": 1392,
+            "f1_tolerant": 0.9236,
+            "gain": 0.0085
+          },
+          "remove false alarms: channel corridor": {
+            "pixels": 382,
+            "f1_tolerant": 0.9143,
+            "gain": -0.0008
+          },
+          "remove false alarms: flat ground away from the channel": {
+            "pixels": 2552,
+            "f1_tolerant": 0.9289,
+            "gain": 0.0138
+          },
+          "remove false alarms: sloping ground": {
+            "pixels": 219,
+            "f1_tolerant": 0.9174,
+            "gain": 0.0023
+          }
+        }
+      },
+      "metrics": {
+        "precision": 0.7685,
+        "recall": 0.6988,
+        "f1": 0.732,
+        "iou": 0.5772,
+        "precision_tolerant": 0.9234,
+        "recall_tolerant": 0.907,
+        "f1_tolerant": 0.9151
+      },
+      "error": null
+    },
+    {
+      "event": "norway_selsverket_2023",
+      "kind": "flood",
+      "params_hash": "0550873e7ea6",
+      "facts": {
+        "bbox": [
+          9.4011,
+          61.7378,
+          9.5734,
+          61.8572
+        ],
+        "event_date": "2023-08-08",
+        "mode": "rough_water",
+        "grid": "460 x 670 px at 20 m, EPSG:32632",
+        "post_day": "2023-08-10",
+        "post_latency_days": 2,
+        "track": "37 DESCENDING",
+        "n_pre": 3,
+        "pre_days": [
+          "2023-07-05",
+          "2023-07-17",
+          "2023-07-29"
+        ],
+        "domain_pixels": 308200,
+        "analysed_pixels": 52671,
+        "analysed_fraction": 0.1709,
+        "water_threshold_db": -15.0,
+        "water_threshold_clamped": "high",
+        "optical": {
+          "status": "used",
+          "fusion": "union",
+          "clear_fraction_pair": 0.3263,
+          "post_day": "2023-08-18",
+          "post_latency_days": 10,
+          "message": null
+        },
+        "predicted_flood_ha": 121.84,
+        "permanent_water_ha": 137.4,
+        "river_width": {
+          "status": "measured",
+          "pixels": 3435,
+          "axis_pixels": 993,
+          "median_width_px": 2.83,
+          "p10_width_px": 2.0,
+          "p90_width_px": 7.21
+        },
+        "reference_sensor": "PAZ, X-band SAR (Spanish), acquired +1 d. INDEPENDENT of our Sentinel-1 C-band input: different satellite, band, orbit and processing chain.",
+        "reference_source": "Copernicus EMS EMSR683 AOI02 Selsverket, delineation monitoring 1 v2 (storm Hans, Norway, 7-8 Aug 2023). Activation: https://mapping.emergency.copernicus.eu/activations/EMSR683/",
+        "orbits": {
+          "directions_with_a_usable_pair": [
+            "ASCENDING",
+            "DESCENDING"
+          ],
+          "by_direction": {
+            "ASCENDING": {
+              "usable": true,
+              "n_tracks": 2,
+              "best": {
+                "relative_orbit": 44,
+                "post_day": "2023-08-10",
+                "post_latency_days": 2,
+                "n_pre": 3
+              },
+              "why": [
+                "track 44 ASCENDING: post 2023-08-10 (+2 d), 3 pre images 2023-07-05..2023-07-29 -> OK",
+                "track 146 ASCENDING: post 2023-08-17 (+9 d), 3 pre images 2023-07-12..2023-08-05 -> OK"
+              ]
+            },
+            "DESCENDING": {
+              "usable": true,
+              "n_tracks": 3,
+              "best": {
+                "relative_orbit": 37,
+                "post_day": "2023-08-10",
+                "post_latency_days": 2,
+                "n_pre": 3
+              },
+              "why": [
+                "track 37 DESCENDING: post 2023-08-10 (+2 d), 3 pre images 2023-07-05..2023-07-29 -> OK",
+                "track 110 DESCENDING: post 2023-08-15 (+7 d), 3 pre images 2023-07-10..2023-08-03 -> OK",
+                "track 139 DESCENDING: post 2023-08-17 (+9 d), 3 pre images 2023-07-12..2023-08-05 -> OK"
+              ]
+            }
+          }
+        }
+      },
+      "misses": {
+        "reference_pixels": 3128,
+        "reference_ha": 125.12,
+        "missed_pixels": 1665,
+        "by_cause": {
+          "not analysed: no data": 0,
+          "not analysed: terrain excluded": 4,
+          "rule: already permanent water": 134,
+          "rule: debris, not flood extent": 0,
+          "rule: HAND/slope above the water zone": 92,
+          "no change signal (|z| < z_seed in both polarisations)": 562,
+          "rule: magnitude or polarisation-agreement gate": 549,
+          "rule: hysteresis, no connected seed": 0,
+          "rule: minimum mapping unit": 22,
+          "rule: drainage connection": 302,
+          "unexplained": 0
+        },
+        "by_cause_share": {
+          "not analysed: no data": 0.0,
+          "not analysed: terrain excluded": 0.0024,
+          "rule: already permanent water": 0.0805,
+          "rule: debris, not flood extent": 0.0,
+          "rule: HAND/slope above the water zone": 0.0553,
+          "no change signal (|z| < z_seed in both polarisations)": 0.3375,
+          "rule: magnitude or polarisation-agreement gate": 0.3297,
+          "rule: hysteresis, no connected seed": 0.0,
+          "rule: minimum mapping unit": 0.0132,
+          "rule: drainage connection": 0.1814,
+          "unexplained": 0.0
+        },
+        "subdiagnostics": {
+          "no_signal_pixels": 562,
+          "no_signal_but_a_coherent_growable_change": 22,
+          "no_signal_and_no_qualifying_change_at_all": 540,
+          "gate_pixels": 549,
+          "gate_blocked_by_vh_alone": 166,
+          "gate_blocked_by_vv_alone": 218,
+          "gate_blocked_by_both_too_small": 152,
+          "gate_blocked_by_sign_disagreement": 0,
+          "gate_blocked_by_weak_z_only": 13
+        }
+      },
+      "false_alarms": {
+        "total_pixels": 1583,
+        "by_place": {
+          "permanent-water shore": 225,
+          "channel corridor": 372,
+          "flat ground away from the channel": 967,
+          "sloping ground": 19,
+          "other analysed ground": 0
+        },
+        "by_place_share": {
+          "permanent-water shore": 0.1421,
+          "channel corridor": 0.235,
+          "flat ground away from the channel": 0.6109,
+          "sloping ground": 0.012,
+          "other analysed ground": 0.0
+        },
+        "rules": {
+          "pixels": 1583,
+          "sar_only": 1542,
+          "optical_contributed": 41,
+          "high_confidence": 345,
+          "debris_class": 0,
+          "brightened": 1043,
+          "darkened": 540
+        }
+      },
+      "boundary": {
+        "tp": 1463,
+        "fp": 1583,
+        "fn": 1665,
+        "fp_within_1px": 0.1137,
+        "fp_within_3px": 0.1762,
+        "fp_beyond_3px": 0.8238,
+        "fn_within_1px": 0.2324,
+        "fn_within_3px": 0.3471,
+        "fn_beyond_3px": 0.6529,
+        "errors_within_1px_of_a_correct_detection": 0.1746,
+        "errors_within_3px_of_a_correct_detection": 0.2639
+      },
+      "shift": {
+        "f1_at_zero_shift": 0.4739,
+        "best": {
+          "dy": 0,
+          "dx": 0,
+          "f1": 0.4739
+        },
+        "gain_from_best_shift": 0.0
+      },
+      "bounds": {
+        "baseline_f1_tolerant": 0.5845,
+        "if_fixed": {
+          "recover not analysed: terrain excluded": {
+            "pixels": 4,
+            "f1_tolerant": 0.5859,
+            "gain": 0.0014
+          },
+          "recover rule: already permanent water": {
+            "pixels": 134,
+            "f1_tolerant": 0.6076,
+            "gain": 0.0231
+          },
+          "recover rule: HAND/slope above the water zone": {
+            "pixels": 92,
+            "f1_tolerant": 0.6067,
+            "gain": 0.0222
+          },
+          "recover no change signal (|z| < z_seed in both polarisations)": {
+            "pixels": 562,
+            "f1_tolerant": 0.7149,
+            "gain": 0.1304
+          },
+          "recover rule: magnitude or polarisation-agreement gate": {
+            "pixels": 549,
+            "f1_tolerant": 0.7095,
+            "gain": 0.125
+          },
+          "recover rule: minimum mapping unit": {
+            "pixels": 22,
+            "f1_tolerant": 0.5962,
+            "gain": 0.0117
+          },
+          "recover rule: drainage connection": {
+            "pixels": 302,
+            "f1_tolerant": 0.6676,
+            "gain": 0.0831
+          },
+          "remove false alarms: permanent-water shore": {
+            "pixels": 225,
+            "f1_tolerant": 0.5992,
+            "gain": 0.0147
+          },
+          "remove false alarms: channel corridor": {
+            "pixels": 372,
+            "f1_tolerant": 0.6162,
+            "gain": 0.0317
+          },
+          "remove false alarms: flat ground away from the channel": {
+            "pixels": 967,
+            "f1_tolerant": 0.6764,
+            "gain": 0.0919
+          },
+          "remove false alarms: sloping ground": {
+            "pixels": 19,
+            "f1_tolerant": 0.5846,
+            "gain": 0.0001
+          }
+        }
+      },
+      "metrics": {
+        "precision": 0.4803,
+        "recall": 0.4677,
+        "f1": 0.4739,
+        "iou": 0.3105,
+        "precision_tolerant": 0.5558,
+        "recall_tolerant": 0.6164,
+        "f1_tolerant": 0.5845
+      },
+      "error": null
+    },
+    {
+      "event": "pakistan_larkana_2022",
+      "kind": "flood",
+      "params_hash": "f08e2edf2c4c",
+      "facts": {
+        "bbox": [
+          68.0727,
+          27.456,
+          68.4403,
+          27.6986
+        ],
+        "event_date": "2022-08-26",
+        "mode": "rough_water",
+        "grid": "1823 x 1355 px at 20 m, EPSG:32642",
+        "post_day": "2022-08-30",
+        "post_latency_days": 4,
+        "track": "78 DESCENDING",
+        "n_pre": 3,
+        "pre_days": [
+          "2022-07-25",
+          "2022-08-06",
+          "2022-08-18"
+        ],
+        "domain_pixels": 2470127,
+        "analysed_pixels": 2470127,
+        "analysed_fraction": 1.0,
+        "water_threshold_db": -15.0,
+        "water_threshold_clamped": "high",
+        "optical": {
+          "status": "used",
+          "fusion": "union",
+          "clear_fraction_pair": 0.9996,
+          "post_day": "2022-09-05",
+          "post_latency_days": 10,
+          "message": null
+        },
+        "predicted_flood_ha": 53535.08,
+        "permanent_water_ha": 8827.84,
+        "river_width": {
+          "status": "measured",
+          "pixels": 220696,
+          "axis_pixels": 49090,
+          "median_width_px": 4.0,
+          "p10_width_px": 2.0,
+          "p90_width_px": 20.0
+        },
+        "reference_sensor": "Optical VHR (CEMS source id 2), 2022 monsoon tasking. Independent of our Sentinel-1 input.",
+        "reference_source": "Copernicus EMS EMSR629 AOI01 Larkana, delineation product v2 (2022 monsoon, Indus basin). Activation: https://mapping.emergency.copernicus.eu/activations/EMSR629/",
+        "orbits": {
+          "directions_with_a_usable_pair": [
+            "ASCENDING",
+            "DESCENDING"
+          ],
+          "by_direction": {
+            "ASCENDING": {
+              "usable": true,
+              "n_tracks": 2,
+              "best": {
+                "relative_orbit": 144,
+                "post_day": "2022-09-03",
+                "post_latency_days": 8,
+                "n_pre": 3
+              },
+              "why": [
+                "track 42 ASCENDING: no full-coverage post-event image within 12 days -> skipped",
+                "track 144 ASCENDING: post 2022-09-03 (+8 d), 3 pre images 2022-07-29..2022-08-22 -> OK"
+              ]
+            },
+            "DESCENDING": {
+              "usable": true,
+              "n_tracks": 1,
+              "best": {
+                "relative_orbit": 78,
+                "post_day": "2022-08-30",
+                "post_latency_days": 4,
+                "n_pre": 3
+              },
+              "why": [
+                "track 78 DESCENDING: post 2022-08-30 (+4 d), 3 pre images 2022-07-25..2022-08-18 -> OK"
+              ]
+            }
+          }
+        }
+      },
+      "misses": {
+        "reference_pixels": 1254692,
+        "reference_ha": 50187.68,
+        "missed_pixels": 197545,
+        "by_cause": {
+          "not analysed: no data": 0,
+          "not analysed: terrain excluded": 0,
+          "rule: already permanent water": 67143,
+          "rule: debris, not flood extent": 0,
+          "rule: HAND/slope above the water zone": 1,
+          "no change signal (|z| < z_seed in both polarisations)": 101500,
+          "rule: magnitude or polarisation-agreement gate": 22095,
+          "rule: hysteresis, no connected seed": 0,
+          "rule: minimum mapping unit": 501,
+          "rule: drainage connection": 6305,
+          "unexplained": 0
+        },
+        "by_cause_share": {
+          "not analysed: no data": 0.0,
+          "not analysed: terrain excluded": 0.0,
+          "rule: already permanent water": 0.3399,
+          "rule: debris, not flood extent": 0.0,
+          "rule: HAND/slope above the water zone": 0.0,
+          "no change signal (|z| < z_seed in both polarisations)": 0.5138,
+          "rule: magnitude or polarisation-agreement gate": 0.1118,
+          "rule: hysteresis, no connected seed": 0.0,
+          "rule: minimum mapping unit": 0.0025,
+          "rule: drainage connection": 0.0319,
+          "unexplained": 0.0
+        },
+        "subdiagnostics": {
+          "no_signal_pixels": 101500,
+          "no_signal_but_a_coherent_growable_change": 9002,
+          "no_signal_and_no_qualifying_change_at_all": 92498,
+          "gate_pixels": 22095,
+          "gate_blocked_by_vh_alone": 7553,
+          "gate_blocked_by_vv_alone": 9201,
+          "gate_blocked_by_both_too_small": 4152,
+          "gate_blocked_by_sign_disagreement": 260,
+          "gate_blocked_by_weak_z_only": 929
+        }
+      },
+      "false_alarms": {
+        "total_pixels": 281230,
+        "by_place": {
+          "permanent-water shore": 48578,
+          "channel corridor": 7403,
+          "flat ground away from the channel": 223873,
+          "sloping ground": 1376,
+          "other analysed ground": 0
+        },
+        "by_place_share": {
+          "permanent-water shore": 0.1727,
+          "channel corridor": 0.0263,
+          "flat ground away from the channel": 0.796,
+          "sloping ground": 0.0049,
+          "other analysed ground": 0.0
+        },
+        "rules": {
+          "pixels": 281230,
+          "sar_only": 54783,
+          "optical_contributed": 226447,
+          "high_confidence": 132545,
+          "debris_class": 0,
+          "brightened": 41471,
+          "darkened": 239759
+        }
+      },
+      "boundary": {
+        "tp": 1057147,
+        "fp": 281230,
+        "fn": 197545,
+        "fp_within_1px": 0.2976,
+        "fp_within_3px": 0.4183,
+        "fp_beyond_3px": 0.5817,
+        "fn_within_1px": 0.3846,
+        "fn_within_3px": 0.6394,
+        "fn_beyond_3px": 0.3606,
+        "errors_within_1px_of_a_correct_detection": 0.3335,
+        "errors_within_3px_of_a_correct_detection": 0.5095
+      },
+      "shift": {
+        "f1_at_zero_shift": 0.8154,
+        "best": {
+          "dy": 0,
+          "dx": 0,
+          "f1": 0.8154
+        },
+        "gain_from_best_shift": 0.0
+      },
+      "bounds": {
+        "baseline_f1_tolerant": 0.8891,
+        "if_fixed": {
+          "recover rule: already permanent water": {
+            "pixels": 67143,
+            "f1_tolerant": 0.9046,
+            "gain": 0.0155
+          },
+          "recover rule: HAND/slope above the water zone": {
+            "pixels": 1,
+            "f1_tolerant": 0.8891,
+            "gain": 0.0
+          },
+          "recover no change signal (|z| < z_seed in both polarisations)": {
+            "pixels": 101500,
+            "f1_tolerant": 0.9205,
+            "gain": 0.0314
+          },
+          "recover rule: magnitude or polarisation-agreement gate": {
+            "pixels": 22095,
+            "f1_tolerant": 0.8991,
+            "gain": 0.01
+          },
+          "recover rule: minimum mapping unit": {
+            "pixels": 501,
+            "f1_tolerant": 0.8898,
+            "gain": 0.0007
+          },
+          "recover rule: drainage connection": {
+            "pixels": 6305,
+            "f1_tolerant": 0.8934,
+            "gain": 0.0043
+          },
+          "remove false alarms: permanent-water shore": {
+            "pixels": 48578,
+            "f1_tolerant": 0.9026,
+            "gain": 0.0135
+          },
+          "remove false alarms: channel corridor": {
+            "pixels": 7403,
+            "f1_tolerant": 0.8903,
+            "gain": 0.0012
+          },
+          "remove false alarms: flat ground away from the channel": {
+            "pixels": 223873,
+            "f1_tolerant": 0.9373,
+            "gain": 0.0482
+          },
+          "remove false alarms: sloping ground": {
+            "pixels": 1376,
+            "f1_tolerant": 0.8894,
+            "gain": 0.0003
+          }
+        }
+      },
+      "metrics": {
+        "precision": 0.7899,
+        "recall": 0.8426,
+        "f1": 0.8154,
+        "iou": 0.6883,
+        "precision_tolerant": 0.8617,
+        "recall_tolerant": 0.9183,
+        "f1_tolerant": 0.8891
+      },
+      "error": null
+    },
+    {
+      "event": "bhutan_punakha_control_2024",
+      "kind": "control",
+      "params_hash": "0550873e7ea6",
+      "facts": {
+        "bbox": [
+          89.55,
+          27.4,
+          89.95,
+          27.7
+        ],
+        "event_date": "2024-03-10",
+        "mode": "rough_water",
+        "grid": "2013 x 1707 px at 20 m, EPSG:32645",
+        "post_day": "2024-03-18",
+        "post_latency_days": 8,
+        "track": "114 ASCENDING",
+        "n_pre": 3,
+        "pre_days": [
+          "2024-02-11",
+          "2024-02-23",
+          "2024-03-06"
+        ],
+        "domain_pixels": 3436191,
+        "analysed_pixels": 173875,
+        "analysed_fraction": 0.0506,
+        "water_threshold_db": -15.0,
+        "water_threshold_clamped": "high",
+        "optical": {
+          "status": "used",
+          "fusion": "union",
+          "clear_fraction_pair": 0.6282,
+          "post_day": "2024-03-19",
+          "post_latency_days": 9,
+          "message": null
+        },
+        "predicted_flood_ha": 19.52,
+        "permanent_water_ha": 94.64,
+        "river_width": {
+          "status": "measured",
+          "pixels": 2366,
+          "axis_pixels": 1079,
+          "median_width_px": 2.0,
+          "p10_width_px": 2.0,
+          "p90_width_px": 4.0
+        },
+        "reference_sensor": null,
+        "reference_source": "No Sentinel Asia emergency observation for Bhutan between 2016-07-30 and 2024-08-10. https://sentinel-asia.org/EO/EmergencyObservation.html",
+        "orbits": {
+          "directions_with_a_usable_pair": [
+            "ASCENDING",
+            "DESCENDING"
+          ],
+          "by_direction": {
+            "ASCENDING": {
+              "usable": true,
+              "n_tracks": 1,
+              "best": {
+                "relative_orbit": 114,
+                "post_day": "2024-03-18",
+                "post_latency_days": 8,
+                "n_pre": 3
+              },
+              "why": [
+                "track 114 ASCENDING: post 2024-03-18 (+8 d), 3 pre images 2024-02-11..2024-03-06 -> OK"
+              ]
+            },
+            "DESCENDING": {
+              "usable": true,
+              "n_tracks": 2,
+              "best": {
+                "relative_orbit": 150,
+                "post_day": "2024-03-20",
+                "post_latency_days": 10,
+                "n_pre": 3
+              },
+              "why": [
+                "track 48 DESCENDING: no full-coverage post-event image within 12 days -> skipped",
+                "track 150 DESCENDING: post 2024-03-20 (+10 d), 3 pre images 2024-02-13..2024-03-08 -> OK"
+              ]
+            }
+          }
+        }
+      },
+      "misses": {},
+      "false_alarms": {
+        "total_pixels": 488,
+        "false_flood_fraction_domain": 0.0001,
+        "false_flood_fraction_analysed": 0.0028,
+        "by_place": {
+          "permanent-water shore": 61,
+          "channel corridor": 381,
+          "flat ground away from the channel": 18,
+          "sloping ground": 28,
+          "other analysed ground": 0
+        },
+        "by_place_share": {
+          "permanent-water shore": 0.125,
+          "channel corridor": 0.7807,
+          "flat ground away from the channel": 0.0369,
+          "sloping ground": 0.0574,
+          "other analysed ground": 0.0
+        },
+        "rules": {
+          "pixels": 488,
+          "sar_only": 93,
+          "optical_contributed": 395,
+          "high_confidence": 4,
+          "debris_class": 0,
+          "brightened": 271,
+          "darkened": 217
+        },
+        "distance_to_permanent_water_px": {
+          "<=1": 15,
+          "1-3": 46,
+          "3-10": 34,
+          "10-30": 6,
+          ">30": 387
+        }
+      },
+      "boundary": {},
+      "shift": {},
+      "bounds": {},
+      "metrics": {
+        "false_flood_fraction": 0.0001
+      },
+      "error": null
+    },
+    {
+      "event": "bosnia_konjic_control_2024",
+      "kind": "control",
+      "params_hash": "0550873e7ea6",
+      "facts": {
+        "bbox": [
+          17.676,
+          43.6366,
+          17.9802,
+          43.7437
+        ],
+        "event_date": "2024-07-20",
+        "mode": "rough_water",
+        "grid": "1247 x 638 px at 20 m, EPSG:32633",
+        "post_day": "2024-07-24",
+        "post_latency_days": 4,
+        "track": "51 DESCENDING",
+        "n_pre": 3,
+        "pre_days": [
+          "2024-06-18",
+          "2024-06-30",
+          "2024-07-12"
+        ],
+        "domain_pixels": 795573,
+        "analysed_pixels": 87505,
+        "analysed_fraction": 0.11,
+        "water_threshold_db": -15.693,
+        "water_threshold_clamped": null,
+        "optical": {
+          "status": "used",
+          "fusion": "union",
+          "clear_fraction_pair": 0.9977,
+          "post_day": "2024-07-27",
+          "post_latency_days": 7,
+          "message": null
+        },
+        "predicted_flood_ha": 35.08,
+        "permanent_water_ha": 1186.44,
+        "river_width": {
+          "status": "measured",
+          "pixels": 29661,
+          "axis_pixels": 3681,
+          "median_width_px": 8.94,
+          "p10_width_px": 2.0,
+          "p90_width_px": 22.8
+        },
+        "reference_sensor": null,
+        "reference_source": "No Copernicus EMS activation covers this bbox on this date; the EMSR770 activation for this area is dated 2024-10-04. https://mapping.emergency.copernicus.eu/activations/EMSR770/",
+        "orbits": {
+          "directions_with_a_usable_pair": [
+            "ASCENDING",
+            "DESCENDING"
+          ],
+          "by_direction": {
+            "ASCENDING": {
+              "usable": true,
+              "n_tracks": 2,
+              "best": {
+                "relative_orbit": 73,
+                "post_day": "2024-07-25",
+                "post_latency_days": 5,
+                "n_pre": 3
+              },
+              "why": [
+                "track 73 ASCENDING: post 2024-07-25 (+5 d), 3 pre images 2024-06-19..2024-07-13 -> OK",
+                "track 146 ASCENDING: no full-coverage post-event image within 12 days -> skipped"
+              ]
+            },
+            "DESCENDING": {
+              "usable": true,
+              "n_tracks": 2,
+              "best": {
+                "relative_orbit": 51,
+                "post_day": "2024-07-24",
+                "post_latency_days": 4,
+                "n_pre": 3
+              },
+              "why": [
+                "track 51 DESCENDING: post 2024-07-24 (+4 d), 3 pre images 2024-06-18..2024-07-12 -> OK",
+                "track 124 DESCENDING: no full-coverage post-event image within 12 days -> skipped"
+              ]
+            }
+          }
+        }
+      },
+      "misses": {},
+      "false_alarms": {
+        "total_pixels": 877,
+        "false_flood_fraction_domain": 0.0011,
+        "false_flood_fraction_analysed": 0.01,
+        "by_place": {
+          "permanent-water shore": 811,
+          "channel corridor": 36,
+          "flat ground away from the channel": 26,
+          "sloping ground": 4,
+          "other analysed ground": 0
+        },
+        "by_place_share": {
+          "permanent-water shore": 0.9247,
+          "channel corridor": 0.041,
+          "flat ground away from the channel": 0.0296,
+          "sloping ground": 0.0046,
+          "other analysed ground": 0.0
+        },
+        "rules": {
+          "pixels": 877,
+          "sar_only": 31,
+          "optical_contributed": 846,
+          "high_confidence": 3,
+          "debris_class": 0,
+          "brightened": 463,
+          "darkened": 414
+        },
+        "distance_to_permanent_water_px": {
+          "<=1": 581,
+          "1-3": 230,
+          "3-10": 59,
+          "10-30": 7,
+          ">30": 0
+        }
+      },
+      "boundary": {},
+      "shift": {},
+      "bounds": {},
+      "metrics": {
+        "false_flood_fraction": 0.0011
+      },
+      "error": null
+    },
+    {
+      "event": "ecuador_poza_honda_control_2024",
+      "kind": "control",
+      "params_hash": "0550873e7ea6",
+      "facts": {
+        "bbox": [
+          -80.4543,
+          -1.2269,
+          -80.1045,
+          -1.077
+        ],
+        "event_date": "2024-08-15",
+        "mode": "rough_water",
+        "grid": "1947 x 830 px at 20 m, EPSG:32717",
+        "post_day": "2024-08-16",
+        "post_latency_days": 1,
+        "track": "40 DESCENDING",
+        "n_pre": 3,
+        "pre_days": [
+          "2024-07-11",
+          "2024-07-23",
+          "2024-08-04"
+        ],
+        "domain_pixels": 1616007,
+        "analysed_pixels": 475632,
+        "analysed_fraction": 0.2943,
+        "water_threshold_db": -15.0,
+        "water_threshold_clamped": "high",
+        "optical": {
+          "status": "refused",
+          "fusion": "union",
+          "clear_fraction_pair": null,
+          "post_day": null,
+          "post_latency_days": null,
+          "message": "only 12.7% of the area is clear on BOTH Sentinel-2 dates (100.0% pre, 12.7% post), below the 20% minimum. Refusing to use optical evidence from so little of the area; the run continues with radar only."
+        },
+        "predicted_flood_ha": 311.2,
+        "permanent_water_ha": 88.08,
+        "river_width": {
+          "status": "measured",
+          "pixels": 2202,
+          "axis_pixels": 603,
+          "median_width_px": 4.0,
+          "p10_width_px": 2.0,
+          "p90_width_px": 8.0
+        },
+        "reference_sensor": null,
+        "reference_source": "No Copernicus EMS activation covers this bbox on this date; the EMSR789 activation for this area is dated 2025-02-26. https://mapping.emergency.copernicus.eu/activations/EMSR789/",
+        "orbits": {
+          "directions_with_a_usable_pair": [
+            "ASCENDING",
+            "DESCENDING"
+          ],
+          "by_direction": {
+            "ASCENDING": {
+              "usable": true,
+              "n_tracks": 2,
+              "best": {
+                "relative_orbit": 18,
+                "post_day": "2024-08-26",
+                "post_latency_days": 11,
+                "n_pre": 3
+              },
+              "why": [
+                "track 18 ASCENDING: post 2024-08-26 (+11 d), 3 pre images 2024-07-21..2024-08-14 -> OK",
+                "track 91 ASCENDING: no full-coverage post-event image within 12 days -> skipped"
+              ]
+            },
+            "DESCENDING": {
+              "usable": true,
+              "n_tracks": 1,
+              "best": {
+                "relative_orbit": 40,
+                "post_day": "2024-08-16",
+                "post_latency_days": 1,
+                "n_pre": 3
+              },
+              "why": [
+                "track 40 DESCENDING: post 2024-08-16 (+1 d), 3 pre images 2024-07-11..2024-08-04 -> OK"
+              ]
+            }
+          }
+        }
+      },
+      "misses": {},
+      "false_alarms": {
+        "total_pixels": 7780,
+        "false_flood_fraction_domain": 0.0048,
+        "false_flood_fraction_analysed": 0.0164,
+        "by_place": {
+          "permanent-water shore": 712,
+          "channel corridor": 2197,
+          "flat ground away from the channel": 4698,
+          "sloping ground": 173,
+          "other analysed ground": 0
+        },
+        "by_place_share": {
+          "permanent-water shore": 0.0915,
+          "channel corridor": 0.2824,
+          "flat ground away from the channel": 0.6039,
+          "sloping ground": 0.0222,
+          "other analysed ground": 0.0
+        },
+        "rules": {
+          "pixels": 7780,
+          "sar_only": 7780,
+          "optical_contributed": 0,
+          "high_confidence": 2927,
+          "debris_class": 0,
+          "brightened": 4439,
+          "darkened": 3341
+        },
+        "distance_to_permanent_water_px": {
+          "<=1": 237,
+          "1-3": 475,
+          "3-10": 1672,
+          "10-30": 2868,
+          ">30": 2528
+        }
+      },
+      "boundary": {},
+      "shift": {},
+      "bounds": {},
+      "metrics": {
+        "false_flood_fraction": 0.0048
+      },
+      "error": null
+    },
+    {
+      "event": "norway_ringebu_control_2023",
+      "kind": "control",
+      "params_hash": "0550873e7ea6",
+      "facts": {
+        "bbox": [
+          9.8425,
+          61.4071,
+          10.2306,
+          61.5871
+        ],
+        "event_date": "2023-06-10",
+        "mode": "rough_water",
+        "grid": "1050 x 1020 px at 20 m, EPSG:32632",
+        "post_day": "2023-06-11",
+        "post_latency_days": 1,
+        "track": "37 DESCENDING",
+        "n_pre": 3,
+        "pre_days": [
+          "2023-05-06",
+          "2023-05-18",
+          "2023-05-30"
+        ],
+        "domain_pixels": 1070934,
+        "analysed_pixels": 227553,
+        "analysed_fraction": 0.2125,
+        "water_threshold_db": -15.277,
+        "water_threshold_clamped": null,
+        "optical": {
+          "status": "refused",
+          "fusion": "union",
+          "clear_fraction_pair": null,
+          "post_day": null,
+          "post_latency_days": null,
+          "message": "only 19.9% of the area is clear on BOTH Sentinel-2 dates (29.1% pre, 80.0% post), below the 20% minimum. Refusing to use optical evidence from so little of the area; the run continues with radar only."
+        },
+        "predicted_flood_ha": 61.88,
+        "permanent_water_ha": 1259.16,
+        "river_width": {
+          "status": "measured",
+          "pixels": 31479,
+          "axis_pixels": 6648,
+          "median_width_px": 4.47,
+          "p10_width_px": 2.0,
+          "p90_width_px": 12.65
+        },
+        "reference_sensor": null,
+        "reference_source": "No Copernicus EMS activation covers this bbox on this date; the EMSR683 activation for this area is dated 2023-08-08. https://mapping.emergency.copernicus.eu/activations/EMSR683/",
+        "orbits": {
+          "directions_with_a_usable_pair": [
+            "ASCENDING",
+            "DESCENDING"
+          ],
+          "by_direction": {
+            "ASCENDING": {
+              "usable": true,
+              "n_tracks": 3,
+              "best": {
+                "relative_orbit": 44,
+                "post_day": "2023-06-11",
+                "post_latency_days": 1,
+                "n_pre": 3
+              },
+              "why": [
+                "track 44 ASCENDING: post 2023-06-11 (+1 d), 3 pre images 2023-05-06..2023-05-30 -> OK",
+                "track 73 ASCENDING: no full-coverage post-event image within 12 days -> skipped",
+                "track 146 ASCENDING: post 2023-06-18 (+8 d), 3 pre images 2023-05-13..2023-06-06 -> OK"
+              ]
+            },
+            "DESCENDING": {
+              "usable": true,
+              "n_tracks": 2,
+              "best": {
+                "relative_orbit": 37,
+                "post_day": "2023-06-11",
+                "post_latency_days": 1,
+                "n_pre": 3
+              },
+              "why": [
+                "track 37 DESCENDING: post 2023-06-11 (+1 d), 3 pre images 2023-05-06..2023-05-30 -> OK",
+                "track 139 DESCENDING: post 2023-06-18 (+8 d), 3 pre images 2023-05-13..2023-06-06 -> OK"
+              ]
+            }
+          }
+        }
+      },
+      "misses": {},
+      "false_alarms": {
+        "total_pixels": 1547,
+        "false_flood_fraction_domain": 0.0014,
+        "false_flood_fraction_analysed": 0.0068,
+        "by_place": {
+          "permanent-water shore": 499,
+          "channel corridor": 135,
+          "flat ground away from the channel": 833,
+          "sloping ground": 80,
+          "other analysed ground": 0
+        },
+        "by_place_share": {
+          "permanent-water shore": 0.3226,
+          "channel corridor": 0.0873,
+          "flat ground away from the channel": 0.5385,
+          "sloping ground": 0.0517,
+          "other analysed ground": 0.0
+        },
+        "rules": {
+          "pixels": 1547,
+          "sar_only": 1547,
+          "optical_contributed": 0,
+          "high_confidence": 194,
+          "debris_class": 0,
+          "brightened": 1011,
+          "darkened": 536
+        },
+        "distance_to_permanent_water_px": {
+          "<=1": 141,
+          "1-3": 358,
+          "3-10": 579,
+          "10-30": 295,
+          ">30": 174
+        }
+      },
+      "boundary": {},
+      "shift": {},
+      "bounds": {},
+      "metrics": {
+        "false_flood_fraction": 0.0014
+      },
+      "error": null
+    }
+  ]
+}

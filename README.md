@@ -246,6 +246,7 @@ venv\Scripts\python.exe -m eval.check_gates
 | `eval/run_scoreboard.py` | Runs the pipeline per event from the cache and scores floods against their reference using each event's `reference_classes`; controls on `false_flood_fraction`. Appends rows to `eval/results/flood.csv`. |
 | `eval/tune.py` | Leave-one-event-out over the grid in `config.py::TUNE_GRIDS`: maximise mean tolerant F1 on the OTHER events subject to every control ≤ 1% false flood, then score the left-out event (`split=loeo`). With `--optical`, a **second** leave-one-event-out pass over `OPTICAL_TUNE_GRIDS`, crossing each fold's own SAR point with every optical point, then the adoption rule in `config.OPTICAL_ADOPTION` — declared before the pass, and rows are appended only if it says KEEP. Before the verdict is trusted it checks that fusion `off` reproduces the radar-only numbers exactly (30/30 on the current dev set). Writes `eval/chosen_params.json` and a diff against `config.py` — it never edits `config.py`. |
 | `validation/compare.py` | The metric definitions, used by both the scoreboard and the CLI below, so a manual check and a gate row cannot disagree. |
+| `eval/diagnose_errors.py` | Takes the error map apart, per event: every missed reference pixel attributed to one cause (not analysed / no change signal / a named rule), every false alarm attributed to a terrain position and the rule that admitted it, boundary offset and a ±5 px shift scan, acquisition facts, and an oracle upper bound per error source. Writes `docs/accuracy_diagnosis.md` plus `docs/accuracy_diagnosis.json`, its provenance. Changes no code and no parameter, appends no results row, and re-renders from the JSON with `--from-json`. |
 
 Things these scripts refuse to do, by design:
 
@@ -427,6 +428,16 @@ the grid and the data declined it. A 20 m resolution cell in a floor only two or
 straddles water, bank and wall, so its class reflects whichever scatterer dominated a mixed pixel.
 That is what `reliability_narrow_valley.tif` now marks, and what
 `run_report.json → reliability.narrow_valley` quantifies per run.
+
+**Where that error actually sits** is taken apart per event in `docs/accuracy_diagnosis.md`
+(`venv\Scripts\python.exe -m eval.diagnose_errors`), which attributes every missed reference pixel
+to one cause and every false alarm to a terrain position. Two hypotheses are settled there and both
+are negative: the gorge error is **not** a geometric misregistration (the ±5 px shift scan finds its
+best shift within two pixels of zero, in inconsistent directions, for a small gain) and **not** an
+edge-of-polygon disagreement (only a few percent of steep-event errors lie within 1 px of a correct
+detection). The reservoir-shore explanation for the worst control is settled there too, also
+negative. That document names the largest fixable source and the physics-based fix for it; nothing
+has been implemented, and flood mapping stays frozen.
 
 Positive fraction and mean slope are **confounded** in this dev set — the steepest events also have
 the smallest references — so this evidence cannot separate "steep terrain" from "tiny target". Both

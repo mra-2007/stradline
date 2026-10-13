@@ -279,8 +279,10 @@ offline end-to-end run with mocked downloads; the gate checker. Synthetic result
 not real-world accuracy.
 
 **Measured on real data (6 independent mountain/valley flood references, leave-one-event-out,
-20 m boundary tolerance).** Primary quantity is flood-affected area = our flood classes ∪ debris,
-against each reference's flooded + debris/mass-movement classes. Every number below is a row in
+20 m boundary tolerance).** Primary quantity is **flood extent = our flood classes only** — debris
+was taken out of it on 2026-10-12 — scored against each reference's flooded **+ debris/mass-movement**
+classes. The reference side deliberately does **not** follow that change, which makes this the
+harder reading: a reference debris polygon is now an unreachable miss. Every number below is a row in
 `eval/results/flood.csv` (`run_id=20261012T165259Z`, `split=loeo` for floods, `split=full` for
 controls). Leave-one-event-out means the rows do **not** share one `params_hash`: four events were
 scored at `0550873e7ea6`, Poza Honda at `d46da9ccd649` and Larkana at `f08e2edf2c4c`, those two

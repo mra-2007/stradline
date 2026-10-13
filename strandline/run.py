@@ -425,12 +425,18 @@ def params_hash(dp: DetectParams, rp: RunParams, op: OpticalParams | None = None
     """The 12-hex identity of a configuration.
 
     `op=None` (or optical disabled) hashes byte-identically to the way it did
-    before Sentinel-2 existed here, and `ep=None` or a DEFAULT ExtentParams
+    before Sentinel-2 existed here, and `ep=None` or `EXTENT_HASH_BASELINE`
     hashes byte-identically to the way it did before the extent option existed,
     so every params_hash already recorded in eval/results/ still identifies the
     same configuration. No optical or extent field lives in DetectParams or
     RunParams, which is what makes that true; it is pinned by
     tests/test_params_hash_reproducible.py. See config.params_dict.
+
+    NOT the DEFAULT ExtentParams. The shipped default moved to debris-OUT on
+    2026-10-12, so `ExtentParams()` now hashes DIFFERENTLY from `None` - which
+    is the point: it scores a different quantity and must not borrow the hash of
+    the rows published before the option existed. A caller that wants the
+    published identity must pass `EXTENT_HASH_BASELINE`, not `ExtentParams()`.
     """
     return hashlib.sha256(
         json.dumps(params_dict(dp, rp, op, ep), sort_keys=True).encode()).hexdigest()[:12]

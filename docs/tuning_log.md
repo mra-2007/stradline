@@ -2080,21 +2080,65 @@ them. Resolving that turned up two more things worth writing down.
 The code is committed as `65d301e`. Every published pair was re-scored from
 scratch against it and compared metric by metric:
 
-| event | hash | result |
-|---|---|---|
-| `bhutan_punakha_2024` | `0550873e7ea6` | identical |
-| `bosnia_konjic_2024` | `0550873e7ea6` | identical |
-| `ecuador_poza_honda_2025` | `d46da9ccd649` | identical |
-| `norway_ringebu_2023` | `0550873e7ea6` | identical |
-| `norway_selsverket_2023` | `0550873e7ea6` | identical |
-| `pakistan_larkana_2022` | `f08e2edf2c4c` | identical |
-| all four controls | `0550873e7ea6` | identical |
+**What is recorded, and therefore what may be claimed:** all 10 published rows
+match their score files under `runs/eval/<event>/scores/<hash>.json` on every
+metric, 0 mismatches — independently re-checked by `/audit`. The per-fold hashes
+are `0550873e7ea6` for four events, `d46da9ccd649` for Poza Honda,
+`f08e2edf2c4c` for Larkana, and `0550873e7ea6` for all four controls, and each
+of those reproduces from the declared grids with today's code.
 
-**10 of 10 byte-identical**, and separately all 10 CSV rows match their score
-files exactly. So the `-dirty` suffix records the state of the tree at the
-moment of writing, which is what it is for, and not an irreproducible number.
-The suffix stays: rewriting history to make a label tidy would be worse than the
-label.
+**What was ALSO run but is NOT recorded, and so is not claimed as a result:** a
+re-score of those ten pairs from the committed tree, which came out identical on
+every metric. `/audit` was right to reject it under Rule 3.8 — the number was in
+a terminal, not in a file. It is not written to `eval/results/repro.csv` here
+either, deliberately: that file feeds the `reproducibility` gate, the check I
+ran compares *scored metrics* rather than output rasters byte for byte, and
+flipping a 90% gate from NO DATA to PASS on the narrower of two readings is
+exactly the kind of move this project does not make. It is listed as an open
+item below and belongs to the reproducibility module's own step.
+
+So the `-dirty` suffix records the state of the tree at the moment of writing,
+which is what it is for. The suffix stays: rewriting history to make a label
+tidy would be worse than the label.
+
+### Every run_id in `eval/results/flood.csv`, accounted for
+
+The file is append-only and now holds 60 rows under six run_ids. `/audit` found
+two of them undisclosed, including the one the control gate actually reads, so
+here is all six:
+
+| run_id | rows | what it is | read by a gate? |
+|---|---|---|---|
+| `20261011T110254Z` | 10 | the radar-only adoption (`rough_water`) | superseded |
+| `20261012T114247Z` | 10 | the optical-fusion adoption, debris still IN | superseded |
+| `20261012T165149Z` | 10 | the dominance adoption — **first** of two identical writes, made while wiring the row-writing branch | superseded |
+| `20261012T165259Z` | 10 | the dominance adoption, identical to the above. **The flood gate reads this one** (`split=loeo`) | **yes** |
+| `20261012T165407Z` | 10 | a scoreboard run at a configuration nobody adopted (`6bd9957fb9b5`): the scoreboard did not yet consult optical. Superseded | no |
+| `20261012T170414Z` | 10 | the scoreboard re-run at the SHIPPED configuration (`0550873e7ea6`, `split=full`). **The control gate reads this one**, since `no_flood_controls` filters on `kind` only and takes the latest run_id | **yes** |
+
+The two identical dominance writes `165149Z` and `165259Z` are a free
+reproducibility check and were left in place rather than removed, because the
+file is append-only. Nothing was deleted or altered: every historical version of
+`flood.csv` is an exact line-prefix of the current one, which `/audit` verified
+across all seven commits.
+
+### Grid order was load-bearing in the tie, and that is worth saying
+
+`/audit` checked whether the declared tie-break could have been reverse-
+engineered to pick the adopted point, and the answer is no — but not because the
+tie-break decided. All four dominating candidates are **identical on all three**
+of its components: worst analysed-area false flood 0.0164, worst gated 0.0048,
+total flood-affected 427.68 ha on the controls. So no permutation or reweighting
+of the tie-break could change the outcome, and **grid order alone chose**.
+
+That matters in one direction: with the extent axis as the inner loop — fixed in
+`ce46ed6`, before the rule was declared — index 3 wins. As an outer loop,
+`water_only` debris-**IN** would have won instead, a materially different
+configuration with a lower held-out mean (0.5252 against 0.5266). Grid order was
+therefore load-bearing and was fixed in the same commit that produced the
+scores, not before them. Nothing was lost by it: the adopted point is tied-best
+on held-out F1 among the four, and every one of the four removes debris from the
+extent or the deposit channel or both.
 
 ### Why the rows could NOT simply be re-emitted with a clean hash
 
@@ -2136,3 +2180,73 @@ which under Rule 3.8 is the same as not having them. The protections that have
 had to be added - append-only results, a separate artefact for a refusal, the
 `-dirty` marker, the extent hash baseline, and now this - are all of that one
 kind.
+
+---
+
+## 2026-10-13 — OPEN ITEMS carried forward (flood mapping is frozen; these are not detection changes)
+
+`/audit` returned FAIL on two findings and raised five more. All seven are
+addressed in the commit carrying this entry except where listed below, which are
+recorded here rather than fixed, by an explicit budget decision for this step:
+apply the findings once, commit, and carry the remainder as open items instead
+of opening another audit round.
+
+**Fixed in this commit**
+
+1. **README misstated the primary scored quantity** (FAIL). It still said
+   "flood classes ∪ debris" nineteen lines above the paragraph explaining that
+   debris had been taken out. Corrected to "flood extent = our flood classes
+   only", with the reference side explicitly not following the change.
+2. **An unsupported "10 of 10 byte-identical" claim** (FAIL). Scoped to what a
+   file records; see the entry above and open item A.
+3. **A hash/quantity collision left open at the keying site.** `build_matrix`
+   keyed the radar matrix on `params_hash(dp, rp)` (the baseline extent) while
+   `score_with_scene` had started resolving `ep=None` to the SHIPPED default and
+   writing under that, so a cache miss after 2026-10-12 would have stored a
+   debris-OUT score under `d4f9b1791c82` — the hash of the published debris-IN
+   rows. The radar pass now passes `EXTENT_HASH_BASELINE` explicitly at both the
+   key and the write. No published number was affected: no such score was ever
+   written (`/audit` checked the mtimes).
+4. **Two undisclosed run_ids**, including the one the control gate reads. Table
+   above.
+5. **The ceiling guard was narrower than its claim.** `analysed_ceiling` is now
+   keyword-only, and the `ast` test rejects any constant looser than the
+   declared ceiling and any non-constant, not just `1.0 / 1 / None`.
+6. **Two docstrings still asserted the invariant the default move broke** —
+   that a DEFAULT `ExtentParams` hashes like `None`. It does not, and must not.
+7. **A measured number hardcoded into production output.** The "stays at 1.64%"
+   sentence is now computed from the matrix by `binding_control_note`, so it
+   corrects itself or disappears.
+
+**Open items**
+
+- **A. The reproducibility gate is still NO DATA, and the re-score check is not
+  recorded.** The check I ran compares scored *metrics*; the gate's
+  `identical_output` is better read as output rasters byte for byte. Writing the
+  metric-level result to `eval/results/repro.csv` would flip a 90% gate from NO
+  DATA to PASS on the narrower reading, which is not a trade this project makes.
+  **To do, in the reproducibility module's own step:** run a byte-level check of
+  `flood_classes.tif`, `flood_source.tif` and `run_report.json` across two runs
+  of the same inputs, and record both readings.
+- **B. The stricter control criterion still FAILS on
+  `ecuador_poza_honda_control_2024`**: 1.64% false flood over analysed ground
+  against a declared 1% ceiling, identical at all 42 configurations. Its 7,780
+  false pixels are Sentinel-1 flood *water*; the reservoir hypothesis is
+  untested. **This is the most important open item in flood mapping** and
+  closing it needs a detection change, which the freeze forbids without a new
+  declared decision.
+- **C. Feasibility is tested on 4-decimal-rounded fractions.**
+  `bosnia_konjic_control_2024` reads 0.0100 against a 0.01 ceiling and passes
+  "at the line"; a true 0.01004 would round down and pass. No effect today,
+  because Ecuador makes every point infeasible regardless. Fix by comparing
+  unrounded values when the ceiling is next consulted.
+- **D. `water_only` keeping the SAR debris channel is tested only in
+  `darkening` mode**, because the shipped `rough_water` produces no SAR debris
+  on the synthetic fixture — itself a measured finding (107 px across the whole
+  dev set). The property is untested in the shipped mode.
+- **E. Grid order is load-bearing in the dominance tie** (section above). A
+  future declared grid should fix axis order *before* scores exist, as
+  `TUNE_GRIDS` and `OPTICAL_TUNE_GRIDS` did and as the extent axis did not quite.
+
+None of A–E changes a published number, a parameter, or a gate. Flood mapping
+stays frozen.

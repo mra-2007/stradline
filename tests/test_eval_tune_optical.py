@@ -790,13 +790,30 @@ def test_ties_are_broken_by_fewer_false_alarms():
     assert len(out["dominating"]) == 2
 
 
-def test_the_rule_reports_that_it_makes_nothing_feasible():
-    """It must never be mistaken for passing the stricter criterion."""
-    m = _dom_matrix(0.50, 0.55, (0.0022, 0.0437), (0.0001, 0.0028))
+def test_the_rule_reports_the_binding_control_from_the_matrix():
+    """It must never be mistaken for passing the stricter criterion.
+
+    And the sentence is MEASURED, not typed: an earlier version hardcoded
+    "ecuador_poza_honda_control_2024 stays at 1.64%", which was right but could
+    not stop being right safely, and this test pinned that literal. Now the note
+    is read from the matrix, so both branches have to be exercised.
+    """
+    # Every point leaves the control over the ceiling: the note must name it.
+    m = _dom_matrix(0.50, 0.55, (0.0022, 0.0437), (0.0001, 0.0164))
     out = tune.select_by_dominance(m, [INC, CAND], ["a", "b", "c"], ["ctrl"], SARS,
                                    N_PRE, incumbent=INC)
-    assert "remains FAILED" in out["does_not_make_anything_feasible"]
-    assert "1.64%" in out["does_not_make_anything_feasible"]
+    note = out["does_not_make_anything_feasible"]
+    assert "remains FAILED" in note
+    assert "ctrl" in note and "1.64%" in note, note
+    assert "BEST" in note, "it must say the figure is the best available, not just any point"
+
+    # And when no control breaches at its best point, it must NOT claim a failure.
+    m = _dom_matrix(0.50, 0.55, (0.0022, 0.0080), (0.0001, 0.0028))
+    out = tune.select_by_dominance(m, [INC, CAND], ["a", "b", "c"], ["ctrl"], SARS,
+                                   N_PRE, incumbent=INC)
+    note = out["does_not_make_anything_feasible"]
+    assert "remains FAILED" not in note
+    assert "not masking an infeasibility" in note
 
 
 def test_no_production_path_lifts_the_control_ceiling():
@@ -814,6 +831,8 @@ def test_no_production_path_lifts_the_control_ceiling():
     # Parsed, not grepped: the first version of this test used a regex over the
     # source with comments stripped, and matched the sentence in `select`'s own
     # DOCSTRING that explains why the hatch exists. A docstring is not a call.
+    from strandline.config import CONTROL_ANALYSED_AREA_CEILING
+
     tree = ast.parse((ROOT / "eval" / "tune.py").read_text(encoding="utf-8"))
     offenders = []
     for node in ast.walk(tree):
@@ -823,11 +842,27 @@ def test_no_production_path_lifts_the_control_ceiling():
             if kw.arg != "analysed_ceiling":
                 continue
             value = kw.value
-            if isinstance(value, ast.Constant) and value.value in (1.0, 1, None):
+            # Any constant LOOSER than the declared ceiling, not just 1.0/None:
+            # the first version of this test only caught those three literals.
+            if isinstance(value, ast.Constant):
+                if value.value is None or (
+                        isinstance(value.value, (int, float))
+                        and value.value > CONTROL_ANALYSED_AREA_CEILING):
+                    offenders.append(getattr(node, "lineno", "?"))
+            else:
+                # A non-constant could be anything; production has no reason to
+                # compute this value at a call site.
                 offenders.append(getattr(node, "lineno", "?"))
     assert not offenders, (
         f"eval/tune.py lifts or disables the analysed-area control ceiling at "
         f"line(s) {offenders}; that hatch is for tests only")
+    # And it cannot be loosened positionally: `select` takes it keyword-only.
+    import inspect
+
+    kind = inspect.signature(tune.select).parameters["analysed_ceiling"].kind
+    assert kind is inspect.Parameter.KEYWORD_ONLY, (
+        "passed positionally, the ceiling could be loosened by a call that looks "
+        "like it is passing something else")
 
 
 def test_the_extent_default_is_reported_by_extent_of():

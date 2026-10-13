@@ -74,6 +74,7 @@ from eval.run_scoreboard import (
 from strandline import optical, run as pipeline
 from strandline.config import (
     CONTROL_ANALYSED_AREA_CEILING,
+    EXTENT_HASH_BASELINE,
     DETECT_MODES,
     DEV_N_PRE,
     EXTENT_TUNE_GRID,
@@ -313,9 +314,12 @@ def materialise_full(point: dict, n_pre: int = DEV_N_PRE
 
     Returns `op=None` when the point carries no `optical.*` key at all, and
     `ep=None` when it carries no `extent.*` key, which together are the
-    radar-only configuration and must keep hashing as they always have. A
-    DEFAULT ExtentParams also hashes as before (config.params_dict), so passing
-    one explicitly is safe too; `None` is kept for exactness.
+    radar-only configuration and must keep hashing as they always have.
+
+    `None` here means EXTENT_HASH_BASELINE, not `ExtentParams()`: since the
+    shipped default moved to debris-OUT, the default hashes differently from
+    the baseline, so the two are not interchangeable and passing the default
+    "for exactness" would silently change the identity of a radar-only point.
     """
     dp, rp = materialise(point, n_pre)
     has_optical = any(k.startswith("optical.") for k in point)
@@ -416,7 +420,23 @@ def build_matrix(events: list[dict], points: list[dict], runs_root: Path | None 
             scene = None
             for point in pts:
                 dp, rp = materialise(point, n_pre)
-                phash = pipeline.params_hash(dp, rp)
+                # EXTENT_HASH_BASELINE, explicitly, at BOTH the key and the
+                # write (it is handed to score_with_scene below). Leaving the
+                # extent implicit keyed the matrix on the baseline while
+                # `score_with_scene` resolved `ep=None` to the SHIPPED default
+                # and wrote under that instead - so after the default moved to
+                # debris-OUT, a cache miss would have stored a debris-OUT score
+                # under `d4f9b1791c82`, the hash of the already-published
+                # debris-IN rows. Exactly the collision EXTENT_HASH_BASELINE
+                # exists to prevent, closed at the write site in 65d301e and
+                # left open here; found by /audit, no published number affected
+                # (no such score was ever written).
+                #
+                # The radar pass is scored at the BASELINE extent on purpose:
+                # its job is to choose the SAR point, and keeping it on the
+                # baseline keeps every radar number comparable with the ones
+                # already published. What ships is decided by the second pass.
+                phash = pipeline.params_hash(dp, rp, None, EXTENT_HASH_BASELINE)
                 if reuse:
                     cached = load_score(name, phash, runs_root)
                     if reusable(cached):
@@ -428,7 +448,9 @@ def build_matrix(events: list[dict], points: list[dict], runs_root: Path | None 
                     if scene is None:
                         scene = prepare_event(event, rp, dp, runs_root, allow_download,
                                               max_pixels, log=lambda *a: None)
-                    score = score_with_scene(event, scene, dp, tolerance_px, log=lambda *a: None)
+                    score = score_with_scene(event, scene, dp, tolerance_px,
+                                             ep=EXTENT_HASH_BASELINE,
+                                             log=lambda *a: None)
                 except KeyboardInterrupt:
                     raise
                 # Broad on purpose: one unusable event must not lose the whole
@@ -512,7 +534,7 @@ class Selection:
 
 
 def select(matrix: Matrix, train: list[str], controls: list[str], points: list[dict],
-           ceiling: float, n_pre: int = DEV_N_PRE, hash_of=point_hash,
+           ceiling: float, n_pre: int = DEV_N_PRE, hash_of=point_hash, *,
            analysed_ceiling: float = CONTROL_ANALYSED_AREA_CEILING) -> Selection:
     """Best feasible grid point on `train`, with every control under BOTH ceilings.
 
@@ -542,7 +564,9 @@ def select(matrix: Matrix, train: list[str], controls: list[str], points: list[d
     `analysed_ceiling=None` "for tests", which is an unenforced convention and
     exactly the kind of escape hatch that quietly becomes production behaviour.
     A test that needs the old behaviour raises the ceiling to 1.0 explicitly,
-    which is visible in the test and cannot be mistaken for a default.
+    which is visible in the test and cannot be mistaken for a default. It is
+    KEYWORD-ONLY for that reason: passed positionally it could be loosened by a
+    call that merely looks like it is passing something else.
 
     `hash_of` is how a point is keyed in the matrix - `point_hash` for the radar
     search, `full_point_hash` for the optical pass, whose points also carry
@@ -944,6 +968,32 @@ def dominance_tiebreak(matrix: Matrix, point: dict, controls: list[str],
     return (round(worst_analysed, 6), round(worst_gated, 6), round(affected, 2))
 
 
+def binding_control_note(matrix: Matrix, points: list[dict], controls: list[str],
+                         sar_points: dict[str, dict], n_pre: int = DEV_N_PRE) -> str:
+    """Which control still breaches the analysed-area ceiling, MEASURED not typed.
+
+    An earlier version stated the binding control and its 1.64% as literal text,
+    which was right but could not stop being right safely. Read from the matrix,
+    the sentence corrects itself or disappears.
+    """
+    worst: dict[str, float] = {}
+    for point in points:
+        fractions = fold_control_fractions(
+            matrix, combine(sar_points.get("") or next(iter(sar_points.values())), point),
+            controls, n_pre) or {}
+        for control, pair in fractions.items():
+            worst[control] = min(worst.get(control, 1.0), pair["analysed"])
+    over = {c: v for c, v in worst.items() if v > CONTROL_ANALYSED_AREA_CEILING}
+    if not over:
+        return ("Every control is at or under the analysed-area ceiling at its best point, "
+                "so this rule is not masking an infeasibility.")
+    parts = ", ".join(f"{c} at {v:.2%}" for c, v in sorted(over.items()))
+    return (f"The stricter analysed-area criterion remains FAILED: {parts} at the BEST "
+            f"point available on the grid, against a {CONTROL_ANALYSED_AREA_CEILING:.0%} "
+            f"ceiling. This rule only moves the project to a configuration better on every "
+            f"measured axis; it does not satisfy the criterion.")
+
+
 def select_by_dominance(matrix: Matrix, points: list[dict], flood_events: list[str],
                         controls: list[str], sar_points: dict[str, dict],
                         n_pre: int = DEV_N_PRE,
@@ -985,12 +1035,8 @@ def select_by_dominance(matrix: Matrix, points: list[dict], flood_events: list[s
         "tied_at_best": [dict(p) for p in ties],
         "chosen": None if chosen is None else dict(chosen),
         "chosen_params_hash": None if chosen is None else full_point_hash(chosen, n_pre),
-        "does_not_make_anything_feasible": (
-            "The stricter analysed-area criterion remains FAILED: "
-            "ecuador_poza_honda_control_2024 stays at 1.64% whatever is adopted, because "
-            "its false pixels are Sentinel-1 flood water and no grid point changes them. "
-            "This rule only moves the project to a configuration better on every measured "
-            "axis; it does not satisfy the criterion."),
+        "does_not_make_anything_feasible": binding_control_note(
+            matrix, points, controls, sar_points, n_pre),
         "comparisons": comparisons,
     }
 
@@ -1549,7 +1595,10 @@ def overwrite_refusal(path: Path, report: dict) -> str | None:
     try:
         existing = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return None
+        # Unreadable is not permission. A corrupt record may still be the only
+        # thing standing behind the published rows, so it is protected too.
+        return (f"this run adopted nothing and {path.name} could not be read, so whether "
+                f"it records an adoption is unknown")
     if not adopted_something(existing):
         return None
     return (f"this run adopted nothing, but {path.name} records an adoption "

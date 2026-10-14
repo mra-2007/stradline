@@ -12,6 +12,10 @@ from space, and the villages it stranded.
 
 ## Setup (Windows, cmd)
 
+Prerequisites: Python 3.11, Node.js 18+ with npm (only needed to build or develop the dashboard in
+`web/`), and a free account at https://dataspace.copernicus.eu (for the pipeline's own Copernicus
+openEO login, not the dashboard).
+
 ```
 py -3.11 -m venv venv
 venv\Scripts\python.exe -m pip install -r requirements.txt
@@ -450,8 +454,23 @@ cd ..
 venv\Scripts\python.exe -m uvicorn api.main:app --port 8000
 ```
 
-Then open `http://localhost:8000`. `npm run dev` (port 5173) proxies `/health`, `/preflight` and
-`/runs` to the API on 8000 for front-end work.
+Then open `http://localhost:8000`.
+
+For front-end development, run the API and the Vite dev server side by side in two terminals —
+`npm run dev` (port 5173) proxies `/health`, `/preflight` and `/runs` to the API on 8000, so source
+edits appear without a rebuild:
+
+```cmd
+:: terminal 1
+venv\Scripts\python.exe -m uvicorn api.main:app --port 8000
+
+:: terminal 2
+cd web
+npm install
+npm run dev
+```
+
+Then open `http://localhost:5173`.
 
 What it draws, and from where:
 

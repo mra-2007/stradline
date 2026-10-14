@@ -80,6 +80,7 @@ from strandline.config import (
     EXTENT_TUNE_GRID,
     FUSION_OFF,
     FUSION_UNION,
+    KS_TRAINED_EVENTS,
     MODEL_MODE_PHYSICS,
     MODEL_MODES,
     MODEL_TUNE_GRIDS,
@@ -402,21 +403,31 @@ def full_point_hash(point: dict, n_pre: int = DEV_N_PRE) -> str:
     return pipeline.params_hash(*materialise_full(point, n_pre))
 
 
-def materialise_full_model(point: dict, n_pre: int = DEV_N_PRE
+def materialise_full_model(point: dict, n_pre: int = DEV_N_PRE,
+                           model_path: str | None = None
                            ) -> tuple[DetectParams, RunParams, OpticalParams | None,
                                       ExtentParams | None, ModelParams | None]:
     """A combined SAR + optical + extent + model point -> every parameter set a
     run uses. Same as `materialise_full`, plus `mp=None` when the point carries
     no `model.*` key - the model pass's own radar-only baseline.
+
+    `model_path`, when given, becomes part of the hash: two inference passes
+    at the same mode/t_gorge/fusion_weight but DIFFERENT checkpoint files (a
+    re-trained "model 2") must not collide with, and so never reuse, a score
+    cached under "model 1". Without it, every point hashes against
+    `ModelParams.model_path`'s own default, which is only correct while that
+    default IS the checkpoint actually used.
     """
     dp, rp, op, ep = materialise_full(point, n_pre)
     has_model = any(k.startswith("model.") for k in point)
-    return dp, rp, op, ep, (materialise_model(point) if has_model else None)
+    base_mp = ModelParams(model_path=model_path) if model_path else None
+    return dp, rp, op, ep, (materialise_model(point, base_mp) if has_model else None)
 
 
-def full_point_hash_model(point: dict, n_pre: int = DEV_N_PRE) -> str:
+def full_point_hash_model(point: dict, n_pre: int = DEV_N_PRE,
+                          model_path: str | None = None) -> str:
     """The identity of a combined SAR + optical + extent + model point."""
-    return pipeline.params_hash(*materialise_full_model(point, n_pre))
+    return pipeline.params_hash(*materialise_full_model(point, n_pre, model_path))
 
 
 def extent_of(point: dict) -> bool:
@@ -954,42 +965,76 @@ def scene_with_model(scene, mp: ModelParams | None):
     return replace(scene, model_evidence=new_evidence, model_params=mp)
 
 
-def model_sar_points(selections: dict[str, Selection], final: "Selection | None"
-                     ) -> dict[str, dict]:
-    """Per-fold SAR+optical point for the model pass, same shape as
-    `optical_sar_points` - reused as-is would require the optical pass's own
-    selections; this project's current state (eval/chosen_params.json) has no
-    scored optical selections to build from until that pass is re-run, so a
-    caller typically supplies the frozen point via `frozen_sar_points()` or an
-    explicit per-fold mapping instead.
+def published_point_per_fold() -> dict[str, dict]:
+    """Per fold: exactly the SAR+optical+extent point that fold's PUBLISHED
+    held-out row in eval/results/flood.csv used - the fixed base the model
+    pass crosses with MODEL_TUNE_GRIDS.
+
+    `frozen_sar_points()` carries only the SAR half (detect.*/run.*); the
+    optical/extent half is not per-fold (the optical pass's adoption, or the
+    dominance rule, decides it ONCE for the whole run - see `run_optical_pass`,
+    the `dominance` branch), so it is read from
+    `optical_pass.chosen_configuration` and the same optical.*/extent.* keys
+    are added to every fold. Returns {} if eval/chosen_params.json has no
+    recorded SAR point (the radar pass has not been run/published).
     """
-    out: dict[str, dict] = {}
-    for held, sel in selections.items():
-        if sel.ok:
-            out[held] = dict(sel.chosen.point)
-    if final is not None and final.ok:
-        out[""] = dict(final.chosen.point)
-    return out
+    sar = frozen_sar_points()
+    if not sar or not CHOSEN.exists():
+        return {}
+    try:
+        saved = json.loads(CHOSEN.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    chosen_cfg = (saved.get("optical_pass") or {}).get("chosen_configuration") or {}
+    opt_ext = {k: v for k, v in chosen_cfg.items()
+              if k.startswith("optical.") or k.startswith("extent.")}
+    return {fold: {**point, **opt_ext} for fold, point in sar.items()}
+
+
+def model_points_needed(published: dict[str, dict], model_points: list[dict],
+                        model_path: str | None = None) -> list[dict]:
+    """Every combined (published SAR+optical+extent) x model point, deduplicated."""
+    seen: dict[str, dict] = {}
+    for base in published.values():
+        for mpoint in model_points:
+            point = combine(base, mpoint)
+            seen.setdefault(full_point_hash_model(point, model_path=model_path), point)
+    return list(seen.values())
+
+
+def mark_contamination(scores: "list[EventScore] | dict", contaminated: tuple[str, ...]) -> None:
+    """Stamp `provenance["contaminated"]` on every score, in place.
+
+    Lives in PROVENANCE, never in metrics (the `control_analysed_fraction`
+    reason: it must never become a CSV column or a gate input by accident).
+    Idempotent and safe to call on an already-stamped score.
+    """
+    values = scores.values() if isinstance(scores, dict) else scores
+    for score in values:
+        if score is not None:
+            score.provenance = {**(score.provenance or {}),
+                                "contaminated": score.event in contaminated}
 
 
 def build_model_matrix(events: list[dict], points: list[dict],
                        runs_root: Path | None = None, *, n_pre: int = DEV_N_PRE,
                        tolerance_px: int = 1, reuse: bool = True,
                        allow_download: bool = False, max_pixels: int = MAX_SCENE_PIXELS,
-                       log=print) -> Matrix:
+                       model_path: str | None = None, log=print) -> Matrix:
     """Score every event at every combined (SAR+optical x model) point.
 
     One scene is prepared per event, with the model probe always on (so
     inference runs once, if it can run at all); every point then only
     re-thresholds that evidence and re-classifies - both cheap.
     """
+    probe = replace(MODEL_PROBE, model_path=model_path) if model_path else MODEL_PROBE
     matrix: Matrix = {}
     for i, event in enumerate(events, start=1):
         name = str(event["name"])
         log(f"[{i}/{len(events)}] {name}")
         scene = None
         for point in points:
-            dp, rp, op, ep, mp = materialise_full_model(point, n_pre)
+            dp, rp, op, ep, mp = materialise_full_model(point, n_pre, model_path)
             phash = pipeline.params_hash(dp, rp, op, ep, mp)
             if reuse:
                 cached = load_score(name, phash, runs_root)
@@ -1001,7 +1046,7 @@ def build_model_matrix(events: list[dict], points: list[dict],
             try:
                 if scene is None:
                     scene = prepare_event(event, rp, dp, runs_root, allow_download,
-                                          max_pixels, op=op, mp=MODEL_PROBE, log=lambda *a: None)
+                                          max_pixels, op=op, mp=probe, log=lambda *a: None)
                     log(f"      model: {scene.model_report.get('status')}")
                 point_scene = scene_with_model(scene, mp)
                 score = score_with_scene(event, point_scene, dp, tolerance_px, op=op, ep=ep,
@@ -1805,6 +1850,159 @@ def overwrite_refusal(path: Path, report: dict) -> str | None:
             f"(run_id {existing.get('run_id')})")
 
 
+# --- the model pass: CLI entry point -----------------------------------------
+
+def run_model_pass(args) -> int:
+    """`python -m eval.tune --model-pass`: the third leave-one-event-out pass.
+
+    Crosses MODEL_TUNE_GRIDS with the PUBLISHED SAR+optical+extent point
+    (`published_point_per_fold`) - the radar and optical passes are not
+    re-run here, by the same cost decision OPTICAL_TUNE_GRIDS took relative
+    to TUNE_GRIDS.
+
+    Events in `strandline.config.KS_TRAINED_EVENTS` are scored (every point,
+    same as any other event) but EXCLUDED from the training/held-out pool
+    that chooses mode/fusion_weight/t_gorge, and their rows are appended with
+    `split="loeo_contaminated"` - a distinct value that `eval/gates.yaml`'s
+    `where: {kind: flood, split: loeo}` filter already excludes from every
+    gate, so they can never silently average into a published number, but
+    they are still in eval/results/flood.csv, visibly labelled, not dropped.
+    """
+    con = contract()
+    tolerance_px = int(con["boundary_tolerance_px"])
+    ceiling = control_ceiling()
+    events_all = sb.load_events()
+    planned = select_events(args.plan, args.events, events_all)
+
+    floods_all = [str(e["name"]) for e in planned if sb.row_kind(e) != sb.KIND_CONTROL]
+    controls = [str(e["name"]) for e in planned if sb.row_kind(e) == sb.KIND_CONTROL]
+    contaminated = [e for e in floods_all if e in KS_TRAINED_EVENTS]
+    clean_floods = [e for e in floods_all if e not in KS_TRAINED_EVENTS]
+    run_id = sb.new_run_id()
+    model_path = args.model_path or ModelParams.model_path
+
+    print(f"run_id {run_id}")
+    print(f"model path: {model_path}")
+    print(f"pool: {len(floods_all)} flood event(s) ({len(contaminated)} contaminated: "
+          f"{', '.join(contaminated) or '(none)'}), {len(controls)} control(s)")
+
+    published = published_point_per_fold()
+    if not published:
+        print("\nNo published SAR(+optical) configuration in eval/chosen_params.json: run "
+              "the radar pass (and, if adopted, the optical pass) first. Nothing scored.")
+        return 1
+    missing_folds = [e for e in clean_floods if e not in published]
+    if missing_folds:
+        print(f"\nNOTE: {len(missing_folds)} clean flood event(s) have no published fold "
+              f"({', '.join(missing_folds)}); they cannot be held out and are skipped by "
+              f"the model pass's leave-one-out (their own row still scores at the FINAL point).")
+
+    model_points = model_grid_points()
+    print(f"grid: {len(model_points)} model point(s) over {len(MODEL_TUNE_GRIDS)} mode(s)")
+    for mode, axes in MODEL_TUNE_GRIDS.items():
+        print(f"      {mode}: " + ", ".join(f"{k.split('.', 1)[1]}={list(v)}"
+                                            for k, v in axes.items()))
+
+    needed = model_points_needed(published, model_points, model_path)
+    print(f"{len(needed)} combined configuration(s) x {len(planned)} event(s) -> up to "
+          f"{len(needed) * len(planned)} classification(s)\n")
+
+    matrix = build_model_matrix(planned, needed, args.runs_root, n_pre=args.n_pre,
+                                tolerance_px=tolerance_px, reuse=not args.no_reuse,
+                                allow_download=args.allow_download, max_pixels=args.max_pixels,
+                                model_path=model_path, log=lambda *a: print(*a))
+    mark_contamination(matrix, tuple(KS_TRAINED_EVENTS))
+
+    def hash_of(point, n_pre):
+        return full_point_hash_model(point, n_pre, model_path)
+
+    print("\n=== LEAVE-ONE-EVENT-OUT (clean events only) ===")
+    selections = leave_one_out(
+        matrix, clean_floods, controls, [], ceiling, args.n_pre, hash_of,
+        points_for=lambda held: [combine(published[held], mp) for mp in model_points]
+        if held in published else [])
+    loeo_scores: list[EventScore] = []
+    infeasible: list[str] = []
+    for held, sel in selections.items():
+        if not sel.ok:
+            print(f"  {held:<32} NO FEASIBLE MODEL POINT ({len(sel.candidates)} candidate(s))")
+            infeasible.append(held)
+            continue
+        score = matrix.get((held, sel.chosen.params_hash))
+        if score is None or not score.ok:
+            infeasible.append(held)
+            continue
+        loeo_scores.append(score)
+        print(f"  {held:<32} chose [{point_label({k: v for k, v in sel.chosen.point.items() if k.startswith('model.')})}] "
+              f"train mean {OBJECTIVE_METRIC} {sel.chosen.objective:.4f} -> held-out "
+              f"{OBJECTIVE_METRIC} {score.value(OBJECTIVE_METRIC)}")
+
+    print("\n=== FINAL MODEL PARAMETERS (clean events + controls) ===")
+    final_candidates = [combine(published.get("") or next(iter(published.values())), mp)
+                        for mp in model_points]
+    final = select(matrix, clean_floods, controls, final_candidates, ceiling, args.n_pre,
+                   hash_of)
+    if not final.ok:
+        print("  NO FEASIBLE MODEL POINT over the clean pool. `physics` (the grid's own control "
+              "point) is what every event's `model.mode` key defaults to, so this means fusion "
+              "and model-only modes found nothing better under the control ceiling; the shipped "
+              "default stays `physics`.")
+    else:
+        model_part = {k: v for k, v in final.chosen.point.items() if k.startswith("model.")}
+        print(f"  [{point_label(model_part)}]")
+        print(f"  mean {OBJECTIVE_METRIC} over {len(clean_floods)} clean event(s): "
+              f"{final.chosen.objective:.4f}   worst control {final.chosen.worst_control} "
+              f"({final.chosen.worst_control_event}) <= {ceiling}")
+
+    control_scores = ([matrix[(c, final.chosen.params_hash)] for c in controls
+                       if (c, final.chosen.params_hash) in matrix
+                       and matrix[(c, final.chosen.params_hash)].ok]
+                      if final.ok else [])
+
+    print("\n=== CONTAMINATED EVENTS (scored at the FINAL point; never trained on, "
+          "never held out) ===")
+    contaminated_scores: list[EventScore] = []
+    if final.ok:
+        for event in contaminated:
+            score = matrix.get((event, final.chosen.params_hash))
+            if score is not None and score.ok:
+                contaminated_scores.append(score)
+                print(f"  {event:<32} {OBJECTIVE_METRIC} {score.value(OBJECTIVE_METRIC)}   "
+                      f"CONTAMINATED: excluded from the pool that chose this point "
+                      f"(strandline.config.KS_TRAINED_EVENTS)")
+            else:
+                print(f"  {event:<32} NOT SCORED at the final point"
+                      + (f": {score.error}" if score is not None else ""))
+    mark_contamination(loeo_scores + control_scores + contaminated_scores, tuple(KS_TRAINED_EVENTS))
+
+    if args.no_write:
+        print("\n--no-write: no rows appended to eval/results/flood.csv.")
+    else:
+        clean_flood_events = [e for e in planned
+                              if sb.row_kind(e) != sb.KIND_CONTROL
+                              and str(e["name"]) not in KS_TRAINED_EVENTS]
+        contaminated_events = [e for e in planned
+                               if str(e["name"]) in KS_TRAINED_EVENTS]
+        control_events = [e for e in planned if sb.row_kind(e) == sb.KIND_CONTROL]
+        written = write_rows(loeo_scores, clean_flood_events, events_all, run_id, "loeo",
+                             args.results_dir)
+        if control_scores:
+            written.update(write_rows(control_scores, control_events, events_all, run_id,
+                                      "full", args.results_dir))
+        if contaminated_scores:
+            written.update(write_rows(contaminated_scores, contaminated_events, events_all,
+                                      run_id, "loeo_contaminated", args.results_dir))
+        total = sum(written.values())
+        print(f"\n  {total} row(s) appended to eval/results/flood.csv"
+              + (f" ({', '.join(f'{k}={v}' for k, v in written.items())})" if written else ""))
+
+    if infeasible or not final.ok:
+        print(f"\nSTOP: {len(infeasible)} clean event(s) had no feasible model point"
+              if infeasible else "\nSTOP: no feasible model point over the clean pool")
+        return 1
+    return 0
+
+
 # --- main ---------------------------------------------------------------------
 
 def main(argv=None) -> int:
@@ -1822,6 +2020,16 @@ def main(argv=None) -> int:
                          "appended only if the rule says KEEP")
     ap.add_argument("--apply-check", action="store_true",
                     help="read eval/chosen_params.json and print its diff against config.py")
+    ap.add_argument("--model-pass", action="store_true",
+                    help="a THIRD leave-one-event-out pass, over MODEL_TUNE_GRIDS, crossing "
+                         "each event with the PUBLISHED SAR+optical+extent point "
+                         "(eval/chosen_params.json) rather than re-running the radar pass. "
+                         "Events in strandline.config.KS_TRAINED_EVENTS are scored but "
+                         "excluded from choosing mode/fusion_weight/t_gorge, and their rows "
+                         "are written with split=loeo_contaminated. Needs "
+                         "models/strandline_kurosiwo_unet.pt (gitignored, not fetched here)")
+    ap.add_argument("--model-path", default=None,
+                    help="checkpoint path for --model-pass (default: ModelParams.model_path)")
     ap.add_argument("--allow-download", action="store_true")
     ap.add_argument("--no-reuse", action="store_true", help="recompute every score")
     ap.add_argument("--max-pixels", type=int, default=MAX_SCENE_PIXELS)
@@ -1842,6 +2050,9 @@ def main(argv=None) -> int:
         print(f"from {args.chosen_out.name}, run_id {saved.get('run_id')}")
         print_diff(saved.get("config_diff", []))
         return 0
+
+    if args.model_pass:
+        return run_model_pass(args)
 
     con = contract()
     tolerance_px = int(con["boundary_tolerance_px"])

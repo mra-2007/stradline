@@ -229,6 +229,21 @@ MODEL_TUNE_GRIDS: dict[str, dict[str, tuple]] = {
     },
 }
 
+# Dev events that overlap a Kuro Siwo TRAINING activation for the checkpoint
+# currently at `ModelParams.model_path`. Checked 2026-10-15
+# (docs/open_items.md): the Kuro Siwo catalogue lists actid 1111009 as
+# `act_region: Pakistan, aoi_name: Larkana, ref_date: 20220910T080000`, one of
+# the ten training actids given for "model 1"; `pakistan_larkana_2022` is the
+# same place and the same 2022 monsoon flood. A model scored on an event its
+# own training data overlaps cannot demonstrate out-of-sample generalisation
+# there, so eval/tune.py's model pass EXCLUDES every name here from choosing
+# `mode`/`fusion_weight`/`t_gorge` (Rule 3.4) while still scoring and reporting
+# it separately (eval/results/flood.csv split="loeo_contaminated"; Rule 6).
+#
+# A DECLARATION, not a measurement: re-check and update this tuple whenever
+# the checkpoint file changes (a new model may train on different shards).
+KS_TRAINED_EVENTS: tuple[str, ...] = ("pakistan_larkana_2022",)
+
 
 # Sentinel-1 backscatter coefficients we support, as openEO names them.
 #

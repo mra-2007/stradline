@@ -119,19 +119,40 @@ export function restingViewpoint(
   map: MLMap,
   bbox: [number, number, number, number],
   bearing: number,
+  /** The flood's own bounds, when the run produced any. */
+  subject?: [[number, number], [number, number]] | null,
 ): Viewpoint {
-  const camera = map.cameraForBounds(
-    [
-      [bbox[0], bbox[1]],
-      [bbox[2], bbox[3]],
-    ],
-    { bearing, padding: { top: 40, bottom: 150, left: 260, right: 80 } },
-  );
+  // Frame the flood, not the whole request: 83 ha inside a 34 by 50 km box is
+  // a thread of light no one can see from the corner of it. The view is
+  // widened to at least a third of the requested area so the setting still
+  // reads, and the strip always says what the whole area was.
+  let fit: [[number, number], [number, number]] = [
+    [bbox[0], bbox[1]],
+    [bbox[2], bbox[3]],
+  ];
+  if (subject) {
+    const minW = (bbox[2] - bbox[0]) / 3;
+    const minH = (bbox[3] - bbox[1]) / 3;
+    const cx = (subject[0][0] + subject[1][0]) / 2;
+    const cy = (subject[0][1] + subject[1][1]) / 2;
+    const halfW = Math.max((subject[1][0] - subject[0][0]) * 0.8, minW / 2);
+    const halfH = Math.max((subject[1][1] - subject[0][1]) * 0.8, minH / 2);
+    fit = [
+      [Math.max(bbox[0], cx - halfW), Math.max(bbox[1], cy - halfH)],
+      [Math.min(bbox[2], cx + halfW), Math.min(bbox[3], cy + halfH)],
+    ];
+  }
+
+  const camera = map.cameraForBounds(fit, {
+    bearing,
+    padding: { top: 48, bottom: 120, left: 240, right: 360 },
+  });
   const center = camera?.center as { lng: number; lat: number } | undefined;
   return {
     center: center ? [center.lng, center.lat] : [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2],
-    // The 3D view eats some of the frame, so sit a touch wider than the fit.
-    zoom: (camera?.zoom ?? 9.5) - 0.45,
+    // cameraForBounds fits the box flat on; tilting it back lays the valley
+    // down the frame, so come in closer or the area reads as a small model.
+    zoom: (camera?.zoom ?? 9.5) + 1,
     bearing,
     pitch: 60,
   };

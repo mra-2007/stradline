@@ -429,6 +429,64 @@ Interactive OpenAPI documentation is available at `http://localhost:8000/docs`. 
 - Health check: `http://localhost:8000/health`
 - Track preflight: `http://localhost:8000/preflight?bbox=85.10,27.85,85.45,28.30&date=2026-08-26`
 - Case study status: `http://localhost:8000/runs/case_smoke/status`
+- Every run the server knows: `http://localhost:8000/runs`
+- Terrain tile (terrarium, from the run's own Copernicus DEM): `http://localhost:8000/runs/case_smoke/terrain/11/1509/857.png`
+- Radar quicklook: `http://localhost:8000/runs/case_smoke/quicklook`
+
+## The dashboard (`web/`)
+
+A full-bleed 3D map of one run, with three things on top of it: a mission strip (area, date,
+"Check satellite passes", "Map this flood", the pipeline as a numbered sequence with live
+progress), three sentences that answer Track B's three questions, and the copilot panel. The
+design is specified in `web/DESIGN.md` and the code is held to it.
+
+Build it, then open the API, which serves the built files at `/`:
+
+```cmd
+cd web
+npm install
+npm run build
+cd ..
+venv\Scripts\python.exe -m uvicorn api.main:app --port 8000
+```
+
+Then open `http://localhost:8000`. `npm run dev` (port 5173) proxies `/health`, `/preflight` and
+`/runs` to the API on 8000 for front-end work.
+
+What it draws, and from where:
+
+| On screen | Source |
+| --- | --- |
+| 3D terrain, hillshade | `GET /runs/{id}/terrain/{z}/{x}/{y}.png` — terrarium tiles cut from that run's cached Copernicus DEM, no network at request time |
+| Basemap | OpenStreetMap raster tiles, desaturated and dimmed to the palette |
+| Flood, strandline, debris, low confidence | `GET /runs/{id}/layers/{flood,low_confidence}` |
+| Damaged buildings, cut roads, bridges out | `GET /runs/{id}/layers/{damaged_buildings,cut_roads,bridges_out}` |
+| Settlements, route links | `GET /runs/{id}/layers/{settlements,routes}` |
+| The three sentences | `run_report.json` only, plus `cut_off_probability` read verbatim off the settlement that carries the highest one |
+| Copilot answers and traces | `POST /runs/{id}/ask` |
+| Situation report | `GET /runs/{id}/sitrep?lang=en|ne` |
+| Evidence dialog | `GET /runs/{id}/quicklook` |
+
+Honesty rules the dashboard keeps (Rules 1, 3, 6):
+
+- it computes no new numbers; every figure is from `run_report.json` or a layer file, and each
+  sentence names its source;
+- a layer the run did not produce greys its legend row and says "not produced by this run" — it is
+  never drawn as zero;
+- "possible debris, unverified", "bridges likely out, unverified" and the pipeline's own sentence
+  about cut-off probability being a sensitivity measure are printed on screen;
+- the footer carries `strandline.outputs.ATTRIBUTION` verbatim plus "Educational prototype — not
+  for operational use", at every screen size.
+
+Screenshots for a design review (the API must be running):
+
+```cmd
+venv\Scripts\python.exe web/shots.py
+```
+
+Measured: `npm run build` passes; `venv\Scripts\python.exe -m pytest -q` is 785 passed, which
+includes 18 tests for the terrain tiles, the quicklook, the run listing and the job-store pruning
+in `tests/test_api_terrain.py`. No accuracy gate measures the dashboard.
 
 ## Scoring the dev set (checking only, never an input)
 

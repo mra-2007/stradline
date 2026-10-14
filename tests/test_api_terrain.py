@@ -66,10 +66,11 @@ def test_encode_terrarium_treats_nodata_as_flat():
     assert rgb.tolist() == [[[128, 0, 0], [128, 0, 0]]]
 
 
-def test_flat_tile_png_is_a_256px_zero_metre_tile():
+def test_flat_tile_png_is_a_256px_tile_at_the_elevation_asked_for():
     decoded = _decode_terrarium(terrain.flat_tile_png())
     assert decoded.shape == (256, 256)
     assert np.allclose(decoded, 0.0)
+    assert np.allclose(_decode_terrarium(terrain.flat_tile_png(1200.0)), 1200.0, atol=0.01)
 
 
 def test_terrarium_tile_png_reads_the_dem(tmp_path):
@@ -78,16 +79,22 @@ def test_terrarium_tile_png_reads_the_dem(tmp_path):
     png = terrain.terrarium_tile_png(dem, 11, 1509, 857)
     decoded = _decode_terrarium(png)
     assert decoded.shape == (256, 256)
-    # Every pixel is either the DEM's constant value or the flat edge.
-    inside = decoded[np.abs(decoded - 1234.0) < 0.01]
-    assert inside.size > 0
-    assert np.all((np.abs(decoded - 1234.0) < 0.01) | (np.abs(decoded) < 0.01))
+    # A constant DEM: inside and outside sit at the same elevation, so the
+    # tile is that elevation everywhere and there is no cliff at the edge.
+    assert np.allclose(decoded, 1234.0, atol=0.01)
 
 
-def test_terrarium_tile_outside_the_dem_is_flat_not_an_error(tmp_path):
-    dem = _write_dem(tmp_path / "cache" / "dem_20m.tif")
+def test_terrarium_tile_outside_the_dem_is_flat_at_the_dem_base(tmp_path):
+    dem = _write_dem(tmp_path / "cache" / "dem_20m.tif", value=980.0)
     png = terrain.terrarium_tile_png(dem, 2, 0, 0)  # north Atlantic, far away
-    assert np.allclose(_decode_terrarium(png), 0.0)
+    # Flat, and at the DEM's own lowest elevation rather than at sea level:
+    # the surround must meet the mapped area flush.
+    assert np.allclose(_decode_terrarium(png), 980.0, atol=0.01)
+
+
+def test_base_elevation_is_the_dems_minimum(tmp_path):
+    dem = _write_dem(tmp_path / "cache" / "dem_20m.tif", value=2500.0, nodata_corner=True)
+    assert abs(terrain.base_elevation(dem) - 2500.0) < 0.01
 
 
 def test_find_dem_prefers_the_cached_20m_dem(tmp_path):
@@ -202,6 +209,23 @@ def test_discover_runs_registers_directories_with_a_report(tmp_path):
 
     # Idempotent: a second pass adds nothing and changes nothing.
     assert store.discover_runs(base_dir=base, db_path=db) == []
+
+
+def test_prune_missing_runs_forgets_rows_with_no_directory(tmp_path):
+    db = tmp_path / "prune.db"
+    store.init_db(db)
+    alive = tmp_path / "alive"
+    alive.mkdir()
+    store.create_run("alive_run", [85.1, 27.8, 85.4, 28.3], "2026-08-26", str(alive), db_path=db)
+    store.create_run(
+        "gone_run", [85.1, 27.8, 85.4, 28.3], "2026-08-26", str(tmp_path / "gone"), db_path=db
+    )
+
+    assert store.prune_missing_runs(db_path=db) == ["gone_run"]
+    assert store.get_run("gone_run", db_path=db) is None
+    assert store.get_run("alive_run", db_path=db) is not None
+    # Nothing left to prune.
+    assert store.prune_missing_runs(db_path=db) == []
 
 
 def test_discover_runs_leaves_existing_rows_alone(tmp_path):

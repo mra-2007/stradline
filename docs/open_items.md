@@ -359,3 +359,14 @@ Ten of the twelve findings were fixed in the follow-up commit. These remain.
   2026-10-14). `copilot/planner.py::MIN_FOLDED_NAME`: short OSM place names ("To", "As") collide
   with ordinary words, so they are matched case-sensitively. A question that writes such a name in
   lower case is answered as a general question instead, which is a miss rather than a wrong answer.
+- **The pipeline produces no flooded river length** (open, 2026-10-14). The dashboard's first
+  sentence therefore reports flood extent in hectares and the high/medium confidence split, not the
+  length of river reached, which Track B asks for in words. Adding it means a length along the
+  drainage network in `strandline/`, not arithmetic in `web/`.
+- **`routes.geojson` holds attachment links, not path geometries** (open, 2026-10-14).
+  `strandline/network.py` writes the link from each settlement to the road node it routes from, so
+  the dashboard cannot draw a before-and-after route. It draws the link with the pipeline's own
+  note and prints the before and after lengths from the settlement's properties instead.
+- **The dashboard's basemap needs the network** (open, 2026-10-14). Terrain, hillshade and every
+  data layer come from the local API, but the OpenStreetMap raster tiles do not. With no network
+  the map still works and reads correctly; it just has no road grain under the terrain.

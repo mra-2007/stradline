@@ -24,6 +24,9 @@ export const OSM_ATTRIBUTION = "© OpenStreetMap contributors";
 export const DEM_ATTRIBUTION = "Copernicus DEM";
 
 export const TERRAIN_SOURCE = "copernicus-dem";
+/** The same tiles again, as their own source: MapLibre renders hillshade
+ *  better when it does not share a source with the 3D terrain. */
+export const HILLSHADE_SOURCE = "copernicus-dem-shade";
 export const OSM_SOURCE = "osm";
 
 /** Flood classes, as the pipeline writes them into flood_polygons.geojson. */
@@ -45,15 +48,17 @@ export function baseStyle(terrainTiles: string | null): StyleSpecification {
   };
 
   if (terrainTiles) {
-    sources[TERRAIN_SOURCE] = {
-      type: "raster-dem",
+    const dem = {
+      type: "raster-dem" as const,
       tiles: [terrainTiles],
       tileSize: 256,
-      encoding: "terrarium",
+      encoding: "terrarium" as const,
       minzoom: 7,
       maxzoom: 14,
       attribution: DEM_ATTRIBUTION,
     };
+    sources[TERRAIN_SOURCE] = dem;
+    sources[HILLSHADE_SOURCE] = { ...dem };
   }
 
   const layers: StyleSpecification["layers"] = [
@@ -69,11 +74,13 @@ export function baseStyle(terrainTiles: string | null): StyleSpecification {
       type: "raster",
       source: OSM_SOURCE,
       paint: {
-        "raster-opacity": 0.52,
-        "raster-saturation": -0.88,
-        "raster-brightness-min": 0.04,
-        "raster-brightness-max": 0.56,
-        "raster-contrast": -0.08,
+        // Drained of colour and pulled right down, so what is left is the
+        // grain of roads and rivers over the slate ground, not a day map.
+        "raster-opacity": 0.3,
+        "raster-saturation": -1,
+        "raster-brightness-min": 0.02,
+        "raster-brightness-max": 0.34,
+        "raster-contrast": -0.18,
         "raster-fade-duration": 240,
       },
     },
@@ -83,7 +90,7 @@ export function baseStyle(terrainTiles: string | null): StyleSpecification {
     layers.push({
       id: "hillshade",
       type: "hillshade",
-      source: TERRAIN_SOURCE,
+      source: HILLSHADE_SOURCE,
       paint: {
         "hillshade-exaggeration": 0.62,
         "hillshade-shadow-color": "#101922",
@@ -96,9 +103,9 @@ export function baseStyle(terrainTiles: string | null): StyleSpecification {
 
   return {
     version: 8,
-    // No glyph server: every label on this map is a DOM element, so the style
-    // needs no fonts and the dashboard works with no network but the basemap.
-    glyphs: undefined,
+    // No glyph server is declared: every label on this map is a DOM element,
+    // so the style needs no fonts and the dashboard comes up with no network
+    // beyond the basemap tiles.
     sky: {
       "sky-color": "#121A24",
       "horizon-color": "#2B3B4A",

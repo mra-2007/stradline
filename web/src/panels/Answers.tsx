@@ -4,6 +4,8 @@
    and each one is also the switch for its own layers. The layer swatches
    appear under the sentence that is on, which is where the legend lives. */
 
+import { useState } from "react";
+
 import type { Sentence, SentenceKey } from "../lib/answers";
 import type { LayerName, LoadedLayer } from "../lib/api";
 import { C } from "../map/style";
@@ -66,6 +68,9 @@ function SwatchMark({ swatch }: { swatch: Swatch }) {
 
 export function Answers(props: Props) {
   const { sentences, layers, visibleGroups, loading } = props;
+  // One legend at a time, and none until it is asked for: the sentences are
+  // the thing to read, the swatches are the thing to check.
+  const [legend, setLegend] = useState<SentenceKey | null>(null);
 
   return (
     <section className="answers panel" aria-label="What this run found">
@@ -92,23 +97,43 @@ export function Answers(props: Props) {
                 <span className="answer__unavailable">{sentence.unavailable}</span>
               ) : (
                 <span className="answer__text">
-                  {sentence.pieces.map((piece, index) =>
-                    piece.value !== undefined ? (
+                  {sentence.pieces.map((piece, index) => {
+                    const last = index === sentence.pieces.length - 1;
+                    const nextIsStop = sentence.pieces[index + 1]?.text?.startsWith(".");
+                    const space = last || nextIsStop ? "" : " ";
+                    return piece.value !== undefined ? (
                       <span className="answer__figure" key={index} title={piece.source}>
                         <span className="readout">{piece.value}</span>
-                        {piece.unit ? <span className="answer__unit"> {piece.unit}</span> : null}
+                        {piece.unit ? <span className="answer__unit">&nbsp;{piece.unit}</span> : null}
+                        {space}
                       </span>
                     ) : (
-                      <span key={index}>{piece.text} </span>
-                    ),
-                  )}
+                      <span key={index}>
+                        {piece.text}
+                        {space}
+                      </span>
+                    );
+                  })}
                 </span>
               )}
             </button>
 
             {sentence.caveat && <p className="answer__caveat caption">{sentence.caveat}</p>}
 
-            {on && (
+            {!sentence.unavailable && (
+              <button
+                type="button"
+                className="btn btn--quiet answer__legend-toggle"
+                onClick={() =>
+                  setLegend((current) => (current === sentence.key ? null : sentence.key))
+                }
+                aria-expanded={legend === sentence.key}
+              >
+                {legend === sentence.key ? "Hide the layers" : "Layers"}
+              </button>
+            )}
+
+            {legend === sentence.key && (
               <ul className="legend">
                 {SWATCHES[sentence.key].map((swatch) => {
                   const layer = swatch.layer ? layers[swatch.layer] : undefined;

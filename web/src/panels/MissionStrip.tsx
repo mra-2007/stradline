@@ -41,10 +41,12 @@ function stageStates(report: RunReport | null, analysis: Analysis): StageState[]
   });
 }
 
+/** A finished stage is already said by its filled number; only the two states
+ *  that need words get them. */
 const MARK: Record<StageState, string> = {
   waiting: "",
   running: "running",
-  done: "done",
+  done: "",
   stopped: "stopped",
 };
 

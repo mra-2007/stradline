@@ -8,6 +8,10 @@ import "@fontsource/barlow-semi-condensed/600.css";
 import "@fontsource/noto-sans-devanagari/400.css";
 import "@fontsource/noto-sans-devanagari/600.css";
 
+// MapLibre first: its stylesheet claims .maplibregl-map, and our own rules
+// have to come after it to win.
+import "maplibre-gl/dist/maplibre-gl.css";
+
 import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/app.css";

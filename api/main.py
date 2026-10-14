@@ -91,6 +91,7 @@ async def lifespan(app: FastAPI):
     store.init_db()
     store.register_case_smoke(base_dir=ROOT)
     store.discover_runs(base_dir=ROOT)
+    store.prune_missing_runs()
     yield
 
 

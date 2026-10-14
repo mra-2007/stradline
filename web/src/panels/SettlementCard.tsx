@@ -112,9 +112,9 @@ export function SettlementCard({ properties, report, routes, onClose }: Props) {
             </div>
             <p className="caption">
               {Number.isFinite(runs)
-                ? `Cut off in ${percent(probability, 0)} of ${num(runs)} perturbed runs. `
+                ? `Cut off in ${percent(probability, 0)} of ${num(runs)} perturbed runs — `
                 : ""}
-              {properties.probability_is ?? "A sensitivity measure, not a calibrated chance."}
+              {properties.probability_is ?? "a sensitivity measure, not a calibrated chance"}.
             </p>
           </div>
         )}

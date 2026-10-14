@@ -259,14 +259,16 @@ export function installDataLayers(map: MLMap): void {
     type: "circle",
     source: SRC.settlements,
     paint: {
+      // One zoom expression, outermost: a settlement grows with the map, and
+      // within each zoom it grows with its cut-off probability.
       "circle-radius": [
         "interpolate",
         ["linear"],
-        ["coalesce", ["get", "cut_off_probability"], 0],
-        0,
-        ["interpolate", ["linear"], ["zoom"], 9, 2.2, 14, 3.6],
-        1,
-        ["interpolate", ["linear"], ["zoom"], 9, 5, 14, 8],
+        ["zoom"],
+        9,
+        ["interpolate", ["linear"], ["coalesce", ["get", "cut_off_probability"], 0], 0, 1.5, 1, 5],
+        14,
+        ["interpolate", ["linear"], ["coalesce", ["get", "cut_off_probability"], 0], 0, 2.4, 1, 8],
       ],
       "circle-color": [
         "interpolate",
@@ -279,14 +281,19 @@ export function installDataLayers(map: MLMap): void {
         1,
         C.rescue,
       ],
+      // Thousands of settlements are mapped and none is hidden, but the ones
+      // the flood did nothing to must not shout over the ones it cut off.
       "circle-opacity": [
-        "case",
-        [">=", ["coalesce", ["get", "cut_off_probability"], 0], 0.5],
-        0.95,
+        "step",
+        ["coalesce", ["get", "cut_off_probability"], 0],
+        0.3,
+        0.05,
+        0.6,
         0.5,
+        0.95,
       ],
       "circle-stroke-color": "#101922",
-      "circle-stroke-width": 0.8,
+      "circle-stroke-width": 0.6,
     },
   });
 

@@ -9,8 +9,14 @@ import {
   type LngLat,
   type Map as MLMap,
   type MapMouseEvent,
+  setWorkerUrl,
 } from "maplibre-gl";
-import "maplibre-gl/dist/maplibre-gl.css";
+// MapLibre v6 loads its worker as a separate module. Handing Vite the file
+// with ?url makes it a hashed asset of this build, so the dashboard needs no
+// CDN and works offline.
+import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
+
+setWorkerUrl(maplibreWorkerUrl);
 
 import { api, type FeatureCollection, type GeoJSONFeature, type LayerName, type LoadedLayer } from "../lib/api";
 import { startFlyIn, restingViewpoint, prefersReducedMotion, type Viewpoint } from "./flyIn";
@@ -28,7 +34,7 @@ import {
   setSourceData,
   setStrandlineReveal,
 } from "./layers";
-import { C, TERRAIN_SOURCE, baseStyle } from "./style";
+import { C, HILLSHADE_SOURCE, TERRAIN_SOURCE, baseStyle } from "./style";
 import { featureBounds, valleyAxis, withAlongValley } from "./valley";
 
 export interface MapHandle {
@@ -177,7 +183,8 @@ export function MapCanvas(props: Props) {
     setSourceData(map, SRC.settlements, layers.settlements?.data ?? null);
 
     if (!bbox) return;
-    const rest = restingViewpoint(map, bbox, axis?.bearing ?? 0);
+    const floodBounds = tagged ? featureBounds(tagged.features) : null;
+    const rest = restingViewpoint(map, bbox, axis?.bearing ?? 0, floodBounds);
     restRef.current = rest;
 
     if (flownFor.current === runId) return;
@@ -210,9 +217,11 @@ export function MapCanvas(props: Props) {
     const map = mapRef.current;
     if (!map || !ready.current) return;
     // A new run means a new DEM: swap the style's terrain tiles in place.
-    const source = map.getSource(TERRAIN_SOURCE);
-    if (source && "setTiles" in source) {
-      (source as { setTiles: (t: string[]) => void }).setTiles([api.terrainTiles(props.runId)]);
+    for (const id of [TERRAIN_SOURCE, HILLSHADE_SOURCE]) {
+      const source = map.getSource(id);
+      if (source && "setTiles" in source) {
+        (source as { setTiles: (t: string[]) => void }).setTiles([api.terrainTiles(props.runId)]);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.runId]);

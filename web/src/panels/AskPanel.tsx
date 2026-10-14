@@ -244,9 +244,6 @@ export function AskPanel(props: Props) {
     >
       <div className="panel__head">
         <h1>Ask about this area</h1>
-        <button type="button" className="btn btn--quiet" onClick={props.onClose}>
-          Close
-        </button>
       </div>
 
       <div className="ask__lang" role="group" aria-label="Answer language">

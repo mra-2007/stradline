@@ -129,6 +129,24 @@ def list_runs(db_path: Path | None = None) -> list[dict]:
         return [_row_to_dict(row) for row in cursor.fetchall()]
 
 
+def prune_missing_runs(db_path: Path | None = None) -> list[str]:
+    """Forget runs whose output directory is no longer on disk.
+
+    These are rows left behind by deleted or temporary runs. They have no
+    report, no layers and no quicklook, so every endpoint would 404 on them;
+    carrying them in the run switcher only offers the user dead ends. Nothing
+    under `eval/results/` is touched — this is the API's own job store.
+    """
+    removed: list[str] = []
+    for item in list_runs(db_path=db_path):
+        if Path(item["out_dir"]).is_dir():
+            continue
+        with get_connection(db_path) as conn:
+            conn.execute("DELETE FROM runs WHERE run_id = ?", (item["run_id"],))
+        removed.append(item["run_id"])
+    return removed
+
+
 def discover_runs(base_dir: Path = ROOT, db_path: Path | None = None) -> list[str]:
     """Register finished runs that are on disk but not in the database.
 

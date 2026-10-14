@@ -67,6 +67,15 @@ export function App() {
 
   const sentences = useMemo(() => buildSentences(run.report, run.layers), [run.report, run.layers]);
 
+  // The date field starts on the date of the run you are looking at, so
+  // "Check satellite passes" is one click away from a drawn box.
+  useEffect(() => {
+    if (!analysis.date && typeof run.report?.event_date === "string") {
+      analysis.setDate(run.report.event_date);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run.report?.event_date]);
+
   const everyFeature = useMemo(() => {
     const out: GeoJSONFeature[] = [];
     for (const layer of Object.values(run.layers)) {

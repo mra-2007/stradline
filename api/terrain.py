@@ -20,9 +20,11 @@ tear the mesh.
 from __future__ import annotations
 
 import io
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
+import rasterio
 from PIL import Image
 from rio_tiler.errors import TileOutsideBounds
 from rio_tiler.io import Reader
@@ -69,27 +71,59 @@ def _to_png(rgb: np.ndarray) -> bytes:
     return buffer.getvalue()
 
 
-def flat_tile_png(tilesize: int = TILE_SIZE) -> bytes:
-    """A tile that is 0 m everywhere: what we serve outside the DEM."""
-    rgb = encode_terrarium(np.zeros((tilesize, tilesize), dtype="float32"))
+def flat_tile_png(elevation_m: float = 0.0, tilesize: int = TILE_SIZE) -> bytes:
+    """A tile that is one elevation everywhere: what we serve outside the DEM.
+
+    The default is sea level; callers pass the DEM's own base elevation so the
+    surround meets the mapped area flush instead of as a cliff.
+    """
+    rgb = encode_terrarium(np.full((tilesize, tilesize), float(elevation_m), dtype="float64"))
     return _to_png(rgb)
+
+
+@lru_cache(maxsize=32)
+def _base_elevation(dem_key: tuple[str, int, int]) -> float:
+    """The DEM's lowest elevation, read once from a decimated overview.
+
+    This is the height the ground outside the mapped area is drawn at. Picking
+    the minimum means the surround never rises above the valley floor and never
+    hides anything; it is the map's edge, not a claim about the terrain there.
+    """
+    path = dem_key[0]
+    try:
+        with rasterio.open(path) as src:
+            sample = src.read(1, out_shape=(1, 256, 256), masked=True).astype("float64")
+        finite = np.asarray(sample.filled(np.nan))
+        finite = finite[np.isfinite(finite)]
+        return float(np.min(finite)) if finite.size else 0.0
+    except Exception:
+        return 0.0
+
+
+def base_elevation(dem_path: Path) -> float:
+    stat = Path(dem_path).stat()
+    return _base_elevation((str(dem_path), stat.st_mtime_ns, stat.st_size))
 
 
 def terrarium_tile_png(dem_path: Path, z: int, x: int, y: int,
                        tilesize: int = TILE_SIZE) -> bytes:
     """One terrarium PNG for the web-mercator tile (z, x, y).
 
-    Outside the DEM's footprint this returns `flat_tile_png()` instead of
-    raising, so the terrain mesh stays continuous at the edge of the area.
+    Outside the DEM's footprint this returns a flat tile at the DEM's base
+    elevation instead of raising, so the terrain mesh neither tears nor steps
+    off a cliff at the edge of the mapped area.
     """
+    floor = base_elevation(dem_path)
     try:
         with Reader(str(dem_path)) as src:
             image = src.tile(x, y, z, tilesize=tilesize, resampling_method="bilinear")
     except TileOutsideBounds:
-        return flat_tile_png(tilesize)
+        return flat_tile_png(floor, tilesize)
 
     elevation = image.data[0].astype("float64")
     if image.mask is not None:
-        # rio-tiler masks are 255 where valid; treat the rest as 0 m.
-        elevation = np.where(np.asarray(image.mask) > 0, elevation, 0.0)
+        # rio-tiler masks are 255 where valid; the rest is outside the DEM and
+        # is drawn at the same base elevation as the surround.
+        elevation = np.where(np.asarray(image.mask) > 0, elevation, floor)
+    elevation = np.where(np.isfinite(elevation), elevation, floor)
     return _to_png(encode_terrarium(elevation))

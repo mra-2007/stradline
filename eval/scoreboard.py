@@ -50,6 +50,13 @@ COLUMNS = {
                    "road_segment_f1", "building_f1"],
     "cutoff.csv": ["run_id", "timestamp", "git_commit", "params_hash", "event", "settlement_f1"],
     "repro.csv": ["run_id", "timestamp", "git_commit", "params_hash", "event", "identical_output"],
+    # One row per copilot question. `event` is the question id, as the gates
+    # file's contract says. The columns after invented_number are diagnostics
+    # - they are what lets the summary report accuracy per category, per
+    # language and per wording source without re-running anything.
+    "copilot.csv": ["run_id", "timestamp", "git_commit", "params_hash", "event",
+                    "correct", "invented_number", "category", "lang", "source",
+                    "refused", "seconds", "run"],
 }
 
 

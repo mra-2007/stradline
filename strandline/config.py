@@ -1145,3 +1145,90 @@ RELIABILITY_NAMES = {
 # number that falls inside the narrow-valley zone. Kept here so the three of
 # them cannot drift apart, and so the Nepali translation has one source string.
 NARROW_VALLEY_CAVEAT = RELIABILITY_NAMES[RELIABILITY_NARROW_VALLEY]
+
+
+# --- Copilot ----------------------------------------------------------------
+#
+# The situation-report copilot's settings live HERE, not in copilot/, because
+# Rule 3.7 gives tunables exactly one home. Nothing in this section can change
+# a pixel of the flood map, so none of it is in `params_dict` / params_hash;
+# every value is written into each answer's trace and into the sitrep instead.
+#
+# `strandline/` does not import `copilot/`; `copilot/` imports this module.
+
+# How many decimals a number is SHOWN with, per unit. This is a contract, not a
+# preference: the copilot formats every number through it, and the verifier
+# compares the formatted string, so a number in an answer can be matched back
+# to the evidence character for character. Changing a value here changes what
+# counts as a match, which is why it sits beside the other declared contracts.
+DISPLAY_PRECISION = {
+    "ha": 1,
+    "km": 2,
+    "m": 0,
+    "percent": 1,
+    "probability": 2,
+    "count": 0,
+    "days": 0,
+    "factor": 2,
+    # Coordinates, not quantities: four decimals is ~10 m, the finest a bbox
+    # corner is ever written with here.
+    "degrees": 4,
+}
+
+# No thousands separator anywhere. "1,234" and "1234" are the same number to a
+# reader and two different strings to the verifier; one spelling removes the
+# ambiguity and keeps Devanagari digit output a pure digit-for-digit mapping.
+THOUSANDS_SEPARATOR = ""
+
+# Devanagari digits, index = value. Nepali answers may show numbers in these,
+# and the verifier reads them as the numbers they are.
+DEVANAGARI_DIGITS = "०१२३४५६७८९"
+
+COPILOT_LANGUAGES = ("en", "ne")
+
+
+@dataclass(frozen=True)
+class CopilotParams:
+    """Provider, model and limits for the copilot's language model.
+
+    The model NEVER writes a number (see copilot/templates.py): it writes a
+    template with placeholders and code fills them from the evidence store. So
+    nothing here can change a reported value - only the wording around it, and
+    the wording is itself checked before it is filled.
+    """
+
+    provider: str = "gemini"           # "gemini" | "offline"
+    model: str = "gemini-2.5-flash"
+    api_key_env: str = "GEMINI_API_KEY"
+    endpoint: str = ("https://generativelanguage.googleapis.com/v1beta/models/"
+                     "{model}:generateContent")
+    # Zero, always: the same question must give the same answer on a re-run, or
+    # the copilot gate is not reproducible (Rule 5).
+    temperature: float = 0.0
+    max_output_tokens: int = 1024
+    timeout_s: float = 30.0
+    # 429 / 5xx back-off, in seconds, one entry per retry. After the last one
+    # the copilot falls back to the offline templates rather than failing.
+    retry_backoff_s: tuple = (1.0, 4.0, 10.0)
+    # Responses are cached by a hash of the exact prompt, so an evaluation
+    # re-run neither pays for nor depends on the network.
+    cache_dir: str = "copilot/.cache/llm"
+    # One regeneration after a verifier rejection, then a refusal. Not a knob to
+    # turn up: a second rejection means the model is inventing, and the honest
+    # output is a refusal, not a third try.
+    max_regenerations: int = 1
+
+
+@dataclass(frozen=True)
+class SitrepParams:
+    """How the one-page situation report is rendered."""
+
+    # Printed through a headless browser because no plain PDF library shapes
+    # Devanagari conjuncts correctly. Chrome and Edge are both tried.
+    page_size: str = "A4"
+    margin_in: float = 0.4
+    top_cutoff_settlements: int = 5
+    top_roads: int = 5
+    browser_timeout_s: float = 120.0
+    devanagari_font: str = "copilot/fonts/NotoSansDevanagari-Regular.ttf"
+    devanagari_font_family: str = "Noto Sans Devanagari"

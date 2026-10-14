@@ -54,6 +54,11 @@ class RunCreateRequest(BaseModel):
 class AskRequest(BaseModel):
     question: str = Field(..., min_length=1, description="Question in English or Nepali")
     lang: str = Field("en", description="Language: 'en' or 'ne'")
+    offline: bool = Field(
+        False,
+        description="Skip the language model and answer from the offline templates only. "
+        "Used by the dashboard when the model-backed call has already timed out.",
+    )
 
 
 def _run_pipeline_worker(run_id: str, bbox: tuple[float, float, float, float],
@@ -409,7 +414,7 @@ def ask_copilot(run_id: str, req: AskRequest) -> dict[str, Any]:
         )
 
     try:
-        answer_dict = copilot_answer(run_dir, req.question, req.lang)
+        answer_dict = copilot_answer(run_dir, req.question, req.lang, use_llm=not req.offline)
         return answer_dict
     except Exception as err:
         raise HTTPException(

@@ -167,6 +167,20 @@ export const api = {
       ASK_TIMEOUT_MS,
     ),
 
+  /** Skips the model-backed call entirely and answers from the offline
+   *  templates, which never touch the network and so never time out. Used
+   *  as the fallback when `ask` itself times out or fails. */
+  askOffline: (runId: string, question: string, lang: "en" | "ne") =>
+    request<Answer>(
+      `/runs/${runId}/ask`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question, lang, offline: true }),
+      },
+      ASK_TIMEOUT_MS,
+    ),
+
   sitrepUrl: (runId: string, lang: "en" | "ne") =>
     apiUrl(`/runs/${runId}/sitrep?lang=${lang}`),
 

@@ -29,6 +29,7 @@ interface Turn {
   question: string;
   lang: Lang;
   answer: Answer | null;
+  offline: boolean;
   problem: { message: string; hint: string } | null;
 }
 
@@ -202,7 +203,10 @@ export function AskPanel(props: Props) {
     if (!asked || busy) return;
     setQuestion("");
     setBusy(true);
-    setTurns((previous) => [...previous, { question: asked, lang, answer: null, problem: null }]);
+    setTurns((previous) => [
+      ...previous,
+      { question: asked, lang, answer: null, offline: false, problem: null },
+    ]);
     try {
       const answer = await api.ask(runId, asked, lang);
       setTurns((previous) =>
@@ -211,15 +215,27 @@ export function AskPanel(props: Props) {
         ),
       );
     } catch (err) {
-      const problem =
-        err instanceof ApiError
-          ? { message: err.message, hint: err.hint }
-          : { message: "The copilot could not answer.", hint: "" };
-      setTurns((previous) =>
-        previous.map((turn, index) =>
-          index === previous.length - 1 ? { ...turn, problem } : turn,
-        ),
-      );
+      // The model-backed call timed out or the API errored. Fall back to the
+      // offline templates, which never touch the network, rather than leaving
+      // the question unanswered.
+      try {
+        const answer = await api.askOffline(runId, asked, lang);
+        setTurns((previous) =>
+          previous.map((turn, index) =>
+            index === previous.length - 1 ? { ...turn, answer, offline: true } : turn,
+          ),
+        );
+      } catch (offlineErr) {
+        const problem =
+          offlineErr instanceof ApiError
+            ? { message: offlineErr.message, hint: offlineErr.hint }
+            : { message: "The copilot could not answer.", hint: "" };
+        setTurns((previous) =>
+          previous.map((turn, index) =>
+            index === previous.length - 1 ? { ...turn, problem } : turn,
+          ),
+        );
+      }
     } finally {
       setBusy(false);
     }
@@ -311,6 +327,11 @@ export function AskPanel(props: Props) {
 
             {turn.answer && (
               <>
+                {turn.offline && (
+                  <p className="tag tag--offline" title="The model-backed call timed out or failed, so this answer came from the offline templates instead.">
+                    offline mode
+                  </p>
+                )}
                 <p
                   className={`turn__answer${turn.answer.refused ? " turn__answer--refused" : ""}`}
                   lang={turn.answer.lang}

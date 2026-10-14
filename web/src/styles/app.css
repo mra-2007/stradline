@@ -253,6 +253,19 @@
   border-left-color: var(--rescue);
 }
 
+.tag--offline {
+  display: inline-block;
+  align-self: flex-start;
+  margin: 0 0 var(--s1);
+  padding: 2px var(--s2);
+  border-radius: var(--r-control);
+  border: 1px solid var(--saffron);
+  color: var(--saffron);
+  font-size: var(--t-caption);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 /* --- the three answers ---------------------------------------------------- */
 
 .answers {

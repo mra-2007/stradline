@@ -195,11 +195,44 @@ def test_runs_ask(client, monkeypatch, tmp_path):
         "reason": None,
         "lang": "en",
     }
-    monkeypatch.setattr("api.main.copilot_answer", lambda rd, q, lang: expected_answer)
+    monkeypatch.setattr(
+        "api.main.copilot_answer", lambda rd, q, lang, use_llm=True: expected_answer
+    )
 
     resp = client.post("/runs/test_ask/ask", json={"question": "how much is flooded?", "lang": "en"})
     assert resp.status_code == 200
     assert resp.json() == expected_answer
+
+
+def test_runs_ask_offline_skips_the_language_model(client, monkeypatch, tmp_path):
+    """offline=True must reach the copilot as use_llm=False (CLAUDE.md: the
+    dashboard falls back to the offline templates when the model-backed call
+    times out, and that fallback must never touch the network)."""
+    run_dir = tmp_path / "runs" / "api_test_ask_offline"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    store.create_run("test_ask_offline", [85.1, 27.8, 85.4, 28.3], "2026-08-26", str(run_dir))
+
+    seen_use_llm = []
+
+    def fake_answer(rd, q, lang, use_llm=True):
+        seen_use_llm.append(use_llm)
+        return {
+            "text": "12.5 ha flooded",
+            "numbers": [],
+            "trace": [],
+            "refused": False,
+            "reason": None,
+            "lang": "en",
+        }
+
+    monkeypatch.setattr("api.main.copilot_answer", fake_answer)
+
+    resp = client.post(
+        "/runs/test_ask_offline/ask",
+        json={"question": "how much is flooded?", "lang": "en", "offline": True},
+    )
+    assert resp.status_code == 200
+    assert seen_use_llm == [False]
 
 
 def test_runs_sitrep_reuse_and_build(client, monkeypatch, tmp_path):

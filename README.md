@@ -416,6 +416,20 @@ venv\Scripts\python.exe -m eval.copilot_eval --llm
 
 Responses are cached by prompt hash, so a second run of that is free and byte-identical.
 
+## HTTP API
+
+Run the local FastAPI server:
+
+```cmd
+venv\Scripts\python.exe -m uvicorn api.main:app --port 8000
+```
+
+Interactive OpenAPI documentation is available at `http://localhost:8000/docs`. Complete request/response schemas are documented in `api/API_CONTRACT.md`. Example URLs:
+
+- Health check: `http://localhost:8000/health`
+- Track preflight: `http://localhost:8000/preflight?bbox=85.10,27.85,85.45,28.30&date=2026-08-26`
+- Case study status: `http://localhost:8000/runs/case_smoke/status`
+
 ## Scoring the dev set (checking only, never an input)
 
 Three steps. Nothing here is ever a pipeline input: references are read only by `validation/` and

@@ -143,3 +143,54 @@ def test_an_undefined_share_is_an_em_dash_not_a_zero(tmp_path):
     assert store.get("damage.buildings_damaged_pct").value is None
     assert store.get("damage.buildings_damaged_pct").formatted("en") == "—"
     assert verify("Damaged share: — %.", store.allowed_strings("en")).ok
+
+
+def test_an_answer_may_only_quote_the_evidence_BEHIND_IT(tmp_path):
+    """A run holds thousands of numbers; this answer rests on a handful.
+
+    Checking a finished answer against the whole store means almost any
+    three-digit number coincides with some unrelated settlement's route
+    length and passes. The check is against the facts the tools that ran
+    actually produced.
+    """
+    from copilot.executor import answer_literals, load_store
+    from copilot.templates import load_i18n
+    from copilot.tools import debris
+
+    store = load_store(write_run(tmp_path / "run"))
+    results = [debris(store, "en", load_i18n("en"))]
+    allowed = answer_literals(store, results, "en")
+    assert "12.5" in allowed                      # the debris area it reported
+    assert "24" not in allowed                    # a damaged-building count it did not
+    assert store.get("damage.buildings_damaged").formatted("en") == "24"
+    assert not verify("24 buildings were damaged.", allowed).ok
+
+
+def test_a_flipped_sign_is_an_invented_number(allowed_en):
+    """The 2026-10-14 audit's finding 2. A digits-only pattern reads "-100.0"
+    as the token "100.0", finds that in the evidence, and passes a value
+    whose SIGN the evidence never contained."""
+    assert verify("Flood water covers 100.0 ha.", allowed_en).ok
+    assert not verify("The flood extent fell to -100.0 ha.", allowed_en).ok
+    assert [f.literal for f in verify("fell to -100.0 ha", allowed_en).findings] \
+        == ["-100.0"]
+
+
+def test_a_minus_is_not_read_into_a_hyphenated_name(store):
+    """A hyphen inside an allowed literal is part of that literal, so
+    "Sentinel-1" and an OSM id keep working."""
+    assert verify("Built from Sentinel-1.", store.allowed_strings("en")).ok
+
+
+def test_a_template_may_not_put_a_sign_in_front_of_a_value(store):
+    """Caught before filling, so the model gets a regeneration rather than
+    the reader getting a refusal."""
+    from copilot.templates import validate_template
+    from copilot.tools import Slot
+
+    slots = {"extent_ha": Slot("extent_ha", "100.0")}
+    assert validate_template("{extent_ha} ha flooded.", slots, {"extent_ha"},
+                             store.text_literals(), "en") is None
+    problem = validate_template("The extent fell to -{extent_ha} ha.", slots,
+                                {"extent_ha"}, store.text_literals(), "en")
+    assert "sign in front of a value" in problem

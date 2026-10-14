@@ -334,3 +334,28 @@ Ten of the twelve findings were fixed in the follow-up commit. These remain.
   download of the dev set plus a leave-one-event-out pass. `docs/accuracy_diagnosis.md` still
   reports the mismatch, correctly, as what was true when it was measured; it is a measurement record
   and is not retro-edited.
+
+- **The copilot's measured score is the OFFLINE path only** (open, 2026-10-14). All 453 rows of
+  `eval/results/copilot.csv` run `20261014T022950Z` were produced after the Gemini free tier
+  returned HTTP 429: the adapter backed off and fell back, so every row's `source` is
+  `guardrail`/`keyword`/`offline`. The LLM planner was exercised live on a handful of questions
+  before the quota ran out; the LLM writer has unit-test coverage with a fake model only. Run
+  `venv\Scripts\python.exe -m eval.copilot_eval --llm` when quota allows and compare the
+  `by wording source` split; the gate's claim today covers the fallback path, which is also the
+  path a judge gets with no network.
+- **The copilot's Nepali number-word check is narrower than the English one** (open, 2026-10-14).
+  `copilot/verifier.py` flags a quantity spelled in words, but `एक` ("one") and `छ` ("six") are also
+  an ordinary pronoun and the verb "is", so they are deliberately not on the Nepali list: flagging
+  them would reject correct prose. A Nepali answer that spelled one of those two words as a number
+  would not be caught. Digits in both scripts are covered, and the bundled templates write every
+  number as a digit, so this is reachable only through a model-written template.
+- **The copilot's question set is ours** (open, 2026-10-14). 1.0000 over 453 questions is a score
+  against questions written in `eval/copilot_eval.py` and `eval/copilot_questions.csv`, not against
+  questions a judge will ask. The expected answers are independent of the copilot
+  (`eval/copilot_expected.py` does not import it), but the *coverage* is not independent: a question
+  shape nobody thought of is not measured. The honest claim is "every question we thought to ask",
+  not "every question".
+- **A settlement named with fewer than four characters needs its capital letter** (open,
+  2026-10-14). `copilot/planner.py::MIN_FOLDED_NAME`: short OSM place names ("To", "As") collide
+  with ordinary words, so they are matched case-sensitively. A question that writes such a name in
+  lower case is answered as a general question instead, which is a miss rather than a wrong answer.

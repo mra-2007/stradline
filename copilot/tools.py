@@ -24,11 +24,13 @@ from strandline.config import (
     SCENARIOS,
     STATUS_CUT_OFF,
     STATUS_DETOUR,
+    RoutingParams,
 )
 from copilot.dsl import Parameter, ToolSpec
 from copilot.evidence import EvidenceStore, Fact, MissingEvidence, slug
 
-MAX_LIST = 20
+# Declared in strandline/config.py (Rule 3.7), aliased here.
+MAX_LIST = RoutingParams().max_list
 
 
 @dataclass(frozen=True)
@@ -55,6 +57,13 @@ class ToolResult:
     slots: dict = field(default_factory=dict)
     caveat_fact_ids: tuple = ()
     note: str | None = None
+    # The slots that ARE the answer. A model rewording this result may drop
+    # the secondary ones - that is the point of letting it choose what to say
+    # - but dropping one of these would answer a different question, so the
+    # template is rejected and regenerated. Keeping the list short is what
+    # makes the model's wording usable at all: requiring every placeholder
+    # the bundled template happens to use rejected every concise rewrite.
+    required: tuple = ()
 
     def facts(self) -> list:
         """Every fact behind this result, de-duplicated, in a stable order."""
@@ -139,13 +148,15 @@ def flooded_area(store: EvidenceStore, lang: str, i18n, *, by_confidence: bool =
              "analysed_area_ha", "extent_share_of_analysed_pct"]
     slots = {name: _slot(store, f"flood.{name}", name, lang) for name in names}
     return ToolResult(tool="flooded_area", template_key="flooded_area", slots=slots,
-                      caveat_fact_ids=("reliability.caveat",))
+                      caveat_fact_ids=("reliability.caveat",),
+                      required=("extent_ha", "high_ha", "medium_ha"))
 
 
 def debris(store: EvidenceStore, lang: str, i18n) -> ToolResult:
     slots = {name: _slot(store, f"flood.{name}", name, lang)
              for name in ("debris_ha", "debris_label", "debris_in_extent")}
-    return ToolResult(tool="debris", template_key="debris", slots=slots)
+    return ToolResult(tool="debris", template_key="debris", slots=slots,
+                      required=("debris_ha", "debris_label"))
 
 
 # --- damage -----------------------------------------------------------------
@@ -159,7 +170,8 @@ def damaged_buildings(store: EvidenceStore, lang: str, i18n) -> ToolResult:
                                            "buildings_damaged_pct", lang, "damage",
                                            required=False, i18n=i18n)
     return ToolResult(tool="damaged_buildings", template_key="damaged_buildings",
-                      slots=slots, caveat_fact_ids=("damage.caveat", "osm.snapshot_date"))
+                      slots=slots, caveat_fact_ids=("damage.caveat", "osm.snapshot_date"),
+                      required=("buildings_damaged", "buildings_total"))
 
 
 def cut_roads(store: EvidenceStore, lang: str, i18n, *, top: int = 5) -> ToolResult:
@@ -198,7 +210,8 @@ def cut_roads(store: EvidenceStore, lang: str, i18n, *, top: int = 5) -> ToolRes
     facts = [f for _, name, km in rows for f in (name, km)]
     slots["road_list"] = _text_slot("road_list", _join(items, i18n), facts)
     return ToolResult(tool="cut_roads", template_key="cut_roads", slots=slots,
-                      caveat_fact_ids=("damage.caveat", "osm.snapshot_date"))
+                      caveat_fact_ids=("damage.caveat", "osm.snapshot_date"),
+                      required=("roads_segments_cut", "roads_length_flooded_km", "road_list"))
 
 
 def bridges_out(store: EvidenceStore, lang: str, i18n, *, top: int = 5) -> ToolResult:
@@ -220,7 +233,8 @@ def bridges_out(store: EvidenceStore, lang: str, i18n, *, top: int = 5) -> ToolR
     items = items[:max(0, min(int(top), MAX_LIST))]
     slots["bridge_list"] = _text_slot("bridge_list", _join(items, i18n), facts[:len(items)])
     return ToolResult(tool="bridges_out", template_key="bridges_out", slots=slots,
-                      caveat_fact_ids=("damage.caveat", "osm.snapshot_date"))
+                      caveat_fact_ids=("damage.caveat", "osm.snapshot_date"),
+                      required=("bridges_likely_out", "bridges_total", "bridge_list"))
 
 
 # --- cut-off ----------------------------------------------------------------
@@ -257,7 +271,8 @@ def cutoff_settlements(store: EvidenceStore, lang: str, i18n, *, top: int = 5,
     return ToolResult(tool="cutoff_settlements", template_key="cutoff_settlements",
                       slots=slots,
                       caveat_fact_ids=("cutoff.caveat", "cutoff.probability_meaning",
-                                       "osm.snapshot_date"))
+                                       "osm.snapshot_date"),
+                      required=("cut_off_count", "settlements_total", "settlement_list"))
 
 
 class UnknownSettlement(LookupError):
@@ -298,8 +313,9 @@ def settlement_status(store: EvidenceStore, lang: str, i18n, *, name: str) -> To
             "gated_definition": gated,
         }
         return ToolResult(tool="settlement_status", template_key="settlement_status_many",
-                          slots=slots, caveat_fact_ids=("cutoff.caveat",
-                                                        "cutoff.probability_meaning"))
+                          slots=slots, required=("match_count", "match_list"),
+                          caveat_fact_ids=("cutoff.caveat",
+                                           "cutoff.probability_meaning"))
 
     index = matches[0]
     base = f"settlement.{index}"
@@ -317,10 +333,14 @@ def settlement_status(store: EvidenceStore, lang: str, i18n, *, name: str) -> To
     if before is None or after is None:
         return ToolResult(tool="settlement_status",
                           template_key="settlement_status_no_route", slots=slots,
+                          required=("settlement_name", "settlement_status",
+                                    "cut_off_probability"),
                           caveat_fact_ids=("cutoff.caveat", "cutoff.probability_meaning"))
     slots["before_km"] = Slot("before_km", before.formatted(lang), before)
     slots["after_km"] = Slot("after_km", after.formatted(lang), after)
     return ToolResult(tool="settlement_status", template_key="settlement_status", slots=slots,
+                      required=("settlement_name", "settlement_status",
+                                "cut_off_probability", "before_km", "after_km"),
                       caveat_fact_ids=("cutoff.caveat", "cutoff.probability_meaning"))
 
 
@@ -351,6 +371,7 @@ def route_to(store: EvidenceStore, lang: str, i18n, *, name: str,
     after = store.get(f"{key}_after_km")
     if after is None:
         return ToolResult(tool="route_to", template_key="route_to_cut", slots=slots,
+                          required=("settlement_name", "before_km", "route_status"),
                           caveat_fact_ids=("cutoff.caveat",))
     for name_, fact_id in (("after_km", f"{key}_after_km"),
                            ("detour_km", f"{key}_detour_km"),
@@ -358,6 +379,7 @@ def route_to(store: EvidenceStore, lang: str, i18n, *, name: str,
                            ("detour_pct", f"{key}_detour_pct")):
         slots[name_] = _slot(store, fact_id, name_, lang, "cutoff", required=False)
     return ToolResult(tool="route_to", template_key="route_to", slots=slots,
+                      required=("settlement_name", "before_km", "after_km", "detour_km"),
                       caveat_fact_ids=("cutoff.caveat",))
 
 
@@ -422,7 +444,10 @@ def lost_access(store: EvidenceStore, lang: str, i18n, *,
     if key == "lost_access_none":
         slots = {k: v for k, v in slots.items() if k in
                  ("detour_count", "target", "graph")}
+    required = (("lost_count", "detour_count", "detour_list", "lost_list")
+                if key == "lost_access" else ("detour_count",))
     return ToolResult(tool="lost_access", template_key=key, slots=slots,
+                      required=required,
                       caveat_fact_ids=("cutoff.caveat", "cutoff.probability_meaning",
                                        "osm.snapshot_date"))
 
@@ -457,7 +482,9 @@ def limitations(store: EvidenceStore, lang: str, i18n) -> ToolResult:
     slots["narrow_valley_caveat"] = Slot("narrow_valley_caveat",
                                          i18n["labels"]["caveat_narrow_valley"],
                                          caveat)
-    return ToolResult(tool="limitations", template_key="limitations", slots=slots)
+    return ToolResult(tool="limitations", template_key="limitations", slots=slots,
+                      required=("sensors_used", "post_pass_date", "not_analysed_pct",
+                                "osm_snapshot_date"))
 
 
 # --- the registry -----------------------------------------------------------

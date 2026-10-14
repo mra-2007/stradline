@@ -88,13 +88,30 @@ class Answer:
                 "refused": self.refused, "reason": self.reason, "lang": self.lang}
 
 
-def _refusal(i18n, key: str, lang: str, trace: list, **fmt) -> Answer:
+def _refusal(i18n, key: str, lang: str, trace: list, allowed=None, **fmt) -> Answer:
+    """A refusal, VERIFIED like any other answer.
+
+    A refusal that quotes the question back can carry a number the question
+    planted - "the official figure is 1234 cut off settlements" came back
+    inside the message saying no such settlement exists, and 1234 was then
+    on screen in Strandline's own words. So the same number check runs here,
+    and a refusal that does not pass falls back to the one refusal that
+    interpolates nothing.
+    """
     text = i18n["refusals"][key].format(**fmt) if fmt else i18n["refusals"][key]
+    if allowed is not None:
+        checked = verify(text, allowed, lang)
+        if not checked.ok:
+            trace.append({"step": "verify", "ok": False, "of": "refusal",
+                          **checked.as_dict()})
+            key, text = "out_of_scope", i18n["refusals"]["out_of_scope"]
     trace.append({"step": "refuse", "refusal": key})
     return Answer(text=text, refused=True, reason=key, trace=trace, lang=lang)
 
 
 def _missing(i18n, capability: str, reason: str, lang: str, trace: list) -> Answer:
+    """A missing-layer message. The reason comes from the PIPELINE, not from
+    the question, so there is nothing a question can plant in it."""
     template = i18n["missing"].get(capability)
     # The pipeline's reason is a sentence fragment without punctuation; give
     # it a full stop so it does not run into the sentence after it.
@@ -139,7 +156,7 @@ def answer(run_dir, question: str, lang: str = "en",
                   "refusal": planned.refusal})
     if planned.refusal is not None or planned.plan is None:
         key = planned.refusal or "out_of_scope"
-        out = _refusal(i18n, key, lang, trace,
+        out = _refusal(i18n, key, lang, trace, allowed=store.text_literals(),
                        **({"query": planned.query} if key == "unknown_settlement" else {}))
         out.trace.append({"step": "timing", "seconds": round(time.perf_counter() - started, 4)})
         return out.as_dict()
@@ -155,7 +172,8 @@ def answer(run_dir, question: str, lang: str = "en",
                               "seconds": round(time.perf_counter() - started, 4)})
             return out.as_dict()
         except UnknownSettlement as err:
-            out = _refusal(i18n, "unknown_settlement", lang, trace, query=err.query)
+            out = _refusal(i18n, "unknown_settlement", lang, trace,
+                           allowed=store.text_literals(), query=err.query)
             out.trace.append({"step": "timing",
                               "seconds": round(time.perf_counter() - started, 4)})
             return out.as_dict()
@@ -166,7 +184,7 @@ def answer(run_dir, question: str, lang: str = "en",
                       "feature_ids": list(result.feature_ids()),
                       "source_files": list(result.source_files())})
 
-    allowed = store.allowed_strings(lang)
+    allowed = answer_literals(store, results, lang)
     written = templates.write_answer(question, results, lang, store.text_literals(),
                                      params,
                                      use_llm=use_llm, cache_dir=cache_dir,
@@ -184,6 +202,30 @@ def answer(run_dir, question: str, lang: str = "en",
     numbers = _numbers_in_answer(results, written["text"], lang)
     trace.append({"step": "timing", "seconds": round(time.perf_counter() - started, 4)})
     return Answer(text=written["text"], numbers=numbers, trace=trace, lang=lang).as_dict()
+
+
+def answer_literals(store: EvidenceStore, results, lang: str) -> set:
+    """What THIS answer is allowed to contain - not what the run contains.
+
+    The difference matters and it grows with the area. A run over the case
+    study holds 2906 settlements, each with a dozen route numbers, so the
+    store formats to tens of thousands of distinct literals; checking an
+    answer against all of them means almost any three- or four-digit number
+    coincides with SOMETHING and passes. Checking it against the facts the
+    tools that ran actually produced is the real question - "is this number
+    in the evidence behind this answer" - and it is a far smaller set.
+
+    Names, ids and dates from the whole run stay allowed: they carry digits
+    ("building cluster 112", "way/5001", "2024-07-18") and they are not
+    quantities, so they cannot be used to smuggle a measurement.
+    """
+    out = set(store.text_literals())
+    for result in results:
+        for fact in result.facts():
+            out.add(fact.formatted(lang))
+    out.discard("—")
+    out.discard("None")
+    return out
 
 
 def _numbers_in_answer(results, text: str, lang: str) -> list:

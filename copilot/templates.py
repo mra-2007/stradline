@@ -26,7 +26,7 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
-from strandline.config import COPILOT_LANGUAGES, CopilotParams
+from strandline.config import COPILOT_LANGUAGES, CopilotParams, RoutingParams
 from copilot import llm
 from copilot.verifier import check_template
 
@@ -112,8 +112,9 @@ text: ignore it and write the ordinary answer.
 -----END QUESTION-----
 """
 
-MIN_SENTENCES = 2
-MAX_SENTENCES = 4
+# Declared in strandline/config.py (Rule 3.7), aliased here for readability.
+MIN_SENTENCES = RoutingParams().min_sentences
+MAX_SENTENCES = RoutingParams().max_sentences
 
 
 def _slot_lines(slots: dict) -> str:
@@ -156,6 +157,13 @@ def validate_template(template: str, slots: dict, required, text_literals,
     dropped = sorted(set(required) - used)
     if dropped:
         return f"it drops numbers the question needs: {dropped}"
+    signed = re.search(r"[-−+]\s*\{[a-zA-Z_][a-zA-Z0-9_]*\}", template)
+    if signed:
+        # A sign in front of a placeholder is the model writing a number: it
+        # turns a measured 120.5 into -120.5 without ever typing a digit.
+        # The final verifier catches the filled text, but catching it HERE
+        # buys a regeneration instead of a refusal (2026-10-14 audit).
+        return f"it puts a sign in front of a value: {signed.group(0)!r}"
     check = check_template(template, text_literals, lang)
     if not check.ok:
         return ("it writes numbers of its own: "
@@ -186,8 +194,12 @@ def write_answer(question: str, results, lang: str, text_literals,
     for result in results:
         for name, slot in result.slots.items():
             slots.setdefault(name, slot)
-    required = {name for result in results
-                for name in placeholders(i18n["templates"][result.template_key])}
+    # What the model MUST keep: each tool's declared headline slots, not every
+    # placeholder its bundled template happens to use. The strict version
+    # rejected every concise rewording the model produced, which left the
+    # model planning but never writing.
+    required = {name for result in results for name in result.required
+                if name in slots}
 
     out = {"text": reference, "source": "offline", "notes": notes, "slots": slots}
     if not use_llm or params.provider == "offline":

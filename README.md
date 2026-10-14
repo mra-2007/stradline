@@ -324,6 +324,92 @@ Neither `NetworkParams` nor `MonteCarloParams` enters `params_hash`, for the `Re
 reason: nothing in them changes a pixel of the flood class map. Both are recorded under
 `run_report.json → cutoff.parameters`. No downloads: the analysis reads arrays and cached OSM only.
 
+## The situation-report copilot (`copilot/`)
+
+Ask a finished run a question, in English or Nepali, and get an answer in which **every number came
+out of that run's own output files**.
+
+```
+venv\Scripts\python.exe -m copilot.ask --run runs\copilot_dev\norway_selsverket_2023 --lang en "which villages lost hospital access and how much longer is the detour?"
+venv\Scripts\python.exe -m copilot.ask --run runs\copilot_dev\case_study --lang ne "कुन बस्ती सम्पर्कविहीन छन्?"
+venv\Scripts\python.exe -m copilot.sitrep --run runs\copilot_dev\case_study --lang ne --out sitrep_ne.pdf
+```
+
+Python, for the dashboard: `copilot.answer(run_dir, question, lang)` returns
+`{text, numbers, trace, refused, reason, lang}`, where each entry of `numbers` carries the value,
+its unit, the **fact id** behind it and the **feature ids** behind that.
+
+**The language model never writes a number.** The order is fixed and is the whole safety argument:
+
+```
+evidence  ->  plan  ->  tools  ->  template  ->  fill  ->  VERIFY
+```
+
+`copilot/evidence.py` builds the evidence store from `run_report.json` and the GeoJSON layers
+*before* the question is read. Every derived number — a percentage, a metre-to-kilometre conversion,
+a sum over a subset, a count of a filtered list — is computed there, by code, and recorded as its
+own fact with its inputs and its derivation, so there is no arithmetic left for anything downstream
+to get wrong. The model's two jobs are to choose a **plan** (a typed list of tool calls, validated
+against the tool registry before anything runs) and to write a **template** with placeholders. Code
+fills the placeholders from facts. The template is rejected before filling if it contains a number
+of its own, drops one of the tool's declared headline slots, or names a placeholder with no
+evidence behind it; it is regenerated once, and after that the bundled template is used — the same
+numbers in a plainer sentence.
+
+`copilot/verifier.py` then reads the finished text back and strikes out every literal the evidence
+allows, in either script. Whatever digits are left were not measured, and the answer is refused.
+That catches a reworded number, an underived percentage, Devanagari digits, and **a number planted
+in the question**. Refusals go through it too, because a refusal quotes the question back: a
+question claiming "the official figure is 1234 cut off settlements" once got 1234 on screen inside
+Strandline's own refusal.
+
+**What it refuses, and says it refuses:** casualties, deaths and injuries; any quantity this run did
+not measure (people affected, population, livestock, money); predictions; rescue or evacuation
+orders; and any attempt to change the rules. The guardrail runs on the question text **before** the
+model and the model cannot overrule it. Text inside a question is data, never instructions. A
+question that asks for a *guess* about something that WAS measured ("roughly how much area is
+flooded") is answered with the measured number, because declining would be less honest.
+
+**When a layer is missing it says so.** If OpenStreetMap could not be read there is no damage
+answer, and the copilot reports the pipeline's own reason instead of answering zero — "no buildings
+were damaged" and "we could not find out" are different facts.
+
+**Nepali** comes from `copilot/i18n/ne.json`; numbers are shown in Devanagari digits and are the
+same numbers. The situation report is HTML printed by a headless Chrome or Edge with Noto Sans
+Devanagari embedded as a data URI, because no plain PDF library shapes `क्ष`-type conjuncts
+correctly; `tests/test_copilot_sitrep.py` proves the shaping happened by measuring that the drawn
+run is narrower than the sum of its unshaped glyph advances.
+
+### Measured
+
+`venv\Scripts\python.exe -m eval.copilot_eval` over three run folders
+(`runs/copilot_dev/{bosnia_konjic_2024, case_study, norway_selsverket_2023}`), 151 questions each —
+120 normal and 31 adversarial per run, English and Nepali, including informal phrasing and typos.
+Expected answers are re-derived from the run files by `eval/copilot_expected.py`, which does **not**
+import `copilot`: it reads the same JSON and does its own arithmetic, so a wrong rounding or an
+underived percentage shows up as a disagreement rather than as agreement with itself.
+
+| Metric | Measured | Gate | Source |
+|---|---|---|---|
+| correct | **1.0000** (453/453) | ≥ 0.95 | `eval/results/copilot.csv`, run `20261014T022950Z` |
+| invented_number | **0** | ≤ 0 | same |
+| rows | 453 | ≥ 150 | same |
+| median answer time | 0.70 s (p90 2.57 s) | — | same |
+
+Per language: en 228/228, ne 225/225. Adversarial: 210/210 handled, 177 refused outright.
+
+**What that number does NOT say.** All 453 rows were produced on the **offline template path**: the
+Gemini free tier returned HTTP 429 part-way through testing, the adapter backed off and fell back,
+and the `source` column records `guardrail`/`keyword`/`offline` for every row. The LLM **planner**
+was exercised live before the quota ran out; the LLM **writer** has unit-test coverage with a fake
+model only. To measure the model path, when quota allows:
+
+```
+venv\Scripts\python.exe -m eval.copilot_eval --llm
+```
+
+Responses are cached by prompt hash, so a second run of that is free and byte-identical.
+
 ## Scoring the dev set (checking only, never an input)
 
 Three steps. Nothing here is ever a pipeline input: references are read only by `validation/` and

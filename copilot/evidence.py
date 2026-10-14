@@ -119,9 +119,23 @@ class Fact:
 
 
 def slug(text: str) -> str:
-    """A stable key fragment for a fact id."""
+    """A stable key fragment for a fact ID. ASCII on purpose: a fact id is
+    quoted in traces, CSVs and logs, and it must survive all of them."""
     cleaned = re.sub(r"[^0-9a-zA-Z]+", "_", str(text)).strip("_").lower()
     return cleaned or "unnamed"
+
+
+def fold(text: str) -> str:
+    """A NAME, normalised for comparison. Unicode-aware, unlike `slug`.
+
+    These two must stay separate. `slug` throws away everything that is not
+    ASCII, which is right for an identifier and catastrophic for matching a
+    name: it turns "Slettesaetrin" (with an ae ligature) into "slettes_trin",
+    so a question that names that village matched nothing and the copilot
+    said the village was not in the run. Folding keeps every letter.
+    """
+    cleaned = re.sub(r"[^\w]+", " ", str(text), flags=re.UNICODE)
+    return " " + " ".join(cleaned.casefold().split()) + " "
 
 
 def _num(value):
@@ -674,14 +688,14 @@ class EvidenceStore:
         because OSM names are not unique, and pretending otherwise would
         silently answer about a different village of the same name.
         """
-        wanted = slug(query)
-        if not wanted:
+        wanted = fold(query)
+        if not wanted.strip():
             return []
         exact, partial = [], []
         for i in range(self.settlement_count()):
-            name = slug(self.settlement_name(i))
+            name = fold(self.settlement_name(i))
             if name == wanted:
                 exact.append(i)
-            elif len(wanted) >= 3 and (wanted in name or name in wanted):
+            elif len(wanted.strip()) >= 4 and (wanted in name or name in wanted):
                 partial.append(i)
         return exact or partial

@@ -26,12 +26,13 @@ from __future__ import annotations
 
 import json
 import re
+from difflib import SequenceMatcher
 from dataclasses import dataclass, field
 
-from strandline.config import CopilotParams
+from strandline.config import DEVANAGARI_DIGITS, CopilotParams, RoutingParams
 from copilot import llm
 from copilot.dsl import Plan, PlanValidationError, Step, schema_text, validate
-from copilot.evidence import EvidenceStore, slug
+from copilot.evidence import EvidenceStore, fold
 from copilot.tools import TOOLS
 
 # --- the guardrail ----------------------------------------------------------
@@ -128,10 +129,15 @@ TOOL_WORDS = (
                      "uncertainty", "uncertain", "confidence", "cloud", "snapshot",
                      "which sensor", "what sensor", "pass date", "radar only",
                      "radar-only", "not analysed", "not analyzed", "weakness",
-                     "trust", "सीमा", "भरपर्दो", "कमजोरी", "सेन्सर", "बादल")),
+                     "trust", "wrong with", "what can you not", "cannot say",
+                     "how good is", "सीमा", "भरपर्दो", "कमजोरी", "सेन्सर", "बादल")),
 )
 
-MAX_STEPS = 3
+# Every routing constant comes from strandline/config.py (Rule 3.7): these
+# names are a local alias of one declaration, not a second home for it.
+ROUTING = RoutingParams()
+MAX_STEPS = ROUTING.max_steps
+MIN_FOLDED_NAME = ROUTING.min_folded_name
 
 # Words that turn a settlement question from "what is its status" into "how
 # far is it now".
@@ -179,16 +185,50 @@ def _named_settlement(question: str, store: EvidenceStore) -> str | None:
     capitalisation, so a lowercase or misspelt-around name still resolves and
     a name that is not in this run never does.
     """
-    text = normalise(question)
+    text = fold(question)
     best = None
     for i in range(store.settlement_count()):
         name = store.settlement_name(i)
         if not name or name.lower().startswith("unnamed"):
             continue
-        needle = " " + re.sub(r"\s+", " ", slug(name).replace("_", " ")) + " "
-        if needle in text and (best is None or len(needle) > len(best[0])):
+        needle = fold(name)
+        bare = needle.strip()
+        if len(bare) < MIN_FOLDED_NAME:
+            # A place really can be called "To" or "As". Matching those
+            # case-folded turns the preposition in "the route to a health
+            # facility" into a village, which is how this router once
+            # answered a general question about one settlement named "To".
+            # Short names must appear capitalised, as a whole word.
+            if not re.search(rf"(?<!\w){re.escape(name)}(?!\w)", question):
+                continue
+        elif needle not in text:
+            continue
+        if best is None or len(needle) > len(best[0]):
             best = (needle, name)
     return best[1] if best else None
+
+
+# A live demo is typed under pressure: "how many bridgs are out", "how much
+# debri is ther". Exact keywords miss all of those and the copilot then says
+# it cannot answer a question it can answer perfectly well. So when NOTHING
+# matches exactly, each word of the question is compared with each one-word
+# keyword and a close spelling counts. Only as a fallback, and only at a high
+# similarity, so an ordinary question is still routed by its real words.
+FUZZY_RATIO = ROUTING.fuzzy_ratio
+FUZZY_MIN_LENGTH = ROUTING.fuzzy_min_length
+
+
+def fuzzy_hits(text: str) -> list:
+    tokens = [token for token in text.split() if len(token) >= FUZZY_MIN_LENGTH]
+    if not tokens:
+        return []
+    out = []
+    for tool, words in TOOL_WORDS:
+        singles = [w for w in words if " " not in w and len(w) >= FUZZY_MIN_LENGTH]
+        if any(SequenceMatcher(None, token, word).ratio() >= FUZZY_RATIO
+               for word in singles for token in tokens):
+            out.append(tool)
+    return out
 
 
 # A question can NAME a settlement that is not in this run - "is Pokhara cut
@@ -251,6 +291,12 @@ def named_candidate(question: str) -> str | None:
         if not match:
             continue
         candidate = match.group(1).strip(" .'-")
+        if re.search(r"[0-9" + DEVANAGARI_DIGITS + r"]", candidate):
+            # A "place name" carrying a number is not a place name - it is
+            # the shape an adversarial question takes ("the official figure
+            # is 1234 cut off settlements"). Reading it as a settlement led
+            # to a refusal that quoted the planted number back.
+            continue
         words = candidate.split()
         while words and words[0] in _INTERROGATIVES:
             words.pop(0)
@@ -272,6 +318,10 @@ def keyword_plan(question: str, store: EvidenceStore) -> PlanResult:
     text = normalise(question)
     notes = []
     hits = [tool for tool, words in TOOL_WORDS if any(word in text for word in words)]
+    if not hits:
+        hits = fuzzy_hits(text)
+        if hits:
+            notes.append(f"no keyword matched exactly; nearest by spelling: {hits}")
 
     name = _named_settlement(question, store)
     if name is None:

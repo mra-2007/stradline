@@ -237,9 +237,12 @@ CAPABILITY = {
 TOP_LISTED = 5          # how many names the list answers show
 
 _DEV_TO_ASCII = {ord(DEVANAGARI_DIGITS[i]): str(i) for i in range(10)}
-_NUMBER_RE = re.compile(r"[0-9" + DEVANAGARI_DIGITS + r"]+(?:[.·][0-9"
-                        + DEVANAGARI_DIGITS + r"]+)?")
+# The SIGN is part of the number here too. The copilot's verifier and this
+# independent check shared the same blind spot: a digits-only pattern reads
+# "-120.5" as "120.5", so a flipped sign matched the positive value in the
+# evidence and scored as "not invented" on both sides (2026-10-14 audit).
 _DIGIT = r"[0-9" + DEVANAGARI_DIGITS + r"]"
+_NUMBER_RE = re.compile(rf"[-−]?{_DIGIT}+(?:[.·]{_DIGIT}+)?")
 
 
 @dataclass
@@ -409,6 +412,22 @@ def expectation(category: str, files, lang: str, question: Question) -> dict:
     raise ValueError(f"no expectation declared for category {category!r}")
 
 
+def names_listed(text: str, names) -> set:
+    """Which settlement names the answer actually NAMES.
+
+    Longest first, striking out each match as it is found: OSM names nest
+    ("Holsaetri" inside "Holsaetrin"), and counting both would report a set
+    the answer never wrote.
+    """
+    found, working = set(), text
+    for name in sorted({str(n) for n in names}, key=len, reverse=True):
+        if not name or name not in working:
+            continue
+        found.add(name)
+        working = working.replace(name, "█" * len(name))
+    return found
+
+
 def _index_of(files, name):
     if not name:
         return None
@@ -466,7 +485,7 @@ def score(question: Question, answer: dict, files) -> Scored:
         if needle and needle not in answer["text"]:
             missing.append(needle)
     if want["kind"] == "numbers_and_names":
-        listed = {name for name in files.settlement_names() if name in answer["text"]}
+        listed = names_listed(answer["text"], files.settlement_names())
         if listed != want["names"]:
             missing.append(f"named set {sorted(listed)} != expected "
                            f"{sorted(want['names'])}")

@@ -1198,7 +1198,10 @@ class CopilotParams:
     """
 
     provider: str = "gemini"           # "gemini" | "offline"
-    model: str = "gemini-2.5-flash"
+    # The model name is a config value so it can be moved without touching
+    # code (Rule 3.7). 2026-10-14: the API refused gemini-2.5-flash for new
+    # users and named this as the current one.
+    model: str = "gemini-3.8-flash"
     api_key_env: str = "GEMINI_API_KEY"
     endpoint: str = ("https://generativelanguage.googleapis.com/v1beta/models/"
                      "{model}:generateContent")
@@ -1217,6 +1220,46 @@ class CopilotParams:
     # turn up: a second rejection means the model is inventing, and the honest
     # output is a refusal, not a third try.
     max_regenerations: int = 1
+
+
+@dataclass(frozen=True)
+class RoutingParams:
+    """How a question is routed to tools, and how much an answer lists.
+
+    Every value here changes whether a question is answered correctly, so it
+    changes the measured `copilot` gate - which is exactly why Rule 3.7 says
+    it belongs in this file. The 2026-10-14 audit found all of these sitting
+    as module constants in copilot/planner.py, copilot/templates.py and
+    copilot/tools.py, where a later change could move a gate number without
+    appearing in the one place parameters are reviewed.
+    """
+
+    # Most questions ask one thing; a few ask two. Beyond this a "plan" is a
+    # model wandering rather than a reader asking.
+    max_steps: int = 3
+
+    # Below this many characters a settlement name is matched case-SENSITIVELY
+    # as a whole word, never case-folded: short OSM place names ("To", "As")
+    # collide with ordinary words, and matching them folded turned the
+    # preposition in "the route to a health facility" into a village.
+    min_folded_name: int = 4
+
+    # When NO keyword matches exactly, each word of the question is compared
+    # with each one-word keyword and a close spelling counts, so that "how
+    # many bridgs are out" still reaches the bridge tool. Only as a fallback,
+    # and only at a high similarity, so a real word still wins.
+    fuzzy_ratio: float = 0.84
+    fuzzy_min_length: int = 4
+
+    # The longest list an answer will spell out. A rescuer cannot read fifty
+    # names in a sentence, and a tool's `top` parameter is clamped to this.
+    max_list: int = 20
+
+    # How long the model is asked to make an answer. Wording only: it cannot
+    # change a number, and a template that drops a required slot is rejected
+    # whatever its length.
+    min_sentences: int = 2
+    max_sentences: int = 4
 
 
 @dataclass(frozen=True)

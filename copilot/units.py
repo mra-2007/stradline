@@ -30,10 +30,15 @@ TRANSLITERATED_TEXT_UNITS = ("date",)
 _ASCII_TO_DEV = {ord(str(i)): DEVANAGARI_DIGITS[i] for i in range(10)}
 _DEV_TO_ASCII = {ord(DEVANAGARI_DIGITS[i]): str(i) for i in range(10)}
 
-# Any run of digits in either script, with an optional decimal part. Used by
-# the verifier to find every number a piece of text contains.
+# Any run of digits in either script, with an optional decimal part AND an
+# optional leading minus. The sign is part of the number: without it the
+# verifier read "-120.5" as the token "120.5", so a model could flip the sign
+# of a measured value and the check would still find the positive literal in
+# the evidence and pass it (2026-10-14 audit, finding 2). Both the ASCII
+# hyphen-minus and the typographic minus sign count.
 DIGIT_CLASS = r"[0-9" + DEVANAGARI_DIGITS + r"]"
-NUMBER_RE = re.compile(rf"{DIGIT_CLASS}+(?:[.·]{DIGIT_CLASS}+)?")
+MINUS = r"[-−]"
+NUMBER_RE = re.compile(rf"{MINUS}?{DIGIT_CLASS}+(?:[.·]{DIGIT_CLASS}+)?")
 
 
 class UnknownUnitError(ValueError):
@@ -92,7 +97,7 @@ def to_ascii_digits(text: str) -> str:
 
 def parse_number(text: str) -> float | None:
     """Read a number written in either script back as a float."""
-    ascii_text = to_ascii_digits(text).replace("·", ".")
+    ascii_text = to_ascii_digits(text).replace("·", ".").replace("−", "-")
     if THOUSANDS_SEPARATOR:
         ascii_text = ascii_text.replace(THOUSANDS_SEPARATOR, "")
     try:

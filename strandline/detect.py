@@ -31,6 +31,9 @@ from strandline.config import (
     FUSION_WATER_MODES,
     MODE_DARKENING,
     MODE_ROUGH_WATER,
+    MODEL_MODE_FUSION,
+    MODEL_MODE_MODEL,
+    MODEL_MODE_PHYSICS,
     SOURCE_BOTH,
     SOURCE_NONE,
     SOURCE_OPTICAL,
@@ -245,6 +248,38 @@ def _find_rough_water(p, zc, z_vv, z_vh, post_vv_db, post_vh_db, mean_vv, mean_v
 _WATER_FINDERS = {MODE_DARKENING: _find_darkening, MODE_ROUGH_WATER: _find_rough_water}
 
 
+# --- Kuro Siwo model fusion ---------------------------------------------------
+
+def _logit(p: np.ndarray) -> np.ndarray:
+    eps = 1e-6
+    clipped = np.clip(p, eps, 1.0 - eps)
+    with np.errstate(invalid="ignore"):
+        return np.log(clipped / (1.0 - clipped))
+
+
+def _model_masks(model, zc: np.ndarray, zone_water: np.ndarray, permanent: np.ndarray
+                 ) -> tuple[np.ndarray, np.ndarray]:
+    """(model_water, model_permanent), both restricted to `zone_water`.
+
+    `model.mode` is MODEL_MODE_MODEL or MODEL_MODE_FUSION (the caller checks);
+    `zone_water` is the SAME HAND/slope valley-floor mask the physics channel
+    uses, applied here too so the model can never put a pixel outside it - the
+    mask is a limit on the GROUND the model's evidence is allowed to describe,
+    not a vote the model can override.
+    """
+    model_valid = np.isfinite(model.p_flood) & np.isfinite(model.p_perm)
+    score_perm = _logit(model.p_perm)
+    model_permanent = zone_water & model_valid & (score_perm >= model.t_gorge)
+
+    score_flood = _logit(model.p_flood)
+    if model.mode == MODEL_MODE_FUSION:
+        with np.errstate(invalid="ignore"):
+            score_flood = score_flood + model.fusion_weight * zc
+    model_water = (zone_water & model_valid & ~permanent & ~model_permanent
+                  & (score_flood >= model.t_gorge))
+    return model_water, model_permanent
+
+
 # --- Per-pixel provenance ----------------------------------------------------
 
 def source_map(water: np.ndarray, debris: np.ndarray, sar_seen: np.ndarray,
@@ -295,6 +330,7 @@ def detect_flood(
     params: DetectParams,
     sar_invalid: np.ndarray | None = None,
     optical=None,
+    model=None,
 ) -> DetectionResult:
     """pre_*: (n_dates, H, W) dB stacks; post_*: (H, W) dB; all on one grid.
 
@@ -324,6 +360,31 @@ def detect_flood(
     With `optical=None`, or fusion `off`, every array returned is
     exactly what the radar-only detector produced before Sentinel-2 existed in
     this pipeline. That is asserted by tests/test_detect_optical_fusion.py.
+
+    `model` is optional Kuro Siwo U-Net evidence (strandline.ml.ModelEvidence,
+    duck-typed here exactly as `optical` is, so this module keeps no torch
+    import and stays pure numpy). Entered BEFORE optical and before every
+    shared test, and restricted to `zone_water` (the same HAND/slope mask the
+    physics channel uses), so it is held to the same standard of place and
+    cannot override the terrain, shadow/layover (`sar_invalid`, folded into
+    `valid` above) or not-analysed masks:
+
+      - `model.mode == "model"`: the model's score ALONE decides water (the
+        physics water channel for this `params.mode` is not used); debris is
+        always the physics channel's, because the checkpoint has no debris
+        class.
+      - `model.mode == "fusion"`: water is the union of the physics channel
+        and the model's score = logit(p_flood) + fusion_weight * zc.
+      - `model.p_perm` (logit >= `model.t_gorge`) always counts as permanent
+        water, never flood, in both modes - the model can relabel a pixel
+        the physics channel called flood as permanent water, but never the
+        other way round.
+      - agreement between the physics channel and the model's own water call
+        is HIGH confidence, the same rule optical fusion uses.
+
+    With `model=None`, or `model.mode == "physics"`, every array returned is
+    exactly what the detector produced before this model existed. That is
+    asserted by tests/test_detect_model_fusion.py.
     """
     p = params
     mean_vv, std_vv = temporal_stats(pre_vv_db, p.std_floor_db)
@@ -350,14 +411,31 @@ def detect_flood(
             p, zc, z_vv, z_vh, post_vv_db, post_vh_db, mean_vv, mean_vh,
             zone_water, zone_debris, permanent, t_water)
 
-    # Optical evidence enters HERE, before every shared test below, so it is
-    # subject to the same terrain zones, minimum mapping unit and drainage
-    # connection as the radar channel. There is no separate optical pathway.
+    # Model evidence enters HERE, before optical and before every shared test
+    # below, so it is subject to the same terrain zones as the radar channel.
+    ml_mode = getattr(model, "mode", MODEL_MODE_PHYSICS) if model is not None else MODEL_MODE_PHYSICS
+    fuse_model = (model is not None and getattr(model, "available", False)
+                 and ml_mode in (MODEL_MODE_MODEL, MODEL_MODE_FUSION))
+    model_water = np.zeros(zc.shape, dtype=bool)
+    model_permanent = np.zeros(zc.shape, dtype=bool)
+    if fuse_model:
+        model_water, model_permanent = _model_masks(model, zc, zone_water, permanent)
+        permanent = permanent | model_permanent
+        model_water = model_water & ~permanent     # p_perm never becomes flood
+        sar_water = sar_water & ~permanent
+        water = model_water if ml_mode == MODEL_MODE_MODEL else (sar_water | model_water)
+        debris = sar_debris
+        high = (high & water) | (water & sar_water & model_water)
+    else:
+        water, debris = sar_water, sar_debris
+
+    # Optical evidence enters next, before the shared tests, so it is held to
+    # exactly the same standard of place as the radar and model channels.
     fuse_water = optical is not None and optical.fusion in FUSION_WATER_MODES
     fuse_debris = optical is not None and optical.fusion in FUSION_DEBRIS_MODES
-    fuse = fuse_water or fuse_debris
+    fuse_optical = fuse_water or fuse_debris
     opt_water = opt_debris = np.zeros(zc.shape, dtype=bool)
-    if fuse:
+    if fuse_optical:
         opt_clear = valid & optical.clear
         if fuse_water:
             opt_water = zone_water & ~permanent & opt_clear & optical.water
@@ -365,10 +443,8 @@ def detect_flood(
         # channel out entirely - the SAR debris channel is untouched either way.
         if fuse_debris:
             opt_debris = (zone_debris & ~zone_water) & opt_clear & optical.debris
-        water = sar_water | opt_water
-        debris = (sar_debris | opt_debris) & ~water
-    else:
-        water, debris = sar_water, sar_debris
+        water = water | opt_water
+        debris = (debris | opt_debris) & ~water
 
     water = remove_small(water, p.mmu_pixels)
     debris = remove_small(debris, p.mmu_pixels_debris)
@@ -379,7 +455,7 @@ def detect_flood(
         debris = keep_connected_to(debris, river | water, p.drainage_buffer_px)
 
     high = high & water
-    if fuse:
+    if fuse_optical:
         # Agreement between two independent sensors is the strongest evidence
         # this pipeline can produce, so it joins the radar darkness test as a
         # second route to high confidence.
@@ -393,14 +469,22 @@ def detect_flood(
     classes[water] = CLASS_FLOOD_MEDIUM
     classes[high] = CLASS_FLOOD_HIGH
 
-    source = source_map(water, debris, sar_water | sar_debris, opt_water | opt_debris)
+    # Model evidence is itself derived from Sentinel-1, so it is counted
+    # toward the SAR half of the per-pixel provenance layer rather than a new
+    # source code (strandline.config.SOURCE_* has no "model" category).
+    source = source_map(water, debris, sar_water | sar_debris | model_water | model_permanent,
+                        opt_water | opt_debris)
 
     stats = {
         "mode": p.mode,
         "optical_fusion": (None if optical is None else optical.fusion),
-        "optical_used": bool(fuse),
+        "optical_used": bool(fuse_optical),
         "optical_water_fused": bool(fuse_water),
         "optical_debris_fused": bool(fuse_debris),
+        "model_mode": ml_mode,
+        "model_used": bool(fuse_model),
+        "model_pixels": int(np.sum(model_water)),
+        "model_permanent_pixels": int(np.sum(model_permanent)),
         "source_pixels": {int(c): int(np.sum(source == c)) for c in np.unique(source)},
         "water_threshold_db": round(t_water, 3),
         "water_threshold_otsu_raw_db": (None if thr.otsu_raw is None else round(thr.otsu_raw, 3)),

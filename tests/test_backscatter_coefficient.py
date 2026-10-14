@@ -182,7 +182,7 @@ def test_cli_accepts_the_supported_coefficient_and_defaults_to_sigma0(monkeypatc
     captured = {}
 
     def fake_run(bbox, event_day, out, rp, dp, dry_run, op=None, ep=None,
-                 osmp=None, dmgp=None, npar=None, mc=None):
+                 osmp=None, dmgp=None, npar=None, mc=None, mp=None):
         captured["coefficient"] = rp.backscatter_coefficient
         captured["elevation_model"] = rp.elevation_model
         captured["optical"] = op

@@ -53,8 +53,10 @@ from strandline.config import (
     DEBRIS_UNVERIFIED_LABEL,
     DEV_N_PRE,
     FUSION_OFF,
+    MODEL_MODE_PHYSICS,
     DetectParams,
     ExtentParams,
+    ModelParams,
     OpticalParams,
     RunParams,
 )
@@ -217,12 +219,15 @@ def missing_cache(event: dict, rp: RunParams, runs_root: Path | None = None,
 def prepare_event(event: dict, rp: RunParams, dp: DetectParams,
                   runs_root: Path | None = None, allow_download: bool = False,
                   max_pixels: int = MAX_SCENE_PIXELS, op: OpticalParams | None = None,
+                  mp: ModelParams | None = None,
                   log=print) -> pipeline.PreparedScene:
     """Pre-flight, read the cache and build the prepared scene. No downloads.
 
     `op=None` (the default) is a radar-only preparation: the Sentinel-2 stage is
     not entered at all, which is what every already-recorded dev score was
-    produced with, so their params_hash stays reproducible.
+    produced with, so their params_hash stays reproducible. `mp=None`, or
+    `mp.mode == "physics"`, is the same for the model stage: torch is not even
+    imported, so every already-recorded dev score stays reproducible.
     """
     bbox = event_bbox(event)
     grid = ingest.make_grid(bbox, rp.resolution_m)
@@ -246,7 +251,7 @@ def prepare_event(event: dict, rp: RunParams, dp: DetectParams,
                 f"  venv/Scripts/python.exe -m eval.fetch_dev_data --events {event['name']}"
                 + (" --optical" if op is not None and op.enabled else ""))
     return pipeline.prepare(bbox, event_day(event), cache_dir(str(event["name"]), runs_root),
-                            rp, dp, choice=choice, op=op, log=log)
+                            rp, dp, choice=choice, op=op, mp=mp, log=log)
 
 
 def optical_provenance(scene: pipeline.PreparedScene) -> dict:
@@ -277,6 +282,27 @@ def optical_provenance(scene: pipeline.PreparedScene) -> dict:
         out["reflectance_conversion"] = evidence["reflectance_conversion"]
     if op is not None:
         out["parameters"] = asdict(op)
+    return out
+
+
+def model_provenance(scene: pipeline.PreparedScene) -> dict:
+    """What the Kuro Siwo model contributed, whether or not it contributed.
+
+    Same contract as `optical_provenance`: always written, so no score file
+    can be silent about the model stage.
+    """
+    report = dict(scene.model_report)
+    mp = scene.model_params
+    out = {
+        "status": report.get("status"),
+        "mode": (mp.mode if mp is not None else MODEL_MODE_PHYSICS),
+        "fused_into_map": (scene.model_evidence is not None
+                           and scene.model_evidence.mode != MODEL_MODE_PHYSICS),
+        "reason": report.get("reason"),
+        "sha256": report.get("sha256"),
+    }
+    if mp is not None:
+        out["parameters"] = asdict(mp)
     return out
 
 
@@ -347,6 +373,7 @@ def score_with_scene(event: dict, scene: pipeline.PreparedScene, dp: DetectParam
         "areas_ha": outputs.class_areas_ha(result.classes, grid.res),
         "parameters": {"detect": asdict(dp), "run": asdict(rp)},
         "optical": optical_provenance(scene),
+        "model": model_provenance(scene),
         "scored_s": None,
     }
 

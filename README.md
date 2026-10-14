@@ -227,6 +227,49 @@ the hash says what the run asked for, `optical.status` says what it got — `use
 dev events, `refused` on 4 where the clear pair fell below 20%. See `docs/tuning_log.md`,
 2026-10-12, for the pass, the adoption rule and the caveat on where the gain comes from.
 
+## Method (Kuro Siwo model fusion)
+
+Extra evidence from a trained U-Net (`segmentation_models_pytorch.Unet("resnet34",
+encoder_weights=None, in_channels=6, classes=3)`, trained on Kuro Siwo — Bountos et al. 2024, CC
+BY 4.0), fused with the physics detector above. **`--model-mode` defaults to `physics`**: the
+model has not been scored by `eval/tune.py` yet, so it is never shipped ahead of a
+leave-one-event-out measurement (Rule 3.4), and a default run is byte-identical to the one before
+this model existed.
+
+1. **CPU tiled inference** (`strandline/ml.py`): post VV/VH and the two nearest pre-event dates'
+   VV/VH, converted from this pipeline's dB stacks back to the LINEAR sigma0 the checkpoint was
+   trained on, clipped and z-scored per channel using the statistics **stored in the checkpoint
+   file itself**, then run over 128 px tiles (32 px overlap) with softmax probabilities averaged
+   across overlapping windows.
+2. **Three modes** (`--model-mode`): `physics` (current method only; torch is never imported);
+   `model` (the trained net alone decides water, inside the physics channel's own HAND/slope
+   valley-floor zone — it has no debris class, so debris stays the physics channel's); `fusion`
+   (`score = logit(p_flood) + fusion_weight * zscore_evidence`, the SAME combined z-score the
+   physics detector computes, so a confident model can override a weak or wrong-signed physics
+   change and vice versa).
+3. **Masks are applied after, never overridden.** HAND, slope, radar shadow/layover
+   (`sar_invalid`) and not-analysed terrain are the physics channel's own masks, applied to the
+   model's score exactly as they are to the physics one — the model cannot place a pixel outside
+   them (`tests/test_detect_model_fusion.py`).
+4. **`p_perm` is permanent water, never flood**, in every mode — the same invariant the physics
+   `permanent` mask already enforces.
+5. **Agreement is high confidence.** Where the physics channel and the model's own water call
+   agree, the pixel is HIGH confidence — the same rule optical fusion uses.
+6. **Never fatal.** A missing checkpoint (`models/strandline_kurosiwo_unet.pt` is gitignored and
+   not in this repo), a missing `torch`/`segmentation-models-pytorch`, or a broken checkpoint all
+   degrade the run to physics-only and are recorded in `run_report.json` under `model.status`
+   (`disabled`, `unavailable`, `failed`, `used`) with the reason. The Kuro Siwo citation is
+   carried in `run_report.json["model"]["citation"]` **only** on a run where the model actually
+   fused a pixel — a physics-only run never consulted it.
+
+**Not yet measured.** `eval/tune.py` has the grid (`MODEL_TUNE_GRIDS`: `mode`, `fusion_weight`,
+`t_gorge`) and the materialise/hash plumbing (`materialise_model`, `model_grid_points`,
+`build_model_matrix`), but no leave-one-event-out pass has been run — there is no trained
+checkpoint in this repository to run it with, and running it is a long job the human must start.
+`docs/open_items.md` also flags that `pakistan_larkana_2022`, one of the ten dev events, likely
+overlaps a Kuro Siwo *training* activation (actid 1111009, same place and flood) and should be
+excluded from that pass's training/held-out set.
+
 ## Method (OpenStreetMap and the damage overlay)
 
 **The snapshot is the whole point.** After a flood, mappers trace the damage — buildings get flood

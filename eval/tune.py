@@ -80,12 +80,16 @@ from strandline.config import (
     EXTENT_TUNE_GRID,
     FUSION_OFF,
     FUSION_UNION,
+    MODEL_MODE_PHYSICS,
+    MODEL_MODES,
+    MODEL_TUNE_GRIDS,
     OPTICAL_ADOPTION,
     OPTICAL_FUSION_MODES,
     OPTICAL_TUNE_GRIDS,
     TUNE_GRIDS,
     DetectParams,
     ExtentParams,
+    ModelParams,
     OpticalParams,
     RunParams,
 )
@@ -307,6 +311,65 @@ def materialise_extent(point: dict, base_ep: ExtentParams | None = None) -> Exte
     return replace(ep, **changes) if changes else ep
 
 
+def materialise_model(point: dict, base_mp: ModelParams | None = None) -> ModelParams:
+    """The `model.*` keys of one point -> the ModelParams a run would use.
+
+    `mode` comes from the point's own `model.mode` key (set by
+    `model_grid_points`, exactly as `detect.mode` is set by `grid_points`), not
+    assumed - a point of this grid may be the `physics` control point.
+    """
+    mp = base_mp or ModelParams()
+    changes = {k.split(".", 1)[1]: v for k, v in point.items() if k.startswith("model.")}
+    return replace(mp, **changes) if changes else mp
+
+
+def model_mode_of(point: dict) -> str:
+    return str(point.get("model.mode", MODEL_MODE_PHYSICS))
+
+
+def validate_model_grid(grids: dict[str, dict[str, tuple]] | None = None
+                        ) -> dict[str, dict[str, tuple]]:
+    """Same checks as `validate_grid`, for MODEL_TUNE_GRIDS."""
+    grids = MODEL_TUNE_GRIDS if grids is None else grids
+    model_fields = {f.name for f in fields(ModelParams)}
+    for mode, grid in grids.items():
+        if mode not in MODEL_MODES:
+            raise ValueError(f"MODEL_TUNE_GRIDS has a grid for unknown model mode {mode!r}; "
+                             f"choose one of {', '.join(MODEL_MODES)}.")
+        for key, values in grid.items():
+            if key == "model.mode":
+                raise ValueError(
+                    "MODEL_TUNE_GRIDS keys ARE the modes; do not also put model.mode on an axis.")
+            section, _, field_name = key.partition(".")
+            if section != "model":
+                raise ValueError(f"MODEL_TUNE_GRIDS[{mode!r}] key {key!r}: section must be "
+                                 f"'model'.")
+            if field_name not in model_fields:
+                raise ValueError(f"MODEL_TUNE_GRIDS[{mode!r}] key {key!r}: ModelParams has no "
+                                 f"field {field_name!r}.")
+            if not values:
+                raise ValueError(f"MODEL_TUNE_GRIDS[{mode!r}] key {key!r}: no values")
+    return grids
+
+
+def model_grid_points(grids: dict[str, dict[str, tuple]] | None = None) -> list[dict]:
+    """Every point of every model mode's grid, in declaration order.
+
+    One grid per mode, exactly as `grid_points`: `physics` is a single point
+    (the model never runs), so a parameter neither mode varies cannot change a
+    pixel there.
+    """
+    grids = validate_model_grid(grids)
+    points: list[dict] = []
+    for mode, grid in grids.items():
+        keys = list(grid)
+        for combo in itertools.product(*(grid[k] for k in keys)):
+            point = {"model.mode": mode}
+            point.update(dict(zip(keys, combo)))
+            points.append(point)
+    return points
+
+
 def materialise_full(point: dict, n_pre: int = DEV_N_PRE
                      ) -> tuple[DetectParams, RunParams, OpticalParams | None,
                                 ExtentParams | None]:
@@ -320,6 +383,11 @@ def materialise_full(point: dict, n_pre: int = DEV_N_PRE
     shipped default moved to debris-OUT, the default hashes differently from
     the baseline, so the two are not interchangeable and passing the default
     "for exactness" would silently change the identity of a radar-only point.
+
+    Deliberately UNCHANGED in arity (4-tuple) when the `model` axis was added:
+    every existing caller unpacks exactly 4 values, so a point that carries no
+    `model.*` key must keep producing one. A point that DOES carry one uses
+    `materialise_full_model` / `full_point_hash_model` instead.
     """
     dp, rp = materialise(point, n_pre)
     has_optical = any(k.startswith("optical.") for k in point)
@@ -332,6 +400,23 @@ def materialise_full(point: dict, n_pre: int = DEV_N_PRE
 def full_point_hash(point: dict, n_pre: int = DEV_N_PRE) -> str:
     """The identity of a combined point. Radar-only points hash as before."""
     return pipeline.params_hash(*materialise_full(point, n_pre))
+
+
+def materialise_full_model(point: dict, n_pre: int = DEV_N_PRE
+                           ) -> tuple[DetectParams, RunParams, OpticalParams | None,
+                                      ExtentParams | None, ModelParams | None]:
+    """A combined SAR + optical + extent + model point -> every parameter set a
+    run uses. Same as `materialise_full`, plus `mp=None` when the point carries
+    no `model.*` key - the model pass's own radar-only baseline.
+    """
+    dp, rp, op, ep = materialise_full(point, n_pre)
+    has_model = any(k.startswith("model.") for k in point)
+    return dp, rp, op, ep, (materialise_model(point) if has_model else None)
+
+
+def full_point_hash_model(point: dict, n_pre: int = DEV_N_PRE) -> str:
+    """The identity of a combined SAR + optical + extent + model point."""
+    return pipeline.params_hash(*materialise_full_model(point, n_pre))
 
 
 def extent_of(point: dict) -> bool:
@@ -823,6 +908,121 @@ def scene_with_optical(scene, read, op: OpticalParams | None):
         return replace(scene, optical_evidence=None, optical_params=op)
     evidence = optical.evidence_from_pair(read, op)
     return replace(scene, optical_evidence=evidence, optical_params=op)
+
+
+# --- the model pass ------------------------------------------------------
+#
+# A THIRD leave-one-event-out pass, crossing MODEL_TUNE_GRIDS with the final
+# SAR + optical point already chosen by the first two passes - the same
+# declared cost decision OPTICAL_TUNE_GRIDS took relative to TUNE_GRIDS
+# (docs/tuning_log.md): a joint search would multiply every point of every
+# earlier pass by every point here.
+#
+# UNLIKE the optical pass, the expensive step (CPU tiled inference) does not
+# need re-running per grid point: `t_gorge` and `fusion_weight` are read off
+# the evidence object AT CLASSIFY TIME (strandline.detect._model_masks), so
+# one inference pass per event produces `p_flood`/`p_perm`, and every point of
+# MODEL_TUNE_GRIDS is then a cheap `dataclasses.replace` of that evidence - the
+# same shape as `scene_with_optical`, but without `*_read_of`'s separate cache
+# read, because nothing here is re-read from disk.
+#
+# NOT YET RUN: there is no trained checkpoint in this repository
+# (models/strandline_kurosiwo_unet.pt is gitignored) and executing this pass is
+# a long job (Rule: never run one from Claude Code without the human's
+# go-ahead). This machinery exists so the human can run it; see
+# docs/open_items.md.
+
+MODEL_PROBE = ModelParams(mode="fusion")  # any non-physics mode triggers inference
+
+
+def scene_with_model(scene, mp: ModelParams | None):
+    """The prepared scene with model evidence re-thresholded for ONE point.
+
+    `replace`, not mutation, as `scene_with_optical`. If the probe scene's
+    model stage produced no usable evidence (missing weights/torch, or a
+    failed load), every point for that event stays physics-only and the score
+    says so - the configuration asked for the model and got none, which is the
+    honest reading, exactly as an optical refusal is scored (Rule 3.2).
+    """
+    if mp is None:
+        return scene
+    evidence = scene.model_evidence
+    if evidence is None or not evidence.available:
+        return replace(scene, model_params=mp)
+    new_evidence = replace(evidence, mode=mp.mode, fusion_weight=mp.fusion_weight,
+                           t_gorge=mp.t_gorge)
+    return replace(scene, model_evidence=new_evidence, model_params=mp)
+
+
+def model_sar_points(selections: dict[str, Selection], final: "Selection | None"
+                     ) -> dict[str, dict]:
+    """Per-fold SAR+optical point for the model pass, same shape as
+    `optical_sar_points` - reused as-is would require the optical pass's own
+    selections; this project's current state (eval/chosen_params.json) has no
+    scored optical selections to build from until that pass is re-run, so a
+    caller typically supplies the frozen point via `frozen_sar_points()` or an
+    explicit per-fold mapping instead.
+    """
+    out: dict[str, dict] = {}
+    for held, sel in selections.items():
+        if sel.ok:
+            out[held] = dict(sel.chosen.point)
+    if final is not None and final.ok:
+        out[""] = dict(final.chosen.point)
+    return out
+
+
+def build_model_matrix(events: list[dict], points: list[dict],
+                       runs_root: Path | None = None, *, n_pre: int = DEV_N_PRE,
+                       tolerance_px: int = 1, reuse: bool = True,
+                       allow_download: bool = False, max_pixels: int = MAX_SCENE_PIXELS,
+                       log=print) -> Matrix:
+    """Score every event at every combined (SAR+optical x model) point.
+
+    One scene is prepared per event, with the model probe always on (so
+    inference runs once, if it can run at all); every point then only
+    re-thresholds that evidence and re-classifies - both cheap.
+    """
+    matrix: Matrix = {}
+    for i, event in enumerate(events, start=1):
+        name = str(event["name"])
+        log(f"[{i}/{len(events)}] {name}")
+        scene = None
+        for point in points:
+            dp, rp, op, ep, mp = materialise_full_model(point, n_pre)
+            phash = pipeline.params_hash(dp, rp, op, ep, mp)
+            if reuse:
+                cached = load_score(name, phash, runs_root)
+                if reusable(cached):
+                    matrix[(name, phash)] = cached
+                    log(f"      {point_label(point):<64} cached "
+                        f"{cached.metrics.get(OBJECTIVE_METRIC, cached.metrics.get(CONTROL_METRIC))}")
+                    continue
+            try:
+                if scene is None:
+                    scene = prepare_event(event, rp, dp, runs_root, allow_download,
+                                          max_pixels, op=op, mp=MODEL_PROBE, log=lambda *a: None)
+                    log(f"      model: {scene.model_report.get('status')}")
+                point_scene = scene_with_model(scene, mp)
+                score = score_with_scene(event, point_scene, dp, tolerance_px, op=op, ep=ep,
+                                         log=lambda *a: None)
+            except KeyboardInterrupt:
+                raise
+            except Exception as err:   # one unusable event must not lose the matrix
+                score = EventScore(event=name, kind=sb.row_kind(event), params_hash=phash,
+                                   error=f"{type(err).__name__}: {err}")
+                log(f"      {point_label(point):<64} FAILED {score.error[:70]}")
+                save_score(score, runs_root)
+                matrix[(name, phash)] = score
+                if scene is None:
+                    break
+                continue
+            save_score(score, runs_root)
+            matrix[(name, phash)] = score
+            key = OBJECTIVE_METRIC if score.kind != sb.KIND_CONTROL else CONTROL_METRIC
+            log(f"      {point_label(point):<64} {key}={score.metrics.get(key)}")
+        del scene
+    return matrix
 
 
 # --- the Pareto-dominance rule (declared 2026-10-12, AFTER the refusal) -------

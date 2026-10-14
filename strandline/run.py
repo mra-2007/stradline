@@ -13,6 +13,8 @@ expensive stage many times:
     fetch      -> Sentinel-1 + DEM on one grid      (openEO, cached)
     optical    -> Sentinel-2 evidence, if clear     (openEO, cached, OPTIONAL
                                                      and never fatal)
+    model      -> Kuro Siwo U-Net evidence, if the  (CPU, OPTIONAL and never
+                  model is present                  fatal; physics mode skips it)
     prepare    -> speckle filter, dB, terrain       (CPU, terrain cached)
     classify   -> flood and debris classes          (CPU, cheap: re-run per
                                                      parameter set)
@@ -35,18 +37,22 @@ from pathlib import Path
 
 import numpy as np
 
-from strandline import (catalog, damage, detect, ingest, network, optical, osm,
+from strandline import (catalog, damage, detect, ingest, ml, network, optical, osm,
                         outputs, reliability, terrain)
 from strandline.config import (
     BACKSCATTER_COEFFICIENTS,
     CLASS_DEBRIS,
     CLASS_NAMES,
     BRIDGE_UNVERIFIED_LABEL,
+    KUROSIWO_CITATION,
+    MODEL_MODE_PHYSICS,
+    MODEL_MODES,
     OPTICAL_FUSION_MODES,
     DEBRIS_UNVERIFIED_LABEL,
     DamageParams,
     DetectParams,
     ExtentParams,
+    ModelParams,
     MonteCarloParams,
     NetworkParams,
     OpticalParams,
@@ -99,6 +105,10 @@ OPTICAL_REFUSED = "refused"
 OPTICAL_FAILED = "failed"
 OPTICAL_USED = "used"
 
+# What the Kuro Siwo model stage did. Always in run_report.json under
+# `model.status` (strandline.ml.MODEL_*), mirroring the optical contract: a
+# report can never be silent about whether the model contributed.
+
 
 class PipelineError(RuntimeError):
     """A run could not be completed, with a message saying what to try."""
@@ -131,6 +141,11 @@ class PreparedScene:
     # What the optical stage did, whether or not it produced evidence. Always
     # present, so a report can never be silent about Sentinel-2.
     optical_report: dict = field(default_factory=lambda: {"status": OPTICAL_DISABLED})
+    # Named `model_evidence`, not `model`, for the same reason as
+    # `optical_evidence`: it must not shadow the `strandline.ml` import.
+    model_evidence: "ml.ModelEvidence | None" = None
+    model_params: ModelParams | None = None
+    model_report: dict = field(default_factory=lambda: {"status": ml.MODEL_DISABLED})
 
     @property
     def n_pixels(self) -> int:
@@ -141,7 +156,7 @@ def preflight(bbox, event_day: date, rp: RunParams, log=print) -> catalog.TrackC
     """Catalogue search and track choice. No login, no download."""
     start = event_day - timedelta(days=rp.search_days_before)
     end = event_day + timedelta(days=rp.max_post_latency_days + 1)
-    log(f"[1/7] Searching Sentinel-1 GRD scenes {start} .. {end} ...")
+    log(f"[1/8] Searching Sentinel-1 GRD scenes {start} .. {end} ...")
     try:
         scenes = catalog.search_s1_grd(bbox, start, end)
     except Exception as err:  # network / service problems: say so clearly
@@ -183,7 +198,7 @@ def fetch(choice: catalog.TrackChoice, grid: ingest.Grid, cache: Path, rp: RunPa
                               rp.elevation_model)
     missing = [p for p in list(paths["s1"].values()) + [paths["dem"]] if not p.exists()]
     if not missing:
-        log(f"[3/7] All {len(paths['s1']) + 1} rasters already cached")
+        log(f"[3/8] All {len(paths['s1']) + 1} rasters already cached")
         return paths
     conn = conn if conn is not None else ingest.connect()
     for acq in list(choice.pre) + [choice.post]:
@@ -303,9 +318,47 @@ def optical_stage(bbox, event_day: date, grid: ingest.Grid, cache: Path,
         return None, report, None
 
 
+def model_stage(pre_vv_db: np.ndarray, pre_vh_db: np.ndarray,
+                post_vv_db: np.ndarray, post_vh_db: np.ndarray,
+                mp: ModelParams | None, log=print
+                ) -> tuple["ml.ModelEvidence | None", dict]:
+    """Kuro Siwo U-Net evidence for an already-preprocessed scene. NEVER raises.
+
+    Same contract as `optical_stage` (Rule 5): a missing model file, a missing
+    torch/segmentation-models-pytorch install, or a broken checkpoint all
+    degrade the run to physics-only detection and are RECORDED, with a reason,
+    rather than losing the run. `mp is None` or `mp.mode == "physics"` does not
+    even attempt to import torch, so a physics-only run pays nothing for this
+    feature existing.
+    """
+    report: dict = {"status": ml.MODEL_DISABLED, "mode": mp.mode if mp else MODEL_MODE_PHYSICS}
+    if mp is None or mp.mode == MODEL_MODE_PHYSICS:
+        return None, report
+    try:
+        evidence, report = ml.run_model(pre_vv_db, pre_vh_db, post_vv_db, post_vh_db, mp)
+        if evidence is not None:
+            log(f"      model ({mp.mode}): {report.get('p_flood_coverage', 0):.0%} of the "
+                f"area covered, sha256 {report.get('sha256')}")
+        else:
+            log(f"      model {report['status']}: {report.get('reason')}; "
+                "continuing with physics only")
+        return evidence, report
+    except AssertionError:
+        # Same reasoning as optical_stage: a test's monkeypatch or a
+        # programming error, never a flood. Must not be swallowed.
+        raise
+    except Exception as err:  # never lose a run over the model stage
+        report["status"] = ml.MODEL_FAILED
+        report["error_type"] = type(err).__name__
+        report["reason"] = str(err)
+        log(f"      model FAILED ({type(err).__name__}: {err}); continuing with physics only")
+        return None, report
+
+
 def prepare(bbox, event_day: date, cache: Path, rp: RunParams, dp: DetectParams,
             conn=None, choice: catalog.TrackChoice | None = None,
-            op: OpticalParams | None = None, log=print) -> PreparedScene:
+            op: OpticalParams | None = None, mp: ModelParams | None = None,
+            log=print) -> PreparedScene:
     """preflight + fetch + speckle filter + dB + terrain + optical.
 
     Raises PipelineError if the RADAR half cannot be built. The optical half is
@@ -323,11 +376,11 @@ def prepare(bbox, event_day: date, cache: Path, rp: RunParams, dp: DetectParams,
             "Try a later --max-post-latency-days or a smaller area.")
 
     grid = ingest.make_grid(bbox, rp.resolution_m)
-    log(f"[2/7] Grid EPSG:{grid.epsg}, {grid.width} x {grid.height} px at {grid.res} m")
-    log("[3/7] Downloading via openEO (cached) ...")
+    log(f"[2/8] Grid EPSG:{grid.epsg}, {grid.width} x {grid.height} px at {grid.res} m")
+    log("[3/8] Downloading via openEO (cached) ...")
     paths = fetch(choice, grid, cache, rp, conn=conn, log=log)
 
-    log("[4/7] Preprocessing (Lee filter, dB, alignment) ...")
+    log("[4/8] Preprocessing (Lee filter, dB, alignment) ...")
 
     def load(day):
         arr = ingest.read_on_grid(paths["s1"][day], grid)
@@ -346,20 +399,26 @@ def prepare(bbox, event_day: date, cache: Path, rp: RunParams, dp: DetectParams,
         log(f"      SAR mask band values (check encoding!): {mask_counts}")
     dem = ingest.read_on_grid(paths["dem"], grid)[0].astype(np.float64)
 
-    log("[5/7] Terrain: slope, drainage, HAND ...")
+    log("[5/8] Terrain: slope, drainage, HAND ...")
     terr = terrain.load_or_compute_terrain(dem, grid.transform, grid.crs,
                                            rp.stream_threshold_km2, paths["terrain"], log=log)
 
-    log("[6/7] Sentinel-2 optical evidence (optional) ...")
+    log("[6/8] Sentinel-2 optical evidence (optional) ...")
     evidence, optical_report, s2_pair = optical_stage(bbox, event_day, grid, cache, op,
                                                       conn=conn, log=log)
+
+    log("[7/8] Kuro Siwo model evidence (optional) ...")
+    pre_vv_db = np.stack([p[0] for p in pre])
+    pre_vh_db = np.stack([p[1] for p in pre])
+    model_evidence, model_report = model_stage(pre_vv_db, pre_vh_db, post_vv, post_vh, mp, log=log)
     return PreparedScene(
         grid=grid, choice=choice,
-        pre_vv_db=np.stack([p[0] for p in pre]), pre_vh_db=np.stack([p[1] for p in pre]),
+        pre_vv_db=pre_vv_db, pre_vh_db=pre_vh_db,
         post_vv_db=post_vv, post_vh_db=post_vh, terrain=terr, run_params=rp,
         preprocess_params={f: getattr(dp, f) for f in PREPROCESS_FIELDS},
         post_mask_counts=mask_counts, optical_evidence=evidence,
         optical_params=op, optical_report=optical_report, optical_pair=s2_pair,
+        model_evidence=model_evidence, model_params=mp, model_report=model_report,
     )
 
 
@@ -376,6 +435,7 @@ def classify(scene: PreparedScene, dp: DetectParams) -> detect.DetectionResult:
         scene.terrain.hand_m, scene.terrain.slope_deg, scene.terrain.streams, dp,
         sar_invalid=None,  # enable once the mask encoding is verified
         optical=scene.optical_evidence,
+        model=scene.model_evidence,
     )
 
 
@@ -385,8 +445,9 @@ def build_report(scene: PreparedScene, result: detect.DetectionResult, bbox, eve
                  ep: ExtentParams | None = None) -> dict:
     choice, grid, terr = scene.choice, scene.grid, scene.terrain
     op = scene.optical_params
+    mp = scene.model_params
     ep = ep if ep is not None else ExtentParams()
-    params = params_dict(dp, rp, op, ep)
+    params = params_dict(dp, rp, op, ep, mp)
     report = {
         "event_date": str(event_day),
         "bbox_wgs84": list(bbox),
@@ -397,7 +458,7 @@ def build_report(scene: PreparedScene, result: detect.DetectionResult, bbox, eve
                   "pre": [{"day": str(a.day), "scenes": a.names} for a in choice.pre],
                   "post_latency_days": choice.latency_days, "notes": choice.notes},
         "parameters": params,
-        "parameters_hash": params_hash(dp, rp, op, ep),
+        "parameters_hash": params_hash(dp, rp, op, ep, mp),
         "areas_ha": outputs.class_areas_ha(result.classes, grid.res),
         "detection_stats": result.stats,
         "terrain": {"stream_pixels": int(terr.streams.sum()),
@@ -433,6 +494,17 @@ def build_report(scene: PreparedScene, result: detect.DetectionResult, bbox, eve
         for code, count in result.stats.get("source_pixels", {}).items()}
     report["optical"]["fusion"] = (op.fusion if op is not None else None)
     report["optical"]["fused_into_map"] = bool(result.stats.get("optical_used", False))
+    # Always present, whatever happened, so no report is silent about the model.
+    report["model"] = dict(scene.model_report)
+    report["model"]["mode"] = (mp.mode if mp is not None else MODEL_MODE_PHYSICS)
+    report["model"]["fused_into_map"] = bool(result.stats.get("model_used", False))
+    model_fused = bool(result.stats.get("model_used", False))
+    report["model"]["pixels"] = int(result.stats.get("model_pixels", 0))
+    report["model"]["permanent_pixels"] = int(result.stats.get("model_permanent_pixels", 0))
+    # Rule 1: the training-dataset citation is carried ONLY on a run where the
+    # model actually contributed a pixel - a physics-only run never consulted
+    # Kuro Siwo and must not cite it.
+    report["model"]["citation"] = KUROSIWO_CITATION if model_fused else None
     if n_poly is not None:
         report["n_polygons"] = n_poly
     if rel is not None:
@@ -444,7 +516,7 @@ def build_report(scene: PreparedScene, result: detect.DetectionResult, bbox, eve
 
 
 def params_hash(dp: DetectParams, rp: RunParams, op: OpticalParams | None = None,
-                ep: ExtentParams | None = None) -> str:
+                ep: ExtentParams | None = None, mp: ModelParams | None = None) -> str:
     """The 12-hex identity of a configuration.
 
     `op=None` (or optical disabled) hashes byte-identically to the way it did
@@ -460,9 +532,12 @@ def params_hash(dp: DetectParams, rp: RunParams, op: OpticalParams | None = None
     is the point: it scores a different quantity and must not borrow the hash of
     the rows published before the option existed. A caller that wants the
     published identity must pass `EXTENT_HASH_BASELINE`, not `ExtentParams()`.
+
+    `mp=None`, or `mp.mode == "physics"`, hashes byte-identically to the way it
+    did before the Kuro Siwo model existed, for the same reason as optical.
     """
     return hashlib.sha256(
-        json.dumps(params_dict(dp, rp, op, ep), sort_keys=True).encode()).hexdigest()[:12]
+        json.dumps(params_dict(dp, rp, op, ep, mp), sort_keys=True).encode()).hexdigest()[:12]
 
 
 def damage_stage(bbox, event_day: date, scene: PreparedScene,
@@ -635,10 +710,12 @@ def write(out: Path, scene: PreparedScene, result: detect.DetectionResult, bbox,
 def run(bbox, event_day: date, out: Path, rp: RunParams, dp: DetectParams, dry_run: bool,
         op: OpticalParams | None = None, ep: ExtentParams | None = None,
         osmp: OsmParams | None = None, dmgp: DamageParams | None = None,
-        npar: NetworkParams | None = None, mc: MonteCarloParams | None = None) -> int:
+        npar: NetworkParams | None = None, mc: MonteCarloParams | None = None,
+        mp: ModelParams | None = None) -> int:
     t_start = time.time()
     out.mkdir(parents=True, exist_ok=True)
     op = OpticalParams() if op is None else op
+    mp = ModelParams() if mp is None else mp
 
     try:
         choice = preflight(bbox, event_day, rp)
@@ -652,8 +729,8 @@ def run(bbox, event_day: date, out: Path, rp: RunParams, dp: DetectParams, dry_r
         return 0
 
     try:
-        scene = prepare(bbox, event_day, out / "cache", rp, dp, choice=choice, op=op)
-        print("[7/7] Detecting flood and debris ...")
+        scene = prepare(bbox, event_day, out / "cache", rp, dp, choice=choice, op=op, mp=mp)
+        print("[8/8] Detecting flood and debris ...")
         result = classify(scene, dp)
     except PipelineError as err:
         raise SystemExit(str(err)) from err
@@ -666,6 +743,11 @@ def run(bbox, event_day: date, out: Path, rp: RunParams, dp: DetectParams, dry_r
           + (f" ({report['optical'].get('message', '')})"
              if optical_status != OPTICAL_USED else
              f", fused: {report['optical']['fused_into_map']}"))
+    model_status = report["model"]["status"]
+    print(f"Kuro Siwo model evidence: {model_status}"
+          + (f" ({report['model'].get('reason', '')})"
+             if model_status != ml.MODEL_USED else
+             f", fused: {report['model']['fused_into_map']}"))
     dmg = report["damage"]
     if dmg["status"] == OSM_USED:
         print(f"Damage overlay (OSM snapshot {dmg['osm']['snapshot']}): "
@@ -729,6 +811,14 @@ def main(argv=None) -> int:
                     help="perturbed runs behind each cut-off probability (default: "
                          "%(default)s). The probability is a sensitivity measure over "
                          "these runs, never a calibrated chance of isolation")
+    ap.add_argument("--model-mode", choices=MODEL_MODES,
+                    default=ModelParams.mode,
+                    help="how the Kuro Siwo U-Net is fused (default: %(default)s - the "
+                         "physics detector only; unmeasured fusion is never shipped by "
+                         "default, Rule 3.4). Missing torch or weights falls back to "
+                         "physics and says so in run_report.json")
+    ap.add_argument("--model-path", default=ModelParams.model_path,
+                    help="path to the Kuro Siwo checkpoint (default: %(default)s)")
     args = ap.parse_args(argv)
 
     rp = replace(RunParams(), resolution_m=args.res, n_pre=args.n_pre,
@@ -738,10 +828,12 @@ def main(argv=None) -> int:
                  max_post_latency_days=args.optical_post_days,
                  fusion=args.optical_fusion)
     osmp = replace(OsmParams(), buffer_km=args.osm_buffer_km) if args.damage else None
+    mp = replace(ModelParams(), mode=args.model_mode, model_path=args.model_path)
     return run(tuple(args.bbox), args.event_date, args.out, rp, DetectParams(), args.dry_run,
                op=op, osmp=osmp, dmgp=DamageParams() if args.damage else None,
                npar=NetworkParams() if args.damage else None,
-               mc=replace(MonteCarloParams(), n_runs=args.mc_runs) if args.damage else None)
+               mc=replace(MonteCarloParams(), n_runs=args.mc_runs) if args.damage else None,
+               mp=mp)
 
 
 if __name__ == "__main__":

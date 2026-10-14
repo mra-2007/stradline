@@ -370,3 +370,14 @@ Ten of the twelve findings were fixed in the follow-up commit. These remain.
 - **The dashboard's basemap needs the network** (open, 2026-10-14). Terrain, hillshade and every
   data layer come from the local API, but the OpenStreetMap raster tiles do not. With no network
   the map still works and reads correctly; it just has no road grain under the terrain.
+- **`pakistan_larkana_2022` likely overlaps a Kuro Siwo training event** (open, 2026-10-15).
+  The Kuro Siwo catalogue (github.com/Orion-AI-Lab/KuroSiwo) lists actid 1111009 as
+  `act_region: Pakistan, aoi_name: Larkana, ref_date: 20220910T080000` - one of the ten training
+  actids given for `models/strandline_kurosiwo_unet.pt`. Our dev event is the same place and the
+  same 2022 monsoon flood (event_date 2022-08-26, post S1 2022-08-30). No bbox is published in the
+  catalogue to confirm exact AOI overlap, but the place/country/year match is strong enough that
+  this event should not be trusted to measure the Kuro Siwo model's (`mode=model`/`fusion`)
+  out-of-sample generalisation; the other 9 dev events checked clean (no EMSR number or place match
+  against actids 277, 279, 321, 324, 411, 417, 421, 427, 1111010). Before running
+  `eval/tune.py`'s model pass, exclude `pakistan_larkana_2022` from the training/held-out set for
+  the `model`/`fusion` modes, or hold it out permanently from that comparison.

@@ -129,6 +129,107 @@ class DetectParams:
             )
 
 
+# --- Kuro Siwo U-Net model fusion --------------------------------------------
+#
+# Extra evidence from a trained model, fused with the physics detector above.
+# Its own dataclass, NOT a field of DetectParams, for the OpticalParams reason
+# (see params_dict): a radar-only configuration must keep hashing exactly as it
+# always has, and every value here is meaningless when the model did not run.
+#
+#   physics  the current method only (strandline.ml is never imported). Every
+#            hash and output pixel already published is unaffected. DEFAULT,
+#            because fusion has not been scored yet (Rule 3.4: never shipped
+#            ahead of a leave-one-event-out measurement).
+#   model    the trained U-Net alone decides water, within the SAME HAND/slope
+#            zone and minimum-mapping-unit/drainage tests the physics detector
+#            uses - those are applied AFTER scoring and the model can never
+#            put a pixel outside them. Debris has no model class (the
+#            checkpoint predicts {none, permanent water, flood} only), so
+#            debris is always the physics channel's.
+#   fusion   score = logit(p_flood) + fusion_weight * zscore_evidence, where
+#            zscore_evidence is the SAME combined z-score (zc) the physics
+#            detector computes. Lets the two disagree without either silently
+#            winning: a confident model overrides a weak or wrong-signed
+#            change (the rough_water problem, see DetectParams.mode), and a
+#            confident physics change can still carry a hesitant model.
+#
+# In every mode, `p_perm` (the model's permanent-water class) counts as
+# permanent water, never flood - the same invariant the physics `permanent`
+# mask already enforces, so the model cannot relabel a lake as a flood.
+MODEL_MODE_PHYSICS = "physics"
+MODEL_MODE_MODEL = "model"
+MODEL_MODE_FUSION = "fusion"
+MODEL_MODES = (MODEL_MODE_PHYSICS, MODEL_MODE_MODEL, MODEL_MODE_FUSION)
+
+# Training-dataset citation, Rule 1: carried in run_report.json only on a run
+# where the model actually contributed a pixel (strandline.run.build_report),
+# never unconditionally - a run that used physics only did not consult it.
+KUROSIWO_CITATION = "Bountos et al. 2024, Kuro Siwo, CC BY 4.0"
+
+
+@dataclass(frozen=True)
+class ModelParams:
+    """How the Kuro Siwo U-Net is run and fused. NOT in params_hash unless
+    `mode != MODEL_MODE_PHYSICS` (see params_dict) - the physics default must
+    keep hashing exactly as it did before this model existed.
+    """
+
+    mode: str = MODEL_MODE_PHYSICS
+    model_path: str = "models/strandline_kurosiwo_unet.pt"
+
+    # CPU tiled inference. 128 is the checkpoint's documented tile size;
+    # overlap is an engineering choice (a quarter of the tile) so every pixel
+    # is averaged over at least two windows except at the scene border, not a
+    # detection parameter and not searched.
+    tile_px: int = 128
+    tile_overlap_px: int = 32
+
+    # TUNED by eval/tune.py, leave-one-event-out, over MODEL_TUNE_GRIDS (Rule
+    # 3.4). These starting values are declared from the literature BEFORE any
+    # score exists: fusion_weight = 1.0 gives the model's logit and the
+    # physics z-score equal nominal weight; t_gorge = 0.0 is logit(0.5), the
+    # literature-neutral decision boundary for a two-way choice, used for both
+    # the flood and the permanent-water calls (see detect.py).
+    fusion_weight: float = 1.0
+    t_gorge: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.mode not in MODEL_MODES:
+            raise ValueError(
+                f"model mode {self.mode!r} is not supported; "
+                f"choose one of {', '.join(MODEL_MODES)}.")
+        if self.tile_px <= 0:
+            raise ValueError(f"tile_px must be positive, got {self.tile_px!r}.")
+        if not 0 <= self.tile_overlap_px < self.tile_px:
+            raise ValueError(
+                f"tile_overlap_px must be in [0, tile_px), got {self.tile_overlap_px!r} "
+                f"with tile_px={self.tile_px!r}.")
+        if not self.model_path:
+            raise ValueError("model_path must not be empty.")
+
+
+# --- Model parameter search grid (eval/tune.py, leave-one-event-out) --------
+#
+# DECLARED BEFORE A SINGLE MODEL SCORE EXISTS (Rule 3.4). One grid per mode,
+# exactly as TUNE_GRIDS and OPTICAL_TUNE_GRIDS: `physics` is one point (the
+# model never runs, so nothing on it could change a pixel), `model` and
+# `fusion` each search `t_gorge` around the literature-neutral logit(0.5)=0.0,
+# and `fusion` additionally searches `fusion_weight` around nominal 1.0 at
+# half and double. Costed and crossed with the final SAR+optical point chosen
+# by the earlier passes, the same declared cost decision OPTICAL_TUNE_GRIDS
+# took relative to TUNE_GRIDS (docs/tuning_log.md).
+MODEL_TUNE_GRIDS: dict[str, dict[str, tuple]] = {
+    MODEL_MODE_PHYSICS: {},                               # 1 point
+    MODEL_MODE_MODEL: {                                   # 3 points
+        "model.t_gorge": (-1.0, 0.0, 1.0),
+    },
+    MODEL_MODE_FUSION: {                                  # 3 x 3 = 9 points
+        "model.t_gorge": (-1.0, 0.0, 1.0),
+        "model.fusion_weight": (0.5, 1.0, 2.0),
+    },
+}
+
+
 # Sentinel-1 backscatter coefficients we support, as openEO names them.
 #
 #   sigma0-ellipsoid  radiometric reference area from the ellipsoid. Terrain
@@ -783,7 +884,8 @@ class MonteCarloParams:
 
 def params_dict(detect: DetectParams, run: RunParams,
                 optical: "OpticalParams | None" = None,
-                extent: "ExtentParams | None" = None) -> dict:
+                extent: "ExtentParams | None" = None,
+                model: "ModelParams | None" = None) -> dict:
     """The parameters that PRODUCED the classes, i.e. what params_hash covers.
 
     The `optical` section appears ONLY when optical evidence was enabled, and
@@ -829,6 +931,12 @@ def params_dict(detect: DetectParams, run: RunParams,
         out["optical"] = asdict(optical)
     if extent is not None and extent != EXTENT_HASH_BASELINE:
         out["extent"] = asdict(extent)
+    # Same rule as optical/extent: a `physics` ModelParams (the default, and
+    # the only mode ever scored so far) must hash exactly as it did before
+    # this model existed, so it is included only when it actually changes
+    # what a run does.
+    if model is not None and model.mode != MODEL_MODE_PHYSICS:
+        out["model"] = asdict(model)
     return out
 
 

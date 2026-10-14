@@ -487,3 +487,40 @@ def test_a_non_ascii_settlement_name_is_found(tmp_path):
     store = EvidenceStore.from_run(path)
     assert _named_settlement("is Slettesætrin cut off?", store) == "Slettesætrin"
     assert store.find_settlements("slettesætrin") == [0]
+
+
+# --- the copilot must never make a person wait --------------------------------
+
+def test_an_unreachable_model_falls_back_at_once_without_retrying(tmp_path):
+    """A rescuer asking at 02:00 gets an answer or a reason, fast.
+
+    30 s with three back-offs meant one completion could take 135 s, and an
+    answer costs two of them. The copilot now gives up on the first failure
+    and writes from its own templates instead, so the dashboard's 20 s limit
+    is never what the person sees.
+    """
+    from copilot import llm
+    from strandline.config import CopilotParams
+
+    params = CopilotParams()
+    assert params.timeout_s <= 8.0
+    assert params.retry_backoff_s == ()
+
+    calls, slept = [], []
+
+    def post(url, body, timeout):
+        calls.append(timeout)
+        return 0, "TimeoutError: timed out"
+
+    result = llm.complete("a prompt that is not cached", params,
+                          cache_dir=tmp_path / "empty-cache",
+                          env_file=tmp_path / "no.env",
+                          sleep=slept.append, post=post)
+
+    assert result.text is None
+    assert result.source == "unavailable"
+    # Exactly one attempt, at the configured timeout, and no waiting at all.
+    assert calls == [params.timeout_s]
+    assert slept == []
+    # Two completions per answer must still fit inside the dashboard's limit.
+    assert 2 * params.timeout_s < 20.0

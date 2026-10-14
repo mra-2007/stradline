@@ -1209,10 +1209,19 @@ class CopilotParams:
     # the copilot gate is not reproducible (Rule 5).
     temperature: float = 0.0
     max_output_tokens: int = 1024
-    timeout_s: float = 30.0
-    # 429 / 5xx back-off, in seconds, one entry per retry. After the last one
-    # the copilot falls back to the offline templates rather than failing.
-    retry_backoff_s: tuple = (1.0, 4.0, 10.0)
+    # A rescuer asking a question at 02:00 must get an answer or a reason, fast.
+    # One answer makes TWO completions (plan, then write), so the worst case a
+    # person waits is 2 x timeout_s. At 30 s with three back-offs that was 270 s
+    # - long enough that the dashboard looked hung, which is worse than an
+    # offline answer: the keyword fallback is grounded in the same evidence
+    # store and carries the same verified numbers, it is only plainer English.
+    # 8 s, no retries: 16 s worst case, inside the dashboard's 20 s limit.
+    timeout_s: float = 8.0
+    # 429 / 5xx back-off, in seconds, one entry per retry. Empty, on purpose:
+    # the fallback is immediate rather than waited for. Nothing measured runs
+    # on the network - every evaluated answer comes from the prompt cache - so
+    # this changes how long a live question takes, never what it says.
+    retry_backoff_s: tuple = ()
     # Responses are cached by a hash of the exact prompt, so an evaluation
     # re-run neither pays for nor depends on the network.
     cache_dir: str = "copilot/.cache/llm"

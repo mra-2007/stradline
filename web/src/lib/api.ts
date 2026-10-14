@@ -89,16 +89,35 @@ export function apiUrl(path: string): string {
   return `${BASE}${path}`;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/** How long the dashboard waits for an answer before it says so.
+ *  One answer costs the copilot two completions, each capped at
+ *  `CopilotParams.timeout_s` (8 s), and the offline fallback is immediate, so
+ *  the server's own worst case is well inside this. If this fires, something
+ *  other than the language model is stuck. */
+export const ASK_TIMEOUT_MS = 20_000;
+
+async function request<T>(path: string, init?: RequestInit, timeoutMs?: number): Promise<T> {
   let response: Response;
+  const controller = timeoutMs ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
   try {
-    response = await fetch(apiUrl(path), init);
-  } catch {
+    response = await fetch(apiUrl(path), { ...init, signal: controller?.signal });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new ApiError(
+        0,
+        `No answer in ${Math.round((timeoutMs ?? 0) / 1000)} seconds, so the question was dropped.`,
+        "The copilot answers from its own templates within seconds when the model is " +
+          "unavailable, so this means the API itself is stuck. Ask again, or restart it.",
+      );
+    }
     throw new ApiError(
       0,
       "The Strandline API did not answer.",
       "Start it with: venv\\Scripts\\python.exe -m uvicorn api.main:app --port 8000",
     );
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
   if (!response.ok) {
     let message = `${response.status} ${response.statusText}`;
@@ -138,11 +157,15 @@ export const api = {
     }),
 
   ask: (runId: string, question: string, lang: "en" | "ne") =>
-    request<Answer>(`/runs/${runId}/ask`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, lang }),
-    }),
+    request<Answer>(
+      `/runs/${runId}/ask`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question, lang }),
+      },
+      ASK_TIMEOUT_MS,
+    ),
 
   sitrepUrl: (runId: string, lang: "en" | "ne") =>
     apiUrl(`/runs/${runId}/sitrep?lang=${lang}`),

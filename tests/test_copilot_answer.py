@@ -491,16 +491,25 @@ def test_a_non_ascii_settlement_name_is_found(tmp_path):
 
 # --- the copilot must never make a person wait --------------------------------
 
-def test_an_unreachable_model_falls_back_at_once_without_retrying(tmp_path):
+def test_an_unreachable_model_falls_back_at_once_without_retrying(tmp_path, monkeypatch):
     """A rescuer asking at 02:00 gets an answer or a reason, fast.
 
     30 s with three back-offs meant one completion could take 135 s, and an
     answer costs two of them. The copilot now gives up on the first failure
     and writes from its own templates instead, so the dashboard's 20 s limit
     is never what the person sees.
+
+    This is the UNREACHABLE path, not the no-key path: a key must be present
+    so the fake `post` below is actually reached. The real environment's own
+    GEMINI_API_KEY (if any) is cleared and `.env` loading is replaced with a
+    fixed fake key, so the test forces that path deterministically instead of
+    depending on whatever happens to be exported in the shell that runs it.
     """
     from copilot import llm
     from strandline.config import CopilotParams
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(llm, "load_env", lambda path=None: {"GEMINI_API_KEY": "test-key"})
 
     params = CopilotParams()
     assert params.timeout_s <= 8.0

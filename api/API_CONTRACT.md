@@ -252,3 +252,72 @@ Retrieves or builds the one-page situation report PDF in English or Nepali.
   ```
 - **Response Example (200 OK):**
   Binary stream (`Content-Type: application/pdf`, `Content-Disposition: inline; filename="sitrep_en.pdf"`).
+
+---
+
+### 9. List Runs
+Every run this server knows about, newest first. Includes `case_smoke`, any run started through
+`POST /runs`, and any directory under `runs/` (one or two levels deep) that holds a
+`run_report.json`. The dashboard's run switcher reads this.
+- **Method:** `GET`
+- **Path:** `/runs`
+- **Response Example (200 OK):**
+  ```json
+  {
+    "runs": [
+      {
+        "run_id": "case_smoke",
+        "bbox": [85.1, 27.85, 85.45, 28.3],
+        "event_date": "2026-08-26",
+        "state": "done",
+        "created_at": "2026-10-13T11:05:02.117412+00:00"
+      }
+    ]
+  }
+  ```
+
+---
+
+### 10. Terrain Tiles
+Terrarium-encoded elevation tiles cut from the run's own cached Copernicus DEM
+(`runs/{run_id}/cache/dem_20m.tif`), for MapLibre's `raster-dem` source. No network is touched at
+request time. A tile outside the DEM's footprint is returned flat (0 m everywhere, RGB `128,0,0`)
+rather than as an error, so the 3D mesh does not tear at the edge of the mapped area.
+Credit **"Copernicus DEM"** wherever these tiles are drawn.
+- **Method:** `GET`
+- **Path:** `/runs/{run_id}/terrain/{z}/{x}/{y}.png`
+- **Encoding:** `elevation_m = R * 256 + G + B / 256 - 32768`
+- **Request Example:**
+  ```http
+  GET /runs/case_smoke/terrain/11/1509/857.png HTTP/1.1
+  Host: localhost:8000
+  ```
+- **Response (200 OK):** `image/png`, 256x256, header `X-Attribution: Copernicus DEM`,
+  `Cache-Control: public, max-age=86400`.
+- **Error Example (404 Not Found):**
+  ```json
+  {
+    "error": "No cached Copernicus DEM for this run",
+    "hint": "The run may still be in progress; the DEM is written during the terrain stage"
+  }
+  ```
+
+---
+
+### 11. Radar Quicklook
+The run's `quicklook.png` as produced by the pipeline: the radar evidence behind the map.
+- **Method:** `GET`
+- **Path:** `/runs/{run_id}/quicklook`
+- **Request Example:**
+  ```http
+  GET /runs/case_smoke/quicklook HTTP/1.1
+  Host: localhost:8000
+  ```
+- **Response (200 OK):** `image/png`.
+- **Error Example (404 Not Found):**
+  ```json
+  {
+    "error": "quicklook.png not found for this run",
+    "hint": "The quicklook is written at the end of a successful run"
+  }
+  ```

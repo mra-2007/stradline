@@ -14,11 +14,11 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from api import store
+from api import store, terrain
 from copilot.executor import answer as copilot_answer
 from copilot import sitrep as copilot_sitrep
 from strandline.config import (
@@ -90,6 +90,7 @@ def _run_pipeline_worker(run_id: str, bbox: tuple[float, float, float, float],
 async def lifespan(app: FastAPI):
     store.init_db()
     store.register_case_smoke(base_dir=ROOT)
+    store.discover_runs(base_dir=ROOT)
     yield
 
 
@@ -219,6 +220,29 @@ def create_run(req: RunCreateRequest) -> dict[str, str]:
     return {"run_id": run_id}
 
 
+@app.get("/runs")
+def list_runs() -> dict[str, Any]:
+    """Every run this server knows about, newest first.
+
+    The dashboard's run switcher reads this. It is a listing of directories
+    under `runs/` that hold a `run_report.json`, plus anything started through
+    `POST /runs` in this process.
+    """
+    items = store.list_runs()
+    return {
+        "runs": [
+            {
+                "run_id": item["run_id"],
+                "bbox": item["bbox"],
+                "event_date": item["event_date"],
+                "state": item["state"],
+                "created_at": item["created_at"],
+            }
+            for item in items
+        ]
+    }
+
+
 @app.get("/runs/{run_id}/status")
 def run_status(run_id: str) -> dict[str, Any]:
     item = store.get_run(run_id)
@@ -299,6 +323,70 @@ def run_layer(run_id: str, name: str) -> dict[str, Any]:
             detail=f"Failed to read layer '{name}': {err}",
             headers={"X-Hint": "Check file contents and permissions"}
         )
+
+
+@app.get("/runs/{run_id}/terrain/{z}/{x}/{y}.png")
+def run_terrain_tile(run_id: str, z: int, x: int, y: int) -> Response:
+    """A terrarium-encoded elevation tile from this run's own Copernicus DEM.
+
+    Outside the DEM's footprint the tile is flat (0 m) rather than an error, so
+    the 3D mesh does not tear at the edge of the mapped area.
+    """
+    item = store.get_run(run_id)
+    if item is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Run not found",
+            headers={"X-Hint": f"No run found with id '{run_id}'"}
+        )
+
+    dem_path = terrain.find_dem(Path(item["out_dir"]))
+    if dem_path is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No cached Copernicus DEM for this run",
+            headers={"X-Hint": "The run may still be in progress; the DEM is written during the terrain stage"}
+        )
+
+    try:
+        png = terrain.terrarium_tile_png(dem_path, z, x, y)
+    except Exception as err:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to read terrain tile: {err}",
+            headers={"X-Hint": "Check that the run's cached DEM is a readable GeoTIFF"}
+        )
+
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            "X-Attribution": terrain.TERRAIN_ATTRIBUTION,
+        },
+    )
+
+
+@app.get("/runs/{run_id}/quicklook")
+def run_quicklook(run_id: str) -> FileResponse:
+    """The run's radar quicklook PNG, as produced by the pipeline."""
+    item = store.get_run(run_id)
+    if item is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Run not found",
+            headers={"X-Hint": f"No run found with id '{run_id}'"}
+        )
+
+    path = Path(item["out_dir"]) / "quicklook.png"
+    if not path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="quicklook.png not found for this run",
+            headers={"X-Hint": "The quicklook is written at the end of a successful run"}
+        )
+
+    return FileResponse(path=str(path), media_type="image/png", filename="quicklook.png")
 
 
 @app.post("/runs/{run_id}/ask")

@@ -122,6 +122,66 @@ def get_run(run_id: str, db_path: Path | None = None) -> dict | None:
         return _row_to_dict(row)
 
 
+def list_runs(db_path: Path | None = None) -> list[dict]:
+    """Every registered run, newest first."""
+    with get_connection(db_path) as conn:
+        cursor = conn.execute("SELECT * FROM runs ORDER BY created_at DESC, run_id ASC")
+        return [_row_to_dict(row) for row in cursor.fetchall()]
+
+
+def discover_runs(base_dir: Path = ROOT, db_path: Path | None = None) -> list[str]:
+    """Register finished runs that are on disk but not in the database.
+
+    A run directory counts as finished when it holds a `run_report.json`; the
+    bbox and the event date are read from that report, so nothing here is keyed
+    to a particular area, date or event. Runs nested one level deeper (the
+    `runs/eval/<event>` and `runs/copilot_dev/<event>` trees) are included, which
+    is what gives the dashboard's run switcher something to switch between.
+
+    Already-registered runs are left exactly as they are.
+    """
+    runs_root = Path(base_dir) / "runs"
+    if not runs_root.is_dir():
+        return []
+
+    candidates: list[Path] = []
+    for report in sorted(runs_root.glob("*/run_report.json")):
+        candidates.append(report.parent)
+    for report in sorted(runs_root.glob("*/*/run_report.json")):
+        candidates.append(report.parent)
+
+    added: list[str] = []
+    for run_dir in candidates:
+        run_id = run_dir.name
+        if get_run(run_id, db_path=db_path) is not None:
+            continue
+        try:
+            report = json.loads((run_dir / "run_report.json").read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        bbox = report.get("bbox_wgs84")
+        event_date = str(report.get("event_date", ""))
+        if not (isinstance(bbox, list) and len(bbox) == 4) or not event_date:
+            continue
+        now = _now_iso()
+        mtime = datetime.fromtimestamp(
+            (run_dir / "run_report.json").stat().st_mtime, tz=timezone.utc).isoformat()
+        with get_connection(db_path) as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO runs
+                    (run_id, bbox_json, event_date, state, stages_json, error, out_dir,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, 'done', ?, NULL, ?, ?, ?)
+                """,
+                (run_id, json.dumps(bbox), event_date,
+                 json.dumps(["preflight", "fetch", "prepare", "classify", "write"]),
+                 str(run_dir.resolve()), mtime, now)
+            )
+        added.append(run_id)
+    return added
+
+
 def register_case_smoke(base_dir: Path = ROOT, db_path: Path | None = None) -> dict | None:
     case_dir = base_dir / "runs" / "case_smoke"
     if not case_dir.exists() or not case_dir.is_dir():

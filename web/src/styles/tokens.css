@@ -1,0 +1,71 @@
+/* Strandline design tokens. The one place a hue, a size or a duration is named.
+   See web/DESIGN.md section 2 — a component names a role, never a colour. */
+
+:root {
+  /* --- colour ------------------------------------------------------------ */
+  --night: #1b2430;
+  --panel: #222c3a;
+  --ridge: #33414f;
+  --ridge-soft: #2a3543;
+  --snow: #e9eef2;
+  --muted: #93a1af;
+  --meltwater: #6cc6c2;
+  --silt: #b9a887;
+  --rescue: #f2661b;
+  --saffron: #f5b53d;
+  --lichen: #8fb98b;
+
+  --ramp-0: #e9eef2;
+  --ramp-1: #f5b53d;
+  --ramp-2: #f2661b;
+
+  /* --- type -------------------------------------------------------------- */
+  --sign: "Barlow Semi Condensed", "Barlow", system-ui, sans-serif;
+  --text: "Barlow", system-ui, sans-serif;
+  --deva: "Noto Sans Devanagari", "Barlow", system-ui, sans-serif;
+
+  --t-display: 34px;
+  --t-title: 20px;
+  --t-readout: 17px;
+  --t-body: 14.5px;
+  --t-label: 13px;
+  --t-caption: 12px;
+
+  /* --- space, line, radius ----------------------------------------------- */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+
+  --r-control: 3px;
+  --r-panel: 4px;
+
+  --hair: 1px solid var(--ridge);
+  --float: 0 10px 28px rgba(9, 13, 19, 0.45);
+
+  /* --- motion ------------------------------------------------------------ */
+  --spring: cubic-bezier(0.2, 0.9, 0.25, 1);
+  --d-panel: 260ms;
+  --d-draw: 700ms;
+  --d-number: 420ms;
+  --d-toggle: 180ms;
+
+  /* --- layout ------------------------------------------------------------ */
+  --strip-w: 216px;
+  --ask-w: 380px;
+  /* Height the footer reserves on the phone layout, so a bottom sheet never
+     covers the attribution. */
+  --footer-h: 0px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --d-panel: 1ms;
+    --d-draw: 1ms;
+    --d-number: 1ms;
+    --d-toggle: 1ms;
+  }
+}

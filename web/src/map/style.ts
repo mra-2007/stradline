@@ -51,7 +51,7 @@ export function baseStyle(terrainTiles: string | null): StyleSpecification {
     const dem = {
       type: "raster-dem" as const,
       tiles: [terrainTiles],
-      tileSize: 256,
+      tileSize: 512,
       encoding: "terrarium" as const,
       minzoom: 7,
       maxzoom: 14,

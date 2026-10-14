@@ -98,7 +98,9 @@ export function MapCanvas(props: Props) {
       bearing: 0,
       attributionControl: false,
       maxPitch: 78,
-      canvasContextAttributes: { antialias: true, preserveDrawingBuffer: true },
+      pixelRatio: Math.min(window.devicePixelRatio, 1.5),
+      fadeDuration: 0,
+      canvasContextAttributes: { antialias: false, preserveDrawingBuffer: true },
       dragRotate: true,
     });
     mapRef.current = map;
@@ -288,15 +290,27 @@ export function MapCanvas(props: Props) {
       ],
     });
 
+    let moveFrame = 0;
+    let pendingMove: MapMouseEvent | null = null;
+
     const onDown = (event: MapMouseEvent) => {
       start = event.lngLat;
     };
     const onMove = (event: MapMouseEvent) => {
       if (!start) return;
-      setSourceData(map, DRAW_SRC, rectangle(start, event.lngLat));
+      pendingMove = event;
+      if (moveFrame) return;
+      moveFrame = requestAnimationFrame(() => {
+        moveFrame = 0;
+        if (start && pendingMove) setSourceData(map, DRAW_SRC, rectangle(start, pendingMove.lngLat));
+      });
     };
     const onUp = (event: MapMouseEvent) => {
       if (!start) return;
+      if (moveFrame) {
+        cancelAnimationFrame(moveFrame);
+        moveFrame = 0;
+      }
       const a = start;
       const b = event.lngLat;
       start = null;
@@ -317,6 +331,7 @@ export function MapCanvas(props: Props) {
     map.on("mouseup", onUp);
 
     return () => {
+      if (moveFrame) cancelAnimationFrame(moveFrame);
       map.off("mousedown", onDown);
       map.off("mousemove", onMove);
       map.off("mouseup", onUp);

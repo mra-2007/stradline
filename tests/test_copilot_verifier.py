@@ -194,3 +194,32 @@ def test_a_template_may_not_put_a_sign_in_front_of_a_value(store):
     problem = validate_template("The extent fell to -{extent_ha} ha.", slots,
                                 {"extent_ha"}, store.text_literals(), "en")
     assert "sign in front of a value" in problem
+
+
+def test_a_typographic_minus_counts_as_a_sign(allowed_en):
+    """A model that writes U+2212 instead of a hyphen has still written a
+    negative number, and the check must not read it as the positive one."""
+    result = verify("The extent fell to −100.0 ha.", allowed_en)
+    assert not result.ok
+    assert [f.literal for f in result.findings] == ["−100.0"]
+
+
+def test_a_sign_in_front_of_devanagari_digits_counts(allowed_ne):
+    """Nepali answers write Devanagari digits with an ASCII sign in front."""
+    negative = "-" + to_devanagari_digits("100.0")
+    result = verify(f"बाढी {negative} हे. क्षे.", allowed_ne, lang="ne")
+    assert not result.ok
+    assert [f.literal for f in result.findings] == ["-100.0"]
+
+
+def test_a_negative_value_passes_only_when_the_EVIDENCE_is_negative():
+    """The rule, stated both ways: the sign belongs to the number. A fact
+    whose value really is negative may be quoted with its sign, and the
+    positive twin of that fact is then an invented number."""
+    assert verify("The level fell by -2.5 m.", ["-2.5"]).ok
+    assert not verify("The level fell by 2.5 m.", ["-2.5"]).ok
+    assert not verify("The level fell by -2.5 m.", ["2.5"]).ok
+
+
+def test_numbers_in_reads_a_sign_in_either_script_and_either_minus():
+    assert numbers_in("-100.0, −2.5, " + to_devanagari_digits("-7")) == [-100.0, -2.5, -7.0]

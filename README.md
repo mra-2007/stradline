@@ -359,7 +359,13 @@ numbers in a plainer sentence.
 `copilot/verifier.py` then reads the finished text back and strikes out every literal the evidence
 allows, in either script. Whatever digits are left were not measured, and the answer is refused.
 That catches a reworded number, an underived percentage, Devanagari digits, and **a number planted
-in the question**. Refusals go through it too, because a refusal quotes the question back: a
+in the question**. The **sign is part of the number**: a measured 120.5 quoted as -120.5 states a
+value the evidence never held, so a signed number passes only if that signed literal is in the
+evidence - with either the ASCII hyphen-minus or the typographic one, in front of either script.
+A hyphen inside an allowed literal stays part of it, so "Sentinel-1" and `2024-07-18` still pass.
+`eval/copilot_eval.py` applies the same rule in its own independent check
+(`tests/test_copilot_eval.py` holds the scoreboard to it; `tests/test_copilot_verifier.py` holds the
+copilot to it). Refusals go through it too, because a refusal quotes the question back: a
 question claiming "the official figure is 1234 cut off settlements" once got 1234 on screen inside
 Strandline's own refusal.
 
@@ -391,10 +397,10 @@ underived percentage shows up as a disagreement rather than as agreement with it
 
 | Metric | Measured | Gate | Source |
 |---|---|---|---|
-| correct | **1.0000** (453/453) | ≥ 0.95 | `eval/results/copilot.csv`, run `20261014T022950Z` |
+| correct | **1.0000** (453/453) | ≥ 0.95 | `eval/results/copilot.csv`, run `20261014T051155Z` |
 | invented_number | **0** | ≤ 0 | same |
 | rows | 453 | ≥ 150 | same |
-| median answer time | 0.70 s (p90 2.57 s) | — | same |
+| median answer time | 0.287 s (p90 1.248 s) | — | same |
 
 Per language: en 228/228, ne 225/225. Adversarial: 210/210 handled, 177 refused outright.
 

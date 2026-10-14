@@ -13,3 +13,4 @@ __pycache__/
 .claude/settings.local.json
 node_modules/
 web/dist/
+api/runs.db

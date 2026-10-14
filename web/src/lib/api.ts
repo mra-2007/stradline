@@ -96,6 +96,11 @@ export function apiUrl(path: string): string {
  *  other than the language model is stuck. */
 export const ASK_TIMEOUT_MS = 20_000;
 
+/** "Check satellite passes" calls the Copernicus catalogue directly, with no
+ *  offline fallback — if that network call hangs, the button must say so
+ *  rather than leave "Checking passes..." spinning forever. */
+export const PREFLIGHT_TIMEOUT_MS = 20_000;
+
 async function request<T>(path: string, init?: RequestInit, timeoutMs?: number): Promise<T> {
   let response: Response;
   const controller = timeoutMs ? new AbortController() : null;
@@ -147,7 +152,11 @@ export const api = {
     request<FeatureCollection>(`/runs/${runId}/layers/${name}`),
 
   preflight: (bbox: number[], date: string) =>
-    request<Preflight>(`/preflight?bbox=${bbox.join(",")}&date=${date}`),
+    request<Preflight>(
+      `/preflight?bbox=${bbox.join(",")}&date=${date}`,
+      undefined,
+      PREFLIGHT_TIMEOUT_MS,
+    ),
 
   createRun: (bbox: number[], eventDate: string) =>
     request<{ run_id: string }>("/runs", {

@@ -254,9 +254,13 @@ export function App() {
           runId={runId}
           bbox={run.bbox}
           onOpen={(from) => {
+            // Leaving the intro does not end the fly-in: the map's camera
+            // still has to ease into the bbox-fitted, pitch-60 resting
+            // viewpoint (MapCanvas's onFlyInEnd is what flips `flying` off).
+            // Flipping it here too early let the dashboard furniture fade
+            // in over a camera that had not finished settling.
             setOpenFrom(from);
             setShowIntro(false);
-            setFlying(false);
           }}
         />
       )}

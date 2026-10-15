@@ -262,13 +262,14 @@ this model existed.
    carried in `run_report.json["model"]["citation"]` **only** on a run where the model actually
    fused a pixel — a physics-only run never consulted it.
 
-**Not yet measured.** `eval/tune.py` has the grid (`MODEL_TUNE_GRIDS`: `mode`, `fusion_weight`,
-`t_gorge`) and the materialise/hash plumbing (`materialise_model`, `model_grid_points`,
-`build_model_matrix`), but no leave-one-event-out pass has been run — there is no trained
-checkpoint in this repository to run it with, and running it is a long job the human must start.
-`docs/open_items.md` also flags that `pakistan_larkana_2022`, one of the ten dev events, likely
-overlaps a Kuro Siwo *training* activation (actid 1111009, same place and flood) and should be
-excluded from that pass's training/held-out set.
+### Kuro Siwo experiment (measured 2026-10-15, not adopted)
+
+`eval/tune.py --model-pass` ran the leave-one-event-out pass this section used to say was
+pending. **Result: physics beat the model on mean boundary-tolerant F1 (0.4541 vs 0.4064) and on
+4 of 5 clean dev events, so `ModelParams.mode` stays `physics` — the shipped default is
+unchanged.** `pakistan_larkana_2022` overlaps a Kuro Siwo training activation
+(`strandline.config.KS_TRAINED_EVENTS`) and is scored but excluded from every mean. Full
+per-event table, controls and citation: [`docs/model_results.md`](docs/model_results.md).
 
 ## Method (OpenStreetMap and the damage overlay)
 

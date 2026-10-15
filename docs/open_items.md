@@ -381,3 +381,13 @@ Ten of the twelve findings were fixed in the follow-up commit. These remain.
   against actids 277, 279, 321, 324, 411, 417, 421, 427, 1111010). Before running
   `eval/tune.py`'s model pass, exclude `pakistan_larkana_2022` from the training/held-out set for
   the `model`/`fusion` modes, or hold it out permanently from that comparison.
+- **The model-pass's peak memory on this machine is not well characterised** (open, 2026-10-15).
+  A `--model-pass` run was killed by the OS for low memory partway through (5 of 10 events, this
+  machine's free RAM was ~3.9 GB of 14 GB total with a live desktop also running). A `gc.collect()`
+  was added after each event in `build_model_matrix` (eval/tune.py) as a hygiene measure, but it did
+  NOT reproduce the leak on a small synthetic scene even with the call removed
+  (tests/test_eval_tune_model.py), so the root cause is still unconfirmed - plausibly just the real
+  dev-event grids (up to 638 x 1247 px) plus desktop contention, not a bug in this code. The retry
+  that succeeded split the 10 events into two batches of 5 `--events` each, which halves this
+  process's own peak footprint; if it recurs, measure peak RSS directly (e.g.
+  `Get-Process -Id <pid> | Select WorkingSet64` sampled during a run) rather than guessing again.

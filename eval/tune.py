@@ -40,9 +40,11 @@ WHAT IS AND IS NOT MEASURED HONESTLY HERE
 from __future__ import annotations
 
 import argparse
+import gc
 import itertools
 import json
 import sys
+import time
 from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 
@@ -1029,9 +1031,11 @@ def build_model_matrix(events: list[dict], points: list[dict],
     """
     probe = replace(MODEL_PROBE, model_path=model_path) if model_path else MODEL_PROBE
     matrix: Matrix = {}
+    pass_t0 = time.perf_counter()
     for i, event in enumerate(events, start=1):
         name = str(event["name"])
-        log(f"[{i}/{len(events)}] {name}")
+        event_t0 = time.perf_counter()
+        log(f"[{i}/{len(events)}] {name}  (elapsed {event_t0 - pass_t0:.0f}s)")
         scene = None
         for point in points:
             dp, rp, op, ep, mp = materialise_full_model(point, n_pre, model_path)
@@ -1067,6 +1071,21 @@ def build_model_matrix(events: list[dict], points: list[dict],
             key = OBJECTIVE_METRIC if score.kind != sb.KIND_CONTROL else CONTROL_METRIC
             log(f"      {point_label(point):<64} {key}={score.metrics.get(key)}")
         del scene
+        # A model-pass run was killed by the OS for memory on 2026-10-15 while
+        # scoring real dev-event grids (up to 638 x 1247 px) with a live
+        # desktop also running. Each scene carries a loaded torch model plus
+        # several full-resolution SAR arrays, so between events is exactly
+        # where that memory should come back; `del scene` alone only drops the
+        # LOCAL reference and relies on CPython's refcounting to free the rest
+        # before the next (possibly larger) event's scene is prepared.
+        # `gc.collect()` makes that a forced, synchronous point rather than
+        # whenever the generational collector happens to run next - cheap
+        # here, and the only lever this function has over the next event's
+        # peak memory. It did not reproduce the leak at the small scale a test
+        # can build (tests/test_eval_tune_model.py), so it is a hygiene
+        # measure, not a confirmed fix; see docs/open_items.md.
+        gc.collect()
+        log(f"      {name} done in {time.perf_counter() - event_t0:.1f}s")
     return matrix
 
 

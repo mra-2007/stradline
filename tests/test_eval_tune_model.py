@@ -16,6 +16,7 @@ What is checked:
     other point only re-thresholds the cached evidence.
 """
 
+import weakref
 from dataclasses import replace
 from pathlib import Path
 
@@ -200,3 +201,37 @@ def test_build_model_matrix_infers_once_per_event_then_rethresholds(
     # the probe-then-rethreshold design (`scene_with_model`) must not re-run
     # inference per point.
     assert prepare_calls["n"] == len(events)
+
+
+def test_build_model_matrix_releases_each_scene_before_the_next_event(
+        monkeypatch, tmp_path, two_scenes):
+    """Each event's scene (a loaded torch model plus several full-resolution
+    SAR arrays) must be unreachable once the next event's scene is being
+    prepared - checked directly with a weakref, rather than trusted to
+    CPython's refcounting timing. Does NOT reproduce the 2026-10-15 OOM kill
+    (this synthetic scene is too small, and the leak did not reproduce even
+    with `gc.collect()` removed) - it only pins the intended memory contract
+    of `build_model_matrix`'s per-event loop."""
+    path = tmp_path / "tiny.pt"
+    _tiny_checkpoint(path)
+    events = [two_scenes["a"][0], two_scenes["b"][0]]
+    scenes_by_name = {e["name"]: s for e, s in two_scenes.values()}
+    refs: list[weakref.ReferenceType] = []
+    real_run_model = ml.run_model
+
+    def fake_prepare_event(event, rp, dp, runs_root, allow_download, max_pixels, *,
+                           op=None, mp=None, log=print):
+        scn = scenes_by_name[event["name"]]
+        evidence, report = real_run_model(scn.pre_vv_db, scn.pre_vh_db, scn.post_vv_db,
+                                          scn.post_vh_db, mp)
+        full = replace(scn, model_evidence=evidence, model_params=mp, model_report=report)
+        refs.append(weakref.ref(full))
+        return full
+
+    monkeypatch.setattr(tune, "prepare_event", fake_prepare_event)
+    points = [{"model.mode": "model", "model.t_gorge": 0.0}]
+    tune.build_model_matrix(events, points, tmp_path / "runs", n_pre=N_PRE, reuse=False,
+                            allow_download=False, model_path=str(path), log=lambda *a: None)
+
+    assert len(refs) == 2
+    assert refs[0]() is None, "the first event's scene is still alive after the second ran"

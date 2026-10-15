@@ -204,6 +204,54 @@ def test_run_model_falls_back_cleanly_when_the_file_is_missing(tmp_path):
     assert "not found" in report["reason"]
 
 
+def test_run_model_disk_cache_hit_matches_the_uncached_result(tmp_path):
+    """The cache changes WHERE p_flood/p_perm come from, never their values:
+    a cache miss (first call, writes the .npz) and a cache hit (second call,
+    reads it back) must produce byte-identical arrays, not just close ones."""
+    from strandline.config import ModelParams
+
+    path = tmp_path / "ok.pt"
+    _tiny_checkpoint(path)
+    mp = ModelParams(mode="fusion", model_path=str(path), tile_px=64, tile_overlap_px=16)
+    h, w = 80, 96
+    rng = np.random.default_rng(2)
+    pre_vv = rng.uniform(-20, -5, size=(3, h, w))
+    pre_vh = rng.uniform(-25, -10, size=(3, h, w))
+    post_vv = rng.uniform(-20, -5, size=(h, w))
+    post_vh = rng.uniform(-25, -10, size=(h, w))
+    cache_dir = tmp_path / "model_cache"
+
+    ev_miss, r_miss = ml.run_model(pre_vv, pre_vh, post_vv, post_vh, mp, cache_dir=cache_dir)
+    assert r_miss["status"] == ml.MODEL_USED
+    assert r_miss["model_cache"] == "miss"
+    assert len(list(cache_dir.glob("*.npz"))) == 1
+
+    ev_hit, r_hit = ml.run_model(pre_vv, pre_vh, post_vv, post_vh, mp, cache_dir=cache_dir)
+    assert r_hit["status"] == ml.MODEL_USED
+    assert r_hit["model_cache"] == "hit"
+    assert np.array_equal(ev_miss.p_flood, ev_hit.p_flood, equal_nan=True)
+    assert np.array_equal(ev_miss.p_perm, ev_hit.p_perm, equal_nan=True)
+    # no second .npz written on a hit
+    assert len(list(cache_dir.glob("*.npz"))) == 1
+
+
+def test_run_model_disk_cache_disabled_by_default(tmp_path):
+    """cache_dir=None (the default) must not touch disk at all."""
+    from strandline.config import ModelParams
+
+    path = tmp_path / "ok.pt"
+    _tiny_checkpoint(path)
+    mp = ModelParams(mode="model", model_path=str(path), tile_px=64, tile_overlap_px=16)
+    h, w = 40, 40
+    pre_vv = np.zeros((3, h, w))
+    pre_vh = np.zeros((3, h, w))
+    post_vv = np.zeros((h, w))
+    post_vh = np.zeros((h, w))
+    evidence, report = ml.run_model(pre_vv, pre_vh, post_vv, post_vh, mp)
+    assert report["status"] == ml.MODEL_USED
+    assert report["model_cache"] == "disabled"
+
+
 def test_run_model_used_end_to_end_is_deterministic(tmp_path):
     from strandline.config import ModelParams
 

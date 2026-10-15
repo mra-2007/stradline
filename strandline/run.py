@@ -320,7 +320,7 @@ def optical_stage(bbox, event_day: date, grid: ingest.Grid, cache: Path,
 
 def model_stage(pre_vv_db: np.ndarray, pre_vh_db: np.ndarray,
                 post_vv_db: np.ndarray, post_vh_db: np.ndarray,
-                mp: ModelParams | None, log=print
+                mp: ModelParams | None, cache_dir: Path | None = None, log=print
                 ) -> tuple["ml.ModelEvidence | None", dict]:
     """Kuro Siwo U-Net evidence for an already-preprocessed scene. NEVER raises.
 
@@ -330,12 +330,19 @@ def model_stage(pre_vv_db: np.ndarray, pre_vh_db: np.ndarray,
     rather than losing the run. `mp is None` or `mp.mode == "physics"` does not
     even attempt to import torch, so a physics-only run pays nothing for this
     feature existing.
+
+    `cache_dir`, when given, lets `ml.run_model` skip the forward pass
+    entirely on a repeat of the same (model, scene, tiling) - the same cache
+    directory `fetch()` already uses for this event, one level down, so a
+    rerun of this exact bbox+date is cached the same way the Sentinel-1/DEM
+    downloads already are.
     """
     report: dict = {"status": ml.MODEL_DISABLED, "mode": mp.mode if mp else MODEL_MODE_PHYSICS}
     if mp is None or mp.mode == MODEL_MODE_PHYSICS:
         return None, report
     try:
-        evidence, report = ml.run_model(pre_vv_db, pre_vh_db, post_vv_db, post_vh_db, mp)
+        evidence, report = ml.run_model(pre_vv_db, pre_vh_db, post_vv_db, post_vh_db, mp,
+                                        cache_dir=cache_dir, log=log)
         if evidence is not None:
             log(f"      model ({mp.mode}): {report.get('p_flood_coverage', 0):.0%} of the "
                 f"area covered, sha256 {report.get('sha256')}")
@@ -410,7 +417,8 @@ def prepare(bbox, event_day: date, cache: Path, rp: RunParams, dp: DetectParams,
     log("[7/8] Kuro Siwo model evidence (optional) ...")
     pre_vv_db = np.stack([p[0] for p in pre])
     pre_vh_db = np.stack([p[1] for p in pre])
-    model_evidence, model_report = model_stage(pre_vv_db, pre_vh_db, post_vv, post_vh, mp, log=log)
+    model_evidence, model_report = model_stage(pre_vv_db, pre_vh_db, post_vv, post_vh, mp,
+                                               cache_dir=cache / "model", log=log)
     return PreparedScene(
         grid=grid, choice=choice,
         pre_vv_db=pre_vv_db, pre_vh_db=pre_vh_db,

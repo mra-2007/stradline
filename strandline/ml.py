@@ -28,6 +28,8 @@ normalisation.
 """
 
 import hashlib
+import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,6 +37,13 @@ import numpy as np
 
 CHANNELS = ("post_vv", "post_vh", "pre1_vv", "pre1_vh", "pre2_vv", "pre2_vh")
 N_CHANNELS = len(CHANNELS)
+
+# How many tiles go through one net() forward pass. Pure speed: batching does
+# not change a single tile's inputs, padding or softmax - each tile's output
+# is exactly the row of the batch it occupies, so this is the same computation
+# as the one-tile-at-a-time loop it replaces, just fewer Python-level forward
+# calls on a CPU that has threads to spare.
+DEFAULT_BATCH_SIZE = 16
 
 MODEL_CLASS_NONE = 0
 MODEL_CLASS_PERMANENT = 1
@@ -160,7 +169,8 @@ def _tile_starts(size: int, tile: int, stride: int) -> list[int]:
 
 
 def predict_tiles(loaded: LoadedModel, channels_linear: np.ndarray,
-                  tile: int, overlap: int) -> tuple[np.ndarray, np.ndarray]:
+                  tile: int, overlap: int, batch_size: int = DEFAULT_BATCH_SIZE
+                  ) -> tuple[np.ndarray, np.ndarray]:
     """channels_linear: (N_CHANNELS, H, W) linear sigma0, NaN where invalid.
 
     Runs the net over `tile`-px windows with `overlap`-px stride reduction,
@@ -168,9 +178,17 @@ def predict_tiles(loaded: LoadedModel, channels_linear: np.ndarray,
     standard way to remove tile-edge artefacts from a patch-based CNN. A pixel
     never covered by a finite window (all NaN) stays NaN in both outputs.
 
+    Tiles are padded and normalised exactly as before, then grouped into
+    batches of up to `batch_size` and sent through the net in one call per
+    batch (CPU threads otherwise sit idle on a batch of 1); batchnorm is in
+    eval mode (running statistics, not batch statistics), so this changes
+    nothing about any one tile's output, only how many Python-level forward
+    calls it takes to get there.
+
     Returns (p_flood, p_perm), each (H, W) float64 in [0, 1].
     """
     import torch
+    torch.set_num_threads(os.cpu_count() or 1)
 
     c, h, w = channels_linear.shape
     if c != N_CHANNELS:
@@ -178,15 +196,18 @@ def predict_tiles(loaded: LoadedModel, channels_linear: np.ndarray,
     stride = max(tile - overlap, 1)
     rows = _tile_starts(h, tile, stride)
     cols = _tile_starts(w, tile, stride)
+    positions = [(r0, c0) for r0 in rows for c0 in cols]
 
     sum_flood = np.zeros((h, w), dtype=np.float64)
     sum_perm = np.zeros((h, w), dtype=np.float64)
     count = np.zeros((h, w), dtype=np.float64)
 
     net = loaded.net
-    with torch.no_grad():
-        for r0 in rows:
-            for c0 in cols:
+    with torch.inference_mode():
+        for start in range(0, len(positions), batch_size):
+            batch_x = []
+            batch_dims = []   # (r0, c0, r1, c1, th, tw, valid)
+            for r0, c0 in positions[start:start + batch_size]:
                 r1, c1 = min(r0 + tile, h), min(c0 + tile, w)
                 patch = channels_linear[:, r0:r1, c0:c1]
                 th, tw = patch.shape[1], patch.shape[2]
@@ -197,11 +218,16 @@ def predict_tiles(loaded: LoadedModel, channels_linear: np.ndarray,
                 padded = np.zeros((c, tile, tile), dtype=np.float64)
                 padded[:, :th, :tw] = filled
                 x = normalise(padded, loaded.clip_lo, loaded.clip_hi, loaded.mean, loaded.std)
-                t = torch.from_numpy(x[None].astype(np.float32))
-                logits = net(t)[0]
-                probs = torch.softmax(logits, dim=0).numpy()
-                p_flood_patch = probs[MODEL_CLASS_FLOOD, :th, :tw]
-                p_perm_patch = probs[MODEL_CLASS_PERMANENT, :th, :tw]
+                batch_x.append(x.astype(np.float32))
+                batch_dims.append((r0, c0, r1, c1, th, tw, valid))
+            if not batch_x:
+                continue
+            t = torch.from_numpy(np.stack(batch_x))
+            logits = net(t)
+            probs = torch.softmax(logits, dim=1).numpy()
+            for i, (r0, c0, r1, c1, th, tw, valid) in enumerate(batch_dims):
+                p_flood_patch = probs[i, MODEL_CLASS_FLOOD, :th, :tw]
+                p_perm_patch = probs[i, MODEL_CLASS_PERMANENT, :th, :tw]
                 sum_flood[r0:r1, c0:c1] += np.where(valid, p_flood_patch, 0.0)
                 sum_perm[r0:r1, c0:c1] += np.where(valid, p_perm_patch, 0.0)
                 count[r0:r1, c0:c1] += valid.astype(np.float64)
@@ -211,6 +237,49 @@ def predict_tiles(loaded: LoadedModel, channels_linear: np.ndarray,
         p_flood = np.where(covered, sum_flood / np.maximum(count, 1), np.nan)
         p_perm = np.where(covered, sum_perm / np.maximum(count, 1), np.nan)
     return p_flood, p_perm
+
+
+# --- disk cache: one inference per (model, scene, tiling), ever -------------
+#
+# The expensive step is the forward pass, not the grid of mode/fusion_weight/
+# t_gorge points that follow it (those only re-threshold p_flood/p_perm - see
+# strandline.detect._model_masks). Keying on the model's own sha256 plus a
+# hash of the exact LINEAR input array plus the tiling parameters means the
+# cache is self-invalidating: any change to the checkpoint, to upstream
+# preprocessing, or to tile_px/tile_overlap_px produces a new key rather than
+# a stale hit, with no separate "cache version" to remember to bump.
+
+def _scene_cache_key(channels_linear: np.ndarray, tile: int, overlap: int,
+                     model_sha256: str) -> str:
+    h = hashlib.sha256()
+    h.update(model_sha256.encode("utf-8"))
+    h.update(f"|{tile}|{overlap}|".encode("utf-8"))
+    h.update(np.ascontiguousarray(channels_linear, dtype=np.float64).tobytes())
+    return h.hexdigest()
+
+
+def _load_cached_prediction(cache_dir: Path, key: str) -> tuple[np.ndarray, np.ndarray] | None:
+    path = Path(cache_dir) / f"{key}.npz"
+    if not path.exists():
+        return None
+    try:
+        with np.load(path) as npz:
+            return npz["p_flood"], npz["p_perm"]
+    except (OSError, ValueError, KeyError, EOFError):
+        # A partial or corrupt cache file is not fatal (Rule 5): recompute.
+        return None
+
+
+def _save_cached_prediction(cache_dir: Path, key: str, p_flood: np.ndarray,
+                            p_perm: np.ndarray) -> None:
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    # np.savez appends ".npz" itself when the given name lacks it, so the temp
+    # name must already end in ".npz" or the later rename targets a path that
+    # was never written.
+    tmp = cache_dir / f".tmp-{os.getpid()}-{key}.npz"
+    np.savez(tmp, p_flood=p_flood, p_perm=p_perm)
+    tmp.replace(cache_dir / f"{key}.npz")
 
 
 @dataclass
@@ -233,13 +302,22 @@ class ModelEvidence:
 
 def run_model(pre_vv_db: np.ndarray, pre_vh_db: np.ndarray,
              post_vv_db: np.ndarray, post_vh_db: np.ndarray,
-             params, model_path=None) -> tuple[ModelEvidence | None, dict]:
+             params, model_path=None, cache_dir: Path | None = None,
+             log=lambda *a: None) -> tuple[ModelEvidence | None, dict]:
     """Build model evidence for one prepared scene. NEVER raises.
 
     `params` is a strandline.config.ModelParams. `pre_*_db` are (n_dates, H, W)
     dB stacks (strandline.detect.preprocess output); the two dates nearest the
     event (the last two of the stack, which is built oldest-to-newest) are used
     as pre1/pre2, matching the checkpoint's documented channel order.
+
+    `cache_dir`, when given, is checked for a prior (model, scene, tiling)
+    inference before running the net, and written to afterwards - so the same
+    scene scored again (a repeat live run, or a second pass over the same
+    event in eval/tune.py) pays for the forward pass at most once, ever.
+    `cache_dir=None` (the default) skips caching entirely; already-recorded
+    scores stay reproducible either way, since caching only changes WHERE
+    `p_flood`/`p_perm` come from, never their values.
 
     Returns (ModelEvidence | None, report). `report["status"]` is always one of
     MODEL_DISABLED / MODEL_UNAVAILABLE / MODEL_FAILED / MODEL_USED, so a run
@@ -265,6 +343,7 @@ def run_model(pre_vv_db: np.ndarray, pre_vh_db: np.ndarray,
         report["reason"] = load_status["reason"]
         return None, report
 
+    t0 = time.perf_counter()
     try:
         channels_db = np.stack([
             post_vv_db, post_vh_db,
@@ -273,8 +352,22 @@ def run_model(pre_vv_db: np.ndarray, pre_vh_db: np.ndarray,
         ])
         channels_linear = sigma0_db_to_linear(channels_db)
         coverage = clip_coverage(channels_linear, loaded.clip_lo, loaded.clip_hi)
-        p_flood, p_perm = predict_tiles(loaded, channels_linear,
-                                        params.tile_px, params.tile_overlap_px)
+
+        cache_key = None
+        cached = None
+        if cache_dir is not None:
+            cache_key = _scene_cache_key(channels_linear, params.tile_px,
+                                         params.tile_overlap_px, loaded.sha256)
+            cached = _load_cached_prediction(Path(cache_dir), cache_key)
+        if cached is not None:
+            p_flood, p_perm = cached
+            report["model_cache"] = "hit"
+        else:
+            p_flood, p_perm = predict_tiles(loaded, channels_linear,
+                                            params.tile_px, params.tile_overlap_px)
+            if cache_dir is not None:
+                _save_cached_prediction(Path(cache_dir), cache_key, p_flood, p_perm)
+            report["model_cache"] = "miss" if cache_dir is not None else "disabled"
     except Exception as err:
         report["status"] = MODEL_FAILED
         report["error_type"] = type(err).__name__
@@ -285,6 +378,8 @@ def run_model(pre_vv_db: np.ndarray, pre_vh_db: np.ndarray,
     report["sha256"] = loaded.sha256
     report["clip_coverage"] = {k: round(v, 4) for k, v in coverage.items()}
     report["p_flood_coverage"] = round(float(np.mean(np.isfinite(p_flood))), 4)
+    report["inference_s"] = round(time.perf_counter() - t0, 2)
+    log(f"      model inference: {report['model_cache']} in {report['inference_s']:.1f}s")
     evidence = ModelEvidence(p_flood=p_flood, p_perm=p_perm, available=True, mode=params.mode,
                              fusion_weight=params.fusion_weight, t_gorge=params.t_gorge,
                              sha256=loaded.sha256, stats=report)
